@@ -92,7 +92,7 @@ dm 作用域注册的工具: rp_styles, rp_illustrate, rp_character, rp_session,
 
 | # | 问题 | 影响 | 现状 / 计划 |
 |---|---|---|---|
-| 1 | **DM 会话判定未确认** | 「🎲 RP」按钮可能不出现 | 三条路径并行：① 预设桥接（`ctx.agent` 等候选取会话 id，**实测没成功**）② **保底**：任何 `rp_*` 工具被调用即登记该会话为 DM（已实现，DM 用过一次工具后按钮必然出现）③ 诊断快照 `_agent-probe.json`（监听 `agent/created` 已加，待你使用一次会话后读取字段，据此判断能否在宿主侧直接识别 dm 预设） |
+| 1 | **DM 会话判定** | 曾导致「🎲 RP」按钮不出现 | **已修（待界面确认）**：根因是会话 id 前后缀不一致——工具侧 `exec.agent.id` 为 `session-<uuid>`，会话目录/客户端 `useSessions().current` 为裸 `<uuid>`。已加 `normalizeSessionId()` 统一剥前缀、`isDmSession()` 兼容两种写法、`loadSession` 兼容旧文件名，并迁移了 `dm-sessions.json` 与 `sessions/*.json`（实测 `_agent-probe.json` 证实 agent.id 带前缀、登记表已写入 2 条）。下一步若仍有问题：扩展 `_agent-probe.json` 去 dump `agent.options` / `agent.session` 的键，判断能否在宿主侧直接识别 dm 预设 |
 | 2 | 负面词在 CFG=1 下无效 | 全局负面词形同虚设 | 已文档化；提高该风格 CFG 即可生效（turbo 模型不建议 >2.5） |
 | 3 | 面板上的「掷」走独立路由 | 与工具逻辑重复 | 已抽成同源实现（路由与工具共用 `parseDice`/`rollDice`）；如需完全统一可让路由调用工具内部函数 |
 | 4 | 角色一致性 | 同一角色换姿势/场景会漂 | 目前靠 `character_sheet` 外观锚点 + 固定 seed；**未接** Qwen-Image-Edit 参考图方案（本机已有模型） |
