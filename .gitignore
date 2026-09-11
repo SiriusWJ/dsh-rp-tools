@@ -3,3 +3,9 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# 角色卡索引（lib/card-index.js）是从**本机卡库生成的私人数据**（文件名 / 名称 / 标签），
+# 既不该进公开仓库，也不该随 npm 包发布（package.json 的 files 白名单含 lib/）。
+# 建议生成脚本把产物直接写到数据目录（$DSH_HOME/data/dsh-rp-tools/），
+# 而不是写进 lib/；在那之前先在这里挡一道。
+lib/card-index.js

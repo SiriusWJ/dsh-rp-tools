@@ -1,7 +1,9 @@
 # dsh-rp-tools
 
 给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）用的 **跑团 / DM 工具插件**：
-**中立随机裁决**（`rp_random`）+ **本地 ComfyUI 配图**（场景、NPC 立绘、道具线索、氛围图）+ **按会话隔离的战役配置**（世界设定 / 角色卡 / 随机表 / 风格偏好）。
+**中立随机裁决**（`rp_random`）+ **本地 ComfyUI 配图**（场景、NPC 立绘、道具线索、氛围图）+
+**按会话隔离的战役配置**（世界设定 / 角色卡 / 随机表 / 风格偏好）+ **世界书与状态追踪** +
+**PNG 故事书（SillyTavern 角色卡）导入** —— 选一张卡就能开团。
 
 面向通用 DM 活动：任何模组、任何战役都能用；配图完全走本机 ComfyUI，不依赖任何云端服务。
 
@@ -18,11 +20,14 @@
 | 🖼 **本地生图** | `rp_illustrate`：直连本机 ComfyUI，Krea-2 Turbo（8 步 / CFG 1）+ Qwen3-VL 文本编码；1024² 约 13–18 秒，1344×768 约 25 秒 |
 | 🎨 **10 种风格** | `manga`（黑白漫画，默认，无 LoRA）+ 9 个官方 Krea-2 风格 LoRA（水墨 / 点绘 / 蜡笔 / 抽象 / 雨窗 / 复古动画 / 水彩 / 运动模糊 / 塔罗）；每个风格 = 一套生图工作流，含触发词 / CFG / 步数 / 尺寸预设 |
 | 🧑 **角色卡** | `rp_character`：登记「名字 + 外观」，之后**任何画面描述里提到该名字就自动补外观** —— 保持角色长相一致的主要手段，并可直接出立绘 |
-| 🌍 **会话隔离** | 世界设定 / 角色卡 / 随机表 / 提示词前缀 / 会话默认风格**按会话独立**，互不干扰；真正全局的只有风格库、ComfyUI 地址、全局负面词、全局默认风格 |
+| 📖 **PNG 故事书导入** | 工作区那一行的「📖 导入 PNG 故事书」：从本地卡库（SillyTavern PNG 角色卡）选一张 → **世界书**追加进会话工作区的 `rp-worldbook.md`、卡全文与卡面落进 `rp-cards/`、角色卡/世界写进会话配置、**自动切 `dm` 预设并把开场指令发给 DM**。实测 3269 张卡库：解析 160/160 成功（中位 1 ms） |
+| 📚 **世界书** | 会话工作区的 `rp-worldbook.md`：`##` 分条，`keys` / `constant` / `order` / `prob` 标记；**只有命中的条目进上下文**（每轮预算 12 条 / 6000 字），被裁的列标题供按需补读 |
+| 📌 **状态追踪** | `rp_state`：场景 / 时间 / 地点 / 在场 / 线索 + 队伍（状态·持有·伤病·目标）+ 自由旗标；空串即清除；注入在每轮上下文最前 |
+| 🌍 **会话隔离** | 世界设定 / 角色卡 / 随机表 / 提示词前缀 / 会话默认风格**按会话独立**，互不干扰；真正全局的只有风格库、ComfyUI 地址、全局负面词、全局默认风格、卡库目录 |
 | 🎬 **整幕批量** | `rp_scenes`：吃 `scenes[].panels[]` 结构（含每格 positive/seed/宽高），一次出一整幕，单格失败不中断 |
 | 🎲 **随机表** | `rp_table`：遭遇表 / 掉落表 / 情绪表…… 定义（表名 + 骰式 + 条目）、掷表、`count`/`seed`；面板上也能掷 |
-| 🖥 **两处界面** | 设置页「RP工具」（全局配置 + 风格库 + 工具清单与参数说明）；DM 会话头部的「🎲 RP」按钮（浮层面板：世界 / 角色卡 / 随机表 / 本会话生图配置） |
-| 🔒 **只进 DM 会话** | RP 工具**只在 `dm` 预设作用域注册**，其它预设的会话既看不到工具、也没有任何 RP 界面 |
+| 🖥 **三处界面** | 设置页「RP工具」（全局配置 + 风格库 + 工具清单）；DM 会话头部的「🎲 RP」按钮（右侧栏面板：世界 / 角色卡 / 随机表 / 本会话生图配置）；工作区那一行的「📖 导入 PNG 故事书」 |
+| 🔒 **只进 DM 会话** | RP 工具**只在 `dm` 预设作用域注册**，其它预设的会话既看不到工具、也没有任何 RP 界面（故事书导入入口只在**空白会话**或 DM 会话出现 —— 否则没法从零开团） |
 
 ---
 
@@ -60,14 +65,16 @@ models/loras/krea2_*.safetensors                               ← 9 个风格 L
 
 ## 工具
 
-8 个工具，全部以 `rp_` 开头。设置页「RP工具 → 工具列表」会实时展示同款清单（含每个参数的说明）。
+10 个工具，全部以 `rp_` 开头，**全部只在 `dm` 预设作用域注册**。设置页「RP工具 → 工具列表」会实时展示同款清单（含每个参数的说明）。
 
 | 工具 | 作用 | 主要参数 |
 |---|---|---|
-| `rp_random` | 中立随机裁决（**全局注册**，任何会话可用） | `kind?` `dice?` `choices?` `weights?` `min?` `max?` `count?` `seed?` |
+| `rp_random` | 中立随机裁决（骰子 / 区间 / 抽取 / 布尔） | `kind?` `dice?` `choices?` `weights?` `min?` `max?` `count?` `seed?` |
 | `rp_styles` | 列出风格（触发词 / CFG / 步数 / 尺寸预设） | — |
 | `rp_illustrate` | 按风格生成一张图 | `prompt`* `style?` `seed?` `aspect?` `width?` `height?` |
 | `rp_character` | 角色卡增删查 + 出立绘 | `action`* `name?` `appearance?` `portrait?` `style?` |
+| `rp_state` | 状态追踪（场景 / 时间 / 地点 / 在场 / 线索 + 队伍 + 旗标） | `action`* `field?` `value?` `party?` `flags?` |
+| `rp_lore` | 世界书按条读取 / 生成模板 | `action`* `query?` `limit?` |
 | `rp_session` | 本会话设置（世界 / 前缀 / 会话默认风格 / 风格备注 / 战役名） | `action`* `world?` `prompt_prefix?` `default_style?` `style_notes?` `campaign_name?` |
 | `rp_scenes` | 按场景文件逐格批量出图 | `scenesFile`* `sceneId?` `style?` `limit?` |
 | `rp_config` | **全局**配置（负面词 / 全局默认风格 / ComfyUI 地址 / 单个风格的触发词·步数·CFG） | `action`* `negative?` `default_style?` `base_url?` `style_key?` `trigger?` `steps?` `cfg?` |
@@ -77,14 +84,41 @@ models/loras/krea2_*.safetensors                               ← 9 个风格 L
 
 ---
 
+## PNG 故事书导入
+
+界面入口在**工作区那一行**（输入框上方，只在空白会话或 DM 会话出现）。点开 → 在本地卡库里搜卡 →
+预览（世界书条数 / 开场白来源 / 世界与性格摘要）→ 「导入并开始」。
+
+导入做的事：
+
+1. 卡里的 `character_book` → **追加合并**进会话工作区的 `rp-worldbook.md`
+   （按标题去重，**绝不覆盖你自己写的条目**；无 `keys` 的条目自动补 `constant`，否则永远不会触发）；
+2. 卡全文 → `<工作区>/rp-cards/<slug>.md`（世界书有 60 条 / 6 万字预算，超出的设定在这里按需 `read`）；
+3. 卡面 → `<工作区>/rp-cards/<slug>.png`，并登记成该角色的默认立绘；
+4. 角色卡 / 世界设定 / 战役名 → 会话配置；
+5. 会话预设切成 `dm`，并把**开场指令**发给 DM（内含卡组自带开场白，标注为「仅作参考，不要照抄」）。
+
+卡库位置在**设置页 → RP工具 → 卡库目录**（默认扫描本机 `D:\Story\sillytavernassets`）。
+目录结构是 `cards/<分类>/*.png`；没有私有索引文件时退回按文件名扫目录，功能一样可用。
+
+> ⚠️ 实测结论（3269 张卡，见 `docs/PNG-CARD-DECODE.md`）：**`first_mes` 100% 被广告污染**
+> （`deepseektavern.com`），所以导入一律改用 `alternate_greetings` 的第一条；
+> 40% 的卡正文只在 `character_book` 里，所以导入的主战场是**世界书**而不是角色字段。
+
+---
+
 ## 数据与配置
 
 ```
 ~/.dsh/data/dsh-rp-tools/
-├── styles.json                 全局：风格库 + 全局负面词 + ComfyUI 地址 + 全局默认风格
-├── sessions/<sessionId>.json   会话级：世界设定 / 角色卡 / 随机表 / 前缀 / 会话默认风格
+├── styles.json                 全局：风格库 + 全局负面词 + ComfyUI 地址 + 全局默认风格 + 卡库目录
+├── sessions/<sessionId>.json   会话级：世界设定 / 角色卡 / 随机表 / 前缀 / 会话默认风格 / 状态 / 立绘登记
 ├── dm-sessions.json            DM 会话登记表（界面据此决定是否显示 RP 入口）
 └── _agent-probe.json           诊断用：agent/created 事件里可读到的字段快照
+
+<会话工作区>/
+├── rp-worldbook.md             世界书（可手写；导入的故事书条目也追加在这里）
+└── rp-cards/<slug>.{md,json,png}   导入产物：卡全文 / 规范化结果 / 卡面
 ```
 
 `styles.json` 关键字段：
@@ -118,17 +152,13 @@ RP 工具**只在 `dm` 预设作用域注册**。需要在预设目录做两件�
   name: ./session-filter.mjs
   config:
     keepGlobalTools:
-      - rp_random
-      - rp_styles
-      - rp_illustrate
-      - rp_character
-      - rp_scenes
-      - rp_session
-      - rp_config
-      - rp_table
       - render_ui
       - validate_dsh_ui
+      - web_search
 ```
+
+> 全部 `rp_*` 工具现在都在本预设作用域注册（由 `rp-bridge.mjs` 调用 `registerRpTools`），
+> 所以白名单里**不再需要放行任何 `rp_*`** —— 它只用于保留少数几个全局工具。
 
 **2. 挂桥接插件**（把 RP 工具注册进本会话 + 登记 DM 会话）：
 
@@ -146,32 +176,44 @@ RP 工具**只在 `dm` 预设作用域注册**。需要在预设目录做两件�
 ```
 dsh-rp-tools/
 ├── lib/index.js        宿主半侧（ESM）
-│   ├── apply(ctx)              全局：注册 rp_random + 全部 HTTP 路由；监听 agent/created 写诊断快照
-│   ├── registerRpTools(ctx)    DM 作用域：注册另外 7 个 rp_ 工具（execute 包一层：调用即登记该会话为 DM）
+│   ├── apply(ctx)              全局：**不注册任何模型工具**，只挂 HTTP 路由 + 监听 session/created（fork 继承、记录工作区）
+│   ├── registerRpTools(ctx)    dm 作用域（由 rp-bridge 调用）：全部 10 个 rp_ 工具 + 两条提示词注入通道
 │   ├── 生图链路                 组装 API 工作流 → ComfyUI POST /prompt → 轮询 /history → 同源媒体 URL
 │   └── 配置层                  styles.json（全局） / sessions/<id>.json（会话）
+├── lib/card-png.js     PNG 角色卡解码（tEXt / iTXt / zTXt，ccv3 优先，截断容错）
+├── lib/card-import.js  卡 → 会话配置的映射（丢广告开场白、无 keys 条目补 constant、限量 + 全文导出）
 ├── client/client.js    客户端半侧（plain JS + React.createElement，无构建）
-│   ├── settings.section「RP工具」            全局配置 + 风格库 + 工具清单
-│   └── conversation.session.header.actions  仅 DM 会话渲染的「🎲 RP」按钮 + 浮层面板
+│   ├── settings.section「RP工具」                全局配置 + 风格库 + 卡库目录 + 工具清单
+│   ├── conversation.session.header.utilities    仅 DM 会话渲染的「🎲 RP」按钮（打开右侧栏面板）
+│   └── conversation.input.dock「📖 导入 PNG 故事书」  空白会话 / DM 会话里的故事书导入入口
 ├── preset/rp-bridge.mjs    dm 预设作用域桥接插件（副本，供安装参考）
 ├── cordis.patch.yml        bundle 补丁层
-└── docs/STATUS.md          开发状态、验证记录、已知问题、路线图
+└── docs/                   交接文档（HANDOFF）/ 状态（STATUS）/ 卡格式实测（PNG-CARD-DECODE）
 ```
 
-**HTTP 路由**（全部同源保护，`Origin` 必须等于 `Host`）：
+**HTTP 路由**（POST 全部同源保护，`Origin` 必须等于 `Host`）：
 
 | 路由 | 方法 | 用途 |
 |---|---|---|
 | `/rp-tools/state` | GET | 全局配置 + 风格摘要（同时学习浏览器 origin，用于拼媒体 URL） |
-| `/rp-tools/config` | POST | 写全局配置（含 `negative` / `baseUrl` / 风格字段） |
+| `/rp-tools/config` | POST | 写全局配置（含 `negative` / `baseUrl` / `cards.root` / 风格字段与增删） |
 | `/rp-tools/reset` | POST | 恢复默认全局配置 |
 | `/rp-tools/check` | GET | ComfyUI 连通性（版本 / GPU / 显存） |
-| `/rp-tools/session` | GET/POST | 读写某个会话的 RP 配置（角色卡 / 世界 / 随机表） |
+| `/rp-tools/inject` | GET | 注入自检：某个会话**会**被注入什么（只读，不参与运行） |
+| `/rp-tools/loras` | GET | 本地 LoRA 清单（读 ComfyUI `/object_info`） |
+| `/rp-tools/session` | GET/POST | 读写某个会话的 RP 配置（角色卡 / 世界 / 随机表 / 状态 / 立绘） |
 | `/rp-tools/dm-mark` | POST | 登记某会话为 DM 会话 |
 | `/rp-tools/tools` | GET | 工具清单 + 参数说明（设置页用） |
 | `/rp-tools/roll` | POST | 掷随机表（面板用） |
 | `/rp-tools/media` | GET | **同源媒体代理**：把 ComfyUI `/view` 转成同源，图片才能在聊天里渲染 |
 | `/rp-tools/preview` | POST | 试出一张（设置页 / 面板用，可带 sessionId） |
+| `/rp-tools/cards` | GET | 列卡库（服务端搜索 / 分类 / 分页） |
+| `/rp-tools/card` | GET | 解析单张卡 → 摘要与预览（不落盘） |
+| `/rp-tools/card-import` | POST | 导入到某个会话（写世界书 / 卡全文 / 卡面 + 更新会话配置，返回开场指令） |
+| `/rp-tools/card-image` | GET | 卡面图（只服务卡库内的 `.png`） |
+
+> ⚠️ `/rp-tools/card*` 三条会把磁盘内容交给浏览器，路径一律经 `safeCardPath()`（`resolve` 后前缀比对卡库根 + 只认 `.png`）；
+> 逃逸 / 绝对路径 / 非 png 全部 400。
 
 ---
 
@@ -185,11 +227,27 @@ node --check lib/index.js && node --check client/client.js      # 语法检查
 
 ```powershell
 $dst = "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-rp-tools"
-Copy-Item lib/index.js    "$dst\lib\index.js"    -Force
-Copy-Item client/client.js "$dst\client\client.js" -Force
+Copy-Item lib/index.js       "$dst\lib\index.js"       -Force
+Copy-Item lib/card-png.js    "$dst\lib\card-png.js"    -Force
+Copy-Item lib/card-import.js "$dst\lib\card-import.js" -Force
+Copy-Item client/client.js   "$dst\client\client.js"   -Force
+# 改了 dm 预设那一半还要同步预设目录：
+Copy-Item preset/rp-bridge.mjs "$env:USERPROFILE\.dsh\.agent-presets\dm\rp-bridge.mjs" -Force
 ```
 
-当前开发状态、验证记录、已知问题与路线图见 **[docs/STATUS.md](docs/STATUS.md)**。
+测试：
+
+```bash
+node tools/smoke-dm.mjs        # 宿主：作用域隔离 / 路由 / 世界书 / 状态 / 风格库 / 卡库导入（194 条断言）
+node tools/smoke-card.mjs      # PNG 卡解码 + 映射 + 开场指令（64 条，合成 PNG 字节）
+node tools/smoke-client.mjs    # 客户端 bundle：样式注入时机 / 槽位注册
+node tools/probe-cardlib.mjs   # 真卡库探针（只读 + 临时目录，手动跑）
+```
+
+> 客户端 bundle 只在**页面加载时**读取 —— 改 `client/` 只需刷新页面；改 `lib/` 与 `preset/` 才需要重启宿主。
+
+当前开发状态、验证记录、已知问题与路线图见 **[docs/STATUS.md](docs/STATUS.md)**，
+给新会话的交接文档见 **[docs/HANDOFF.md](docs/HANDOFF.md)**。
 
 ## License
 
