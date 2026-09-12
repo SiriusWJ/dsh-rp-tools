@@ -98,12 +98,20 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
   check('是否角色卡：只有书名 → 不是', hasCharacterFields({ name: '下班，然后成为魔法少女' }), false);
   check('是否角色卡：有描述 → 是', hasCharacterFields({ name: 'X', description: '设定' }), true);
   check('是否角色卡：有性格 → 是', hasCharacterFields({ name: 'X', personality: '冷淡' }), true);
-  check('是否角色卡：有对白范例 → 是', hasCharacterFields({ name: 'X', mes_example: 'X：你好' }), true);
-  check('是否角色卡：有开场白 → 是', hasCharacterFields({ name: 'X', first_mes: '……' }), true);
-  check('是否角色卡：只有备用开场白也算', hasCharacterFields({ name: 'X', alternate_greetings: ['……'] }), true);
+  // ⚠️ 真事故回归：某张故事书只有 first_mes（206 字故事开场白）+ 22 条世界书，
+  //    description/personality 都是 0 —— 早先「有开场白就算角色卡」把书名建成了空壳角色。
+  check('是否角色卡：只有开场白 → 不算（故事书也有）', hasCharacterFields({ name: 'X', first_mes: '……' }), false);
+  check('是否角色卡：只有对白范例 → 不算', hasCharacterFields({ name: 'X', mes_example: 'X：你好' }), false);
+  check('是否角色卡：只有备用开场白 → 不算', hasCharacterFields({ name: 'X', alternate_greetings: ['……'] }), false);
   check('是否角色卡：只有情境（scenario）→ 不算（故事书也有）', hasCharacterFields({ name: 'X', scenario: '某地' }), false);
   check('是否角色卡：只有作者注 → 不算', hasCharacterFields({ name: 'X', creator_notes: '转自某处' }), false);
   check('是否角色卡：空白字段不算', hasCharacterFields({ name: 'X', description: '   ' }), false);
+  // 那张真卡的实际形状（只有 first_mes + 世界书 + 书名）
+  check('是否角色卡：真事故那张卡的形状 → 不是角色卡', hasCharacterFields({
+    name: '下班，然后成为魔法少女。', description: '', personality: '', mes_example: '',
+    first_mes: '（206 字的故事开场）', scenario: '', creator_notes: '',
+    character_book: { entries: new Array(22).fill({ name: 'x', content: 'y' }) },
+  }), false);
 }
 
 // buildImport 要把这个判断带出来，调用方才知道该不该写进人物表
@@ -118,7 +126,16 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
   check('故事书：isCharacterCard=false', story.isCharacterCard, false);
   check('故事书：世界书照常导入', story.stats?.kept >= 1, true);
   check('故事书：world 里标的是「故事书」而不是「角色卡」', /【故事书】/.test(String(story.world)), true);
-  check('故事书：summary 说明了为什么不建人物', story.summary.join('\n').includes('不建人物'), true);
+  check('故事书：summary 说明了为什么不建角色卡', story.summary.join('\n').includes('不建角色卡'), true);
+  // 真事故那张卡的形状：只有 first_mes（故事开场白）+ 世界书 + 书名 → 也不能算角色卡
+  const openingOnly = buildImport(decodeCardPng(makePng([
+    textChunk('ccv3', card({
+      name: '下班，然后成为魔法少女。',
+      first_mes: '（206 字的故事开场）',
+      character_book: { entries: [{ name: '世界观', content: '魔法少女在加班。' }] },
+    }, 'chara_card_v3')),
+  ])));
+  check('故事书（只有开场白）：isCharacterCard=false', openingOnly.isCharacterCard, false);
 
   const role = buildImport(decodeCardPng(makePng([
     textChunk('ccv3', card({ name: '翠雀', description: '三十余岁，银发', personality: '寡言' }, 'chara_card_v3')),

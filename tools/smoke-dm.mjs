@@ -1053,7 +1053,10 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   // 四个产物（世界书 / 全文 / JSON / 卡面 / 开场白引导）**全部**在会话目录里，
   // 工作区根目录不许再冒出共享的 rp-cards/
   check('隔离：工作区根不再产生 rp-cards/', !existsSync(join(ws, 'rp-cards')), true);
-  check('导入：会话立绘已登记', sess.json.session?.portraits?.['烟测卡']?.card, rel);
+  // 卡面现在是**封面**（摆在「世界设定」旁边），不再挂在某个角色名下
+  check('导入：封面登记在会话里', sess.json.session?.cover?.card, rel);
+  check('导入：封面文件也在会话目录', sess.json.session?.cover?.file, `rp-sessions/${IMPORT_SID}/cards/烟测卡.card.png`);
+  check('导入：封面记着卡名', sess.json.session?.cover?.name, '烟测卡');
   check('导入：战役名补成卡名', sess.json.session?.campaign?.name, '烟测卡');
   check('导入：角色卡标为「有角色」', imported.json.isCharacterCard, true);
 
@@ -1077,7 +1080,20 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     // 源文件名是 故事书.png（没有 .card 标记）→ slug 就是「故事书」，落到 故事书.png
     check('故事书：卡面仍然复制到会话目录', existsSync(join(ws, 'rp-sessions', storySid, 'cards', '故事书.png')), true);
     check('故事书：世界设定里标的是「故事书」', String(story.json.world).includes('【故事书】'), true);
-    check('故事书：summary 说明了原因', String(story.json.summary).includes('不建人物'), true);
+    check('故事书：summary 说明了原因', String(story.json.summary).includes('不建角色卡'), true);
+    check('故事书：封面照样登记（世界设定旁边那张图）', story.json.cover?.card, storyRel);
+    check('故事书：封面文件也在会话目录', existsSync(join(ws, 'rp-sessions', storySid, 'cards', '故事书.png')), true);
+    // ★ 真事故那张卡的形状：只有 first_mes（故事开场白）+ 世界书 → **不能**建角色卡
+    const openingRel = 'cards/测试分类/只有开场白.png';
+    writeFileSync(join(libRoot, 'cards', '测试分类', '只有开场白.png'), simpleCardPng('下班，然后成为魔法少女。', {
+      first_mes: '（206 字的故事开场）',
+      character_book: { entries: [{ name: '世界观', keys: ['魔法'], content: '魔法少女也要打卡。' }] },
+    }));
+    const openSid = crypto.randomUUID();
+    await callPost('/rp-tools/dm-mark', { sessionId: openSid, preset: 'dm' });
+    const opening = await callPost('/rp-tools/card-import', { sessionId: openSid, workspace: ws, path: openingRel });
+    check('只有开场白的卡：也没建角色卡', opening.json.isCharacterCard, false);
+    check('只有开场白的卡：角色表为空', ((await callGet('/rp-tools/session', `?sessionId=${openSid}`)).json.session?.characters ?? []).length, 0);
   }
 
   // 同一个会话再导一次：同名条目不该重复（幂等）
@@ -1378,6 +1394,35 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('尺寸：非法宽高不改动旧值', bad.json.config?.imageSizes?.scene, [1200, 700]);
   const kept = await callGet('/rp-tools/state');
   check('尺寸：落盘后 state 里读得到', kept.json.config?.imageSizes?.scene, [1200, 700]);
+}
+
+// ── 封面迁移：老数据里卡面挂在「卡名」这个假角色名下 ────────────────────────
+// 1.10.2 之前导入会把卡面登记成 `portraits[卡名] = { card }`，而那个「卡名」往往根本不是角色
+// （真事故：`下班，然后成为魔法少女。`）。现在把这类条目认成**封面**，用户不必重导。
+{
+  const id = crypto.randomUUID();
+  const file = join(TEST_HOME, 'data', 'dsh-rp-tools', 'sessions', `${id}.json`);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify({
+    sessionId: id,
+    characters: [{ name: '翠雀', personality: '冷淡' }],
+    portraits: {
+      '下班，然后成为魔法少女。': { card: '女性视角/下班。然后变成魔法少女.png', file: 'rp-sessions/x/cards/y.png' },
+    },
+  }, null, 2), 'utf8');
+  const got = await callGet('/rp-tools/session', `?sessionId=${id}`);
+  check('封面迁移：认出「不在角色表里」的卡面', got.json.session?.cover?.card, '女性视角/下班。然后变成魔法少女.png');
+  check('封面迁移：名字取那个键', got.json.session?.cover?.name, '下班，然后成为魔法少女。');
+  // 但如果那张卡面确实属于某个角色（键在角色表里），就**不算**封面
+  const id2 = crypto.randomUUID();
+  const file2 = join(TEST_HOME, 'data', 'dsh-rp-tools', 'sessions', `${id2}.json`);
+  writeFileSync(file2, JSON.stringify({
+    sessionId: id2,
+    characters: [{ name: '翠雀', personality: '冷淡' }],
+    portraits: { 翠雀: { card: 'cards/x.png' } },
+  }, null, 2), 'utf8');
+  const got2 = await callGet('/rp-tools/session', `?sessionId=${id2}`);
+  check('封面迁移：属于角色的卡面不当封面', got2.json.session?.cover, null);
 }
 
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);

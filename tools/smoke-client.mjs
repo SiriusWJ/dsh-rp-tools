@@ -760,13 +760,38 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     }
   }
 
-  // ★ 人物卡片：标题叫「人物」（不叫「角色卡」）；**有立绘就两列、图在左**
+  // ★ 角色卡卡片：标题叫「角色卡」；**生成出来的立绘**才挂在角色行上（有图就两列、图在左）
   {
-    assert.ok(text.includes('人物（'), '卡片标题应叫「人物」');
-    assert.equal(text.includes('角色卡（'), false, '不该再叫「角色卡」');
-    // 会话里那个角色带了一张**卡面**（登记在 session.portraits[name].card，导入卡时写进去的）
-    sessionStub.characters = [{ name: '阿岚', appearance: '白衣长剑' }];
+    assert.ok(text.includes('角色卡（'), '卡片标题应叫「角色卡」');
+    assert.equal(text.includes('人物（'), false, '不该叫「人物」');
+    // 只有「卡面」没有生成立绘时：角色行**不出图**（卡面现在是世界设定旁的封面）
+    sessionStub.characters = [{ name: '阿岚', appearance: '白衣长剑', personality: '冷淡' }];
     sessionStub.portraits = { 阿岚: { card: 'cards/古风/长安.card.png' } };
+    resetHooks();
+    let cardFaceOnly = render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    for (let i = 0; i < 14 && byClass(cardFaceOnly, 'charbox').length === 0; i++) {
+      await tick(30);
+      cardFaceOnly = render({
+        sessionId: SID,
+        useSessions: (sel) => sel(store),
+        useInput: (sel) => sel({ draft: '' }),
+        inputActions,
+      }, tab.component);
+    }
+    assert.equal(byClass(cardFaceOnly, 'charbox')[0]?.props['data-hasface'], 'false', '只有卡面（没生成立绘）时角色行不出图');
+    assert.equal(byClass(cardFaceOnly, 'charface').length, 0, '不该把卡面当角色立绘');
+    // 有生成立绘 → 两列，图在左（DOM 顺序 charface → charbody）
+    sessionStub.portraits = {
+      阿岚: {
+        generated: { file: 'rp-portrait-1.png', subfolder: 'rp', type: 'output' },
+        style: '二次元', elapsedMs: 18300, at: '2026-09-12T01:00:00.000Z',
+      },
+    };
     resetHooks();
     let withFace = render({
       sessionId: SID,
@@ -784,25 +809,46 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
       }, tab.component);
     }
     const box = byClass(withFace, 'charbox')[0];
-    assert.ok(box, '应渲染出人物行');
-    assert.equal(box.props['data-hasface'], 'true', '有图的人物行要标 data-hasface');
-    const face = byClass(withFace, 'charface')[0];
-    assert.ok(face, '有图时应有左列 charface');
-    const faceImg = findAll(face, (n) => n.type === 'img');
-    assert.equal(faceImg.length, 1, '左列恰好一张图');
-    assert.ok(String(faceImg[0].props.src).includes('/rp-tools/card-image?'), '图片走卡面路由');
-    // 顺序即布局：face 必须在 body 之前（图在左、字在右）
+    assert.equal(box.props['data-hasface'], 'true', '有立绘的角色行要标 data-hasface');
     const kids = (box.children ?? []).map((n) => String(n?.props?.className ?? ''));
     assert.ok(kids.indexOf('charface') >= 0 && kids.indexOf('charbody') > kids.indexOf('charface'),
       `DOM 顺序应是 charface → charbody（实际 ${JSON.stringify(kids)}）`);
     assert.ok(/\.rpt \.charbox\[data-hasface='true'\]/.test(style.textContent), '样式里要有「有图两列」的规则');
-    // 还原
-    sessionStub.portraits = {
-      阿岚: {
-        generated: { file: 'rp-portrait-1.png', subfolder: 'rp', type: 'output' },
-        style: '二次元', elapsedMs: 18300, at: '2026-09-12T01:00:00.000Z',
-      },
-    };
+  }
+
+  // ★ 封面：导入卡的 PNG 摆在「世界设定」旁边（用户要求），不再挂在角色名下
+  {
+    sessionStub.cover = { card: '女性视角/下班。然后变成魔法少女.png', file: 'x.png', name: '下班，然后成为魔法少女。' };
+    resetHooks();
+    let withCover = render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    for (let i = 0; i < 14 && byClass(withCover, 'cover').length === 0; i++) {
+      await tick(30);
+      withCover = render({
+        sessionId: SID,
+        useSessions: (sel) => sel(store),
+        useInput: (sel) => sel({ draft: '' }),
+        inputActions,
+      }, tab.component);
+    }
+    const worldCard = byClass(withCover, 'card').find((c) => textOf(c).includes('世界设定'));
+    assert.ok(worldCard, '应有世界设定卡片');
+    assert.equal(worldCard.props['data-cover'], 'true', '有封面时世界设定卡片要标 data-cover');
+    const cover = byClass(withCover, 'cover')[0];
+    assert.ok(cover, '世界设定旁应有封面块');
+    const coverImg = findAll(cover, (n) => n.type === 'img')[0];
+    assert.ok(String(coverImg.props.src).includes('thumb=1&width=240'), '封面也走服务端降采样（卡 PNG 可能几 MB）');
+    assert.ok(String(coverImg.props.src).includes(`sessionId=${SID}`), '封面请求要带会话身份');
+    assert.ok(textOf(cover).includes('下班，然后成为魔法少女'), '封面下标出卡名');
+    assert.ok(/\.rpt \.worldwrap/.test(style.textContent), '样式里要有封面+设定两列的规则');
+    // 封面必须在世界设定卡**内部**（与 textarea 同一个 wrap 里），而不是另起一张卡
+    assert.equal(byClass(worldCard, 'worldcol').length, 1, '世界设定卡里应有设定那一列');
+    assert.equal(byClass(worldCard, 'worldwrap').length, 1, '世界设定卡里应有封面+设定的两列容器');
+    sessionStub.cover = null;
     resetHooks();
   }
 

@@ -279,6 +279,13 @@ window.__ModuleLoader__.load({
   border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent)); }
 .rpt .charface .row { gap: 8px; align-items: center; }
 .rpt .charbody { display: flex; flex-direction: column; min-width: 0; }
+/* 世界设定 + 卡封面：有封面就两列（封面在左 116×150、设定在右） */
+.rpt .worldwrap { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 12px; align-items: start; }
+.rpt .worldcol { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.rpt .cover { display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
+.rpt .cover img { width: 116px; height: 150px; object-fit: cover; border-radius: 8px;
+  border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent)); }
+.rpt .cover .row { gap: 8px; align-items: center; }
 .rpt .tbl { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 6px; align-items: center; }
 .rpt .ovl { position: fixed; top: 56px; right: 16px; bottom: 16px; width: 440px; max-width: calc(100vw - 32px);
   z-index: 60; overflow: auto; padding: 14px; border-radius: 12px;
@@ -1186,14 +1193,39 @@ window.__ModuleLoader__.load({
         // 诊断行：导入入口的可见性历史上就看这两侧的值，出问题时一眼能看出是哪边不对
         h('div', { key: 'diag', className: 'dim' }, `入口判据 — 界面：预设「${clientPreset || '空'}」/${clientBlank === false ? '已开局' : clientBlank === true ? '未开局' : '未知'}；宿主：预设「${gate?.preset || '未知'}」/${gate ? (gate.started ? '已开局' : '未开局') : '未答'}`),
 
-        h('div', { key: 'world', className: 'card' }, [
-          h('h4', { key: 't' }, '世界设定'),
-          h('textarea', {
-            key: 'w', value: draft.world ?? '', placeholder: '世界观、时代、地点、基调……',
-            onChange: (e) => patch({ world: e.target.value }),
-          }),
-          h('div', { key: 'd', className: 'dim' }, `本会话配置文件（DM 也能用 read/write 直接改）：${state.file ?? ''}`),
-        ]),
+        // 世界设定 + **卡封面**：导入卡的 PNG 就摆在这里（用户要求：
+        // 「PNG 移到世界设定旁边，作为封面」）。封面是**卡的书封**，不是任何角色的立绘。
+        (() => {
+          const coverRel = draft.cover?.card;
+          const coverUrl = typeof coverRel === 'string' && coverRel
+            // 封面也只是看一眼，走服务端降采样（卡 PNG 可能几 MB）
+            ? cardImageUrl(coverRel, state?.cwd ?? '', sessionId, { thumb: '1', width: '240' })
+            : '';
+          const body = [
+            h('textarea', {
+              key: 'w', value: draft.world ?? '', placeholder: '世界观、时代、地点、基调……',
+              onChange: (e) => patch({ world: e.target.value }),
+            }),
+            h('div', { key: 'd', className: 'dim' }, `本会话配置文件（DM 也能用 read/write 直接改）：${state.file ?? ''}`),
+          ];
+          return h('div', {
+            key: 'world', className: 'card', 'data-cover': coverUrl ? 'true' : 'false',
+          }, [
+            h('h4', { key: 't' }, '世界设定'),
+            coverUrl
+              ? h('div', { key: 'wrap', className: 'worldwrap' }, [
+                h('div', { key: 'cover', className: 'cover' }, [
+                  h('img', { key: 'i', src: coverUrl, alt: '卡封面', loading: 'lazy' }),
+                  h('div', { key: 'l', className: 'dim' }, String(draft.cover?.name ?? '').slice(0, 24) || '卡封面'),
+                  h('div', { key: 'a', className: 'row' }, [
+                    h('a', { key: 'o', className: 'dim', href: coverUrl, target: '_blank', rel: 'noreferrer' }, '大图'),
+                  ]),
+                ]),
+                h('div', { key: 'col', className: 'worldcol' }, body),
+              ])
+              : body,
+          ]);
+        })(),
 
         // ── 宏（按会话隔离）：`{{user}}` 与自定义 `{{x}}` 的值 ──────────────────
         // 值存在会话配置里，宿主会用同名**变量**在注入时插值 —— 所以改完保存，
@@ -1360,17 +1392,12 @@ window.__ModuleLoader__.load({
         ]),
 
         h('div', { key: 'chars', className: 'card' }, [
-          h('h4', { key: 't' }, `人物（${chars.length}）`),
+          h('h4', { key: 't' }, `角色卡（${chars.length}）`),
           ...chars.map((c, i) => {
             // 立绘按**角色名**存取，而不是按数组下标 —— 删掉中间一个角色时下标会整体前移，
             // 那样立绘就会串到别的角色身上。
             const pkey = String(c.name ?? '').trim();
             const portrait = pkey ? portraits[pkey] : undefined;
-            // 导入 PNG 卡时登记的卡面（会话配置里的 portraits）：没生成过立绘时直接当立绘用，
-            // 生成过就排在生成图下面 —— 卡面是「原图」，不覆盖用户的出图结果。
-            const cardRel = pkey ? draft?.portraits?.[pkey]?.card : undefined;
-            // 卡库默认在会话工作区下 → 拼卡面 URL 也要带上 sessionId + cwd（cwd 来自 /rp-tools/session）
-            const cardUrl = typeof cardRel === 'string' && cardRel ? cardImageUrl(cardRel, state?.cwd ?? '', sessionId) : '';
             const setField = (field, value) => {
               const n = [...chars];
               n[i] = { ...n[i], [field]: value };
@@ -1388,33 +1415,31 @@ window.__ModuleLoader__.load({
             // 进阶字段（设定层）：平时折叠，避免 5 个角色就把面板撑得很长
             const filled = ['personality', 'speech', 'behavior', 'first_mes', 'mes_example', 'relations']
               .filter((f) => String(c[f] ?? '').trim());
-            // 立绘/卡面：**有图就放左边**（两列布局），文字在右边 —— 图竖着排会把面板拉得很长，
-            // 而且人眼扫列表时先看图。生成的立绘优先，没有才用导入的卡面。
-            const shownUrl = portrait?.url || cardUrl || '';
+            // 立绘：**只有生成出来的**才挂在角色行上（有图就两列，图在左）。
+            // 卡面不再是角色的立绘 —— 它现在是「世界设定」旁边那张封面。
+            const shownUrl = portrait?.url || '';
             const faceLabel = portrait?.url
               ? `立绘${portrait.style ? ` · ${portrait.style}` : ''}${portrait.elapsedMs ? `（${(portrait.elapsedMs / 1000).toFixed(1)}s）` : ''}`
-              : (cardUrl ? '卡面（导入时带的）' : '');
+              : '';
             const face = shownUrl
               ? h('div', { key: 'face', className: 'charface' }, [
                 h('img', { key: 'i', src: shownUrl, alt: `${pkey} 立绘`, loading: 'lazy' }),
                 h('div', { key: 'l', className: 'dim' }, faceLabel),
                 h('div', { key: 'a', className: 'row' }, [
                   h('a', { key: 'o', className: 'dim', href: shownUrl, target: '_blank', rel: 'noreferrer' }, '大图'),
-                  portrait
-                    ? h('button', {
-                      key: 'x', className: 'tiny',
-                      onClick: () => {
-                        setPortraits((p) => { const n = { ...p }; delete n[pkey]; return n; });
-                        // 只收起显示是不够的：会话配置里那份还得清，否则下次打开又装回来
-                        API.portraitSave({ sessionId, name: pkey, action: 'clear' })
-                          .then((res) => {
-                            if (!res?.ok) return;
-                            setDraft((d) => (d ? { ...d, portraits: res.portraits ?? {} } : d));
-                          })
-                          .catch(() => { /* 清不掉也只是下次还看得到，不打断 */ });
-                      },
-                    }, '收起')
-                    : null,
+                  h('button', {
+                    key: 'x', className: 'tiny',
+                    onClick: () => {
+                      setPortraits((p) => { const n = { ...p }; delete n[pkey]; return n; });
+                      // 只收起显示是不够的：会话配置里那份还得清，否则下次打开又装回来
+                      API.portraitSave({ sessionId, name: pkey, action: 'clear' })
+                        .then((res) => {
+                          if (!res?.ok) return;
+                          setDraft((d) => (d ? { ...d, portraits: res.portraits ?? {} } : d));
+                        })
+                        .catch(() => { /* 清不掉也只是下次还看得到，不打断 */ });
+                    },
+                  }, '收起'),
                 ]),
               ])
               : null;
@@ -1508,7 +1533,7 @@ window.__ModuleLoader__.load({
             ]),
             ]);
           }),
-          h('button', { key: 'add', className: 'tiny', onClick: () => patch({ characters: [...chars, { name: '', appearance: '' }] }) }, '+ 添加人物'),        ]),
+          h('button', { key: 'add', className: 'tiny', onClick: () => patch({ characters: [...chars, { name: '', appearance: '' }] }) }, '+ 添加角色'),        ]),
 
         // 随机表：**没有表时整张卡片不渲染**（一张「RP 表格 / 随机表（0）」摆在面板里
         // 只是噪音）；真建了表才出现，掷表入口也随之回来。
@@ -2130,7 +2155,7 @@ window.__ModuleLoader__.load({
             `全文 ${res.files.markdown}`,
             res.files.opening ? `开场白引导 ${res.files.opening}` : '',
             // 故事书（卡里没有角色字段）不建人物，说清楚免得用户去面板里找不到
-            res.isCharacterCard === false ? '卡里没有角色字段 → 没建人物（用 rp_character 或手动添加）' : '',
+            res.isCharacterCard === false ? '卡里没有角色描述/性格 → 没建角色卡（封面已放到世界设定旁）' : '',
             preset.ok ? '预设已切到 dm' : (preset.note ?? '预设未切换'),
           ].filter(Boolean);
           setMsg({ kind: preset.ok ? 'ok' : 'warn', text: bits.join(' · ') });
