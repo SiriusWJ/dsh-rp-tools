@@ -147,7 +147,37 @@ globalThis.fetch = async (url, options = {}) => {
         json: 'rp-cards/长安.card.json', image: 'rp-cards/长安.card.png',
       },
       lore: { added: 12, skipped: 3 }, markdown: { chars: 5000, truncated: false },
+      placeholders: { total: 7, counts: { '{{user}}': 5, '{{char}}': 2 } },
       opening: '【开局】已导入卡组《长安》，不要再问世界从哪来，直接开团。',
+    });
+  }
+  // ── 下面是 RP 面板（右侧栏页签）要用的三条 ──────────────────────────
+  if (target.startsWith('/rp-tools/lore')) {
+    return reply({
+      ok: true, exists: true, file: 'D:\\Story\\rp-worldbook.md', relative: 'rp-worldbook.md',
+      chars: 1234, total: 2, constant: 1, keyed: 1,
+      entries: [
+        { title: '长安城', keys: ['长安'], constant: false, order: 0, probability: 100, chars: 40, preview: '天宝年间的长安城，坊市分明。' },
+        { title: '世界总纲', keys: [], constant: true, order: 0, probability: 100, chars: 30, preview: '盛唐末年，边镇不稳。' },
+      ],
+      note: '只有命中的条目才进每轮上下文。',
+    });
+  }
+  if (target.startsWith('/rp-tools/session')) {
+    return reply({
+      ok: true, isDm: true, preset: 'dm',
+      session: {
+        sessionId: 'session-abc', preset: 'dm', defaultStyle: null,
+        campaign: { name: '长安', prompt_prefix: '' }, characters: [], characterIndex: [],
+        tables: [], world: '天宝年间。', state: {}, styleNotes: '', portraits: {},
+      },
+    });
+  }
+  if (target.startsWith('/rp-tools/state')) {
+    return reply({
+      ok: true, file: 'C:\\...\\styles.json',
+      config: { defaultStyle: 'manga', styles: { manga: { label: '黑白漫画' } }, comfyui: {}, negative: '', cards: {} },
+      styles: [{ key: 'manga', label: '黑白漫画', builtin: true }],
     });
   }
   return reply({ ok: false, error: `未预期的请求：${target}` });
@@ -179,7 +209,17 @@ let startedSessions = 0;
 const selectedPresets = [];
 const ctx = {
   slots: slotsStub,
-  inject: () => () => {},
+  // 右栏那两个服务：回调要真的跑，否则 `sidebar.right.pane.tab` 不会被注册（面板也就无从渲染）
+  inject: (names, fn) => {
+    if (typeof fn === 'function' && Array.isArray(names) && names.includes('sidebarRightTabs')) {
+      fn({
+        slots: slotsStub,
+        sidebarRightTabs: { register: () => () => {} },
+        sidebarRight: { openTab: () => {}, isExpanded: () => false, active: () => null },
+      });
+    }
+    return () => {};
+  },
   effect: () => () => {},
   get: (name) => {
     if (name === 'remote') {
@@ -423,6 +463,36 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.equal(chips2[0].props['data-row'], 'true', '应仍按「在那一行里」的样式渲染');
   assert.equal(chips2[0].props.style?.position, 'fixed', '没有 portal 就用量出来的位置贴上去');
   assert.equal(chips2[0].props.style?.left, '306px', '横向应接在那一行最后一个 chip 后面（right+6）');
+}
+
+// ── 关键断言 ④：RP 面板要能看到世界书条目（用户提的问题）───────────────────
+{
+  const tab = slotRegs.find((r) => r.name === 'sidebar.right.pane.tab');
+  assert.ok(tab, '应注册右侧栏面板页签（RP 面板本体）');
+  rt.cells = [];
+  const store = { current: SID, byId: { [SID]: { blank: false, cwd: 'D:\\Story', projectionValues: { agentPreset: 'dm' } } } };
+  const panel = render({
+    sessionId: SID,
+    useSessions: (sel) => sel(store),
+    useInput: (sel) => sel({ draft: '' }),
+    inputActions,
+  }, tab.component);
+  assert.ok(panel, 'DM 会话下 RP 面板应渲染');
+  await tick(60);              // 等 reload() 里的 session / state / lore 三个请求回来
+  // 注意：**不能**清 rt.cells —— 那是组件自己的 state（draft/lore 都在里面），
+  // 清掉等于重新挂载，界面会退回「读取中…」，什么都断言不到。
+  const panel2 = render({
+    sessionId: SID,
+    useSessions: (sel) => sel(store),
+    useInput: (sel) => sel({ draft: '' }),
+    inputActions,
+  }, tab.component);
+  const text = textOf(panel2);
+  assert.ok(text.includes('世界书（2 条）'), '面板应显示世界书条目数（含导入进来的那些）');
+  assert.ok(text.includes('长安城'), '面板应列出世界书条目标题');
+  assert.ok(text.includes('触发词：长安'), '面板应显示条目的触发词');
+  assert.ok(text.includes('世界总纲') && text.includes('常驻'), '面板应标出常驻条目');
+  assert.ok(text.includes('rp-worldbook.md'), '面板应给出世界书文件路径');
 }
 
 console.log('客户端冒烟测试通过：');

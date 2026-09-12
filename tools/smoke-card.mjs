@@ -14,7 +14,7 @@ import { pathToFileURL } from 'node:url';
 const here = new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const mod = (p) => import(pathToFileURL(join(here, '..', 'lib', p)).href);
 const { readPngTextChunks, decodeCardPng } = await mod('card-png.js');
-const { buildImport, worldBookMarkdown, pickGreeting, isAdText, cardToCharacter, cardToMarkdown, buildOpeningPrompt } = await mod('card-import.js');
+const { buildImport, worldBookMarkdown, pickGreeting, isAdText, cardToCharacter, cardToMarkdown, buildOpeningPrompt, resolvePlaceholders, describePlaceholders } = await mod('card-import.js');
 
 let pass = 0; let fail = 0;
 const check = (name, got, want) => {
@@ -214,6 +214,51 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card } = await import(
   const bare = buildOpeningPrompt({ character: { name: '无开场' }, stats: {}, }, {});
   check('开场指令：无开场白时不出现参考段', bare.includes('只作场景与文风参考'), false);
   check('开场指令：缺文件名时有兜底', bare.includes('rp-worldbook.md'), true);
+}
+
+// ── 占位符展开（导入时就处理，不留到注入端）─────────────────────────────
+{
+  const r = resolvePlaceholders('{{user}} 拉着 {{char}} 的手，<USER> 说 <BOT> 笑了。', { userLabel: '阿岚', charLabel: '沈砚' });
+  check('占位符：{{user}} → 玩家称呼', r.text.includes('阿岚 拉着'), true);
+  check('占位符：{{char}} → 卡名', r.text.includes('沈砚 的手'), true);
+  check('占位符：<USER>/<BOT> 也认', r.text.includes('阿岚 说 沈砚 笑了'), true);
+  check('占位符：统计 {{user}} 次数', r.counts['{{user}}'], 1);
+  check('占位符：统计尖括号写法', (r.counts['<USER>'] ?? 0) + (r.counts['<CHAR>'] ?? 0), 2);
+  check('占位符：展开后不再有花括号', /\{\{/.test(r.text), false);
+  check('占位符：总数', r.total, 4);
+
+  check('占位符：默认称呼是「玩家」', resolvePlaceholders('{{user}}').text, '玩家');
+  check('占位符：给了卡名才会换 {{char}}', resolvePlaceholders('{{char}}', { charLabel: '沈砚' }).text, '沈砚');
+  check('占位符：时间类直接删掉', resolvePlaceholders('现在是 {{time}}。').text, '现在是 。');
+  check('占位符：未知花括号只去括号留文字', resolvePlaceholders('{{random}}').text, 'random');
+  check('占位符：没有占位符时原样返回', resolvePlaceholders('普通文本').text, '普通文本');
+  check('占位符：空输入不炸', resolvePlaceholders('').text, '');
+  check('占位符：统计文案可读', describePlaceholders({ '{{user}}': 2, '{{char}}': 0 }), '已展开占位符：{{user}}×2');
+  check('占位符：没有命中就不出文案', describePlaceholders({}), '');
+
+  // 端到端：字段 / 世界书 / world / 卡全文都要过一遍
+  const png = makePng([textChunk('ccv3', card({
+    name: '沈砚',
+    description: '{{char}}是{{user}}的师兄。',
+    first_mes: '广告 deepseektavern.com',
+    alternate_greetings: ['{{char}}推门进来，看见{{user}}还在睡。'],
+    scenario: '{{user}}拜入{{char}}门下。',
+    character_book: { entries: [{ name: '拜师', keys: ['拜师'], content: '{{user}}在{{char}}面前跪了三下。' }] },
+  }, 'chara_card_v3'))]);
+  const decoded = decodeCardPng(png);
+  const imp = buildImport(decoded, { userLabel: '阿岚' });
+  check('导入展开：角色字段里没有占位符', /\{\{/.test(imp.character.personality), false);
+  check('导入展开：角色字段用上玩家称呼', imp.character.personality.includes('阿岚'), true);
+  check('导入展开：开场白里没有占位符', /\{\{/.test(imp.character.first_mes), false);
+  check('导入展开：开场白用了两个名字', imp.character.first_mes.includes('沈砚') && imp.character.first_mes.includes('阿岚'), true);
+  check('导入展开：世界书正文里没有占位符', /\{\{/.test(imp.worldBookMarkdown), false);
+  check('导入展开：世界书正文换成两个名字', imp.worldBookMarkdown.includes('阿岚在沈砚面前跪了三下'), true);
+  check('导入展开：world 字段里没有占位符', /\{\{/.test(imp.world), false);
+  check('导入展开：给出占位符总数', imp.placeholders.total >= 6, true);
+  check('导入展开：摘要里带上统计', imp.summary.some((s) => s.includes('已展开占位符')), true);
+  const md = cardToMarkdown(decoded, { userLabel: '阿岚' });
+  check('导入展开：卡全文里也没有占位符', /\{\{/.test(md.text), false);
+  check('导入展开：卡全文明说占位符已展开', md.text.includes('占位符已展开'), true);
 }
 
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);

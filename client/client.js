@@ -45,6 +45,7 @@ window.__ModuleLoader__.load({
       cards: (params) => jget(`/rp-tools/cards?${new URLSearchParams(params ?? {}).toString()}`),
       card: (path) => jget(`/rp-tools/card?path=${encodeURIComponent(path)}`),
       cardImport: (body) => jpost('/rp-tools/card-import', body),
+      lore: (sessionId) => jget(`/rp-tools/lore?sessionId=${encodeURIComponent(sessionId)}`),
     };
 
     /** 卡面图（导入时复制到工作区的那张）走卡库只读路由。 */
@@ -107,6 +108,13 @@ window.__ModuleLoader__.load({
 .rpt .tool { padding: 9px 0; border-top: 1px solid color-mix(in oklab, currentColor 9%, transparent); }
 .rpt .tool:first-child { border-top: none; }
 .rpt .scroll { max-height: 320px; overflow: auto; }
+/* 世界书条目列表：每条一行标题 + 触发词 + 正文预览，紧凑但不能糊成一团 */
+.rpt .lorelist { max-height: 260px; }
+.rpt .loreitem { padding: 6px 0; border-top: 1px solid color-mix(in oklab, currentColor 9%, transparent); }
+.rpt .loreitem:first-child { border-top: none; }
+.rpt .loreitem .loretitle { font-weight: 600; }
+.rpt .loreitem .loreprev { font-size: 12px; opacity: .78; white-space: pre-wrap; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .rpt .charline { display: grid; grid-template-columns: 118px minmax(0,1fr) auto auto; gap: 6px; align-items: center; }
 /* 一个角色的整块（一行输入 + 可选立绘）：立绘落在这块里面，紧挨该角色 */
 .rpt .charbox { padding: 8px 0; border-top: 1px solid color-mix(in oklab, currentColor 9%, transparent); }
@@ -359,7 +367,7 @@ window.__ModuleLoader__.load({
             defaultStyle: draft.defaultStyle,
             baseUrl: draft.comfyui?.baseUrl,
             negative: draft.negative,
-            cards: { root: draft.cards?.root ?? '' },
+            cards: { root: draft.cards?.root ?? '', userLabel: draft.cards?.userLabel ?? '' },
             styles,
             styleOps,
           });
@@ -514,11 +522,19 @@ window.__ModuleLoader__.load({
               placeholder: 'PNG 故事书库的根目录（留空 = 内置默认）',
               onChange: (e) => setDraft({ ...draft, cards: { ...(draft.cards ?? {}), root: e.target.value } }),
             }),
+            h('span', { key: 'u1' }, '玩家称呼'),
+            h('input', {
+              key: 'u2', type: 'text', value: draft.cards?.userLabel ?? '',
+              placeholder: '导入卡组时把 {{user}} 换成它（默认「玩家」）',
+              onChange: (e) => setDraft({ ...draft, cards: { ...(draft.cards ?? {}), userLabel: e.target.value } }),
+            }),
           ]),
           h('div', { key: 'note', className: 'dim' },
             '负面词对所有会话与风格生效；krea2 turbo 默认 CFG=1 时负向不参与计算 —— 想让负面真正起作用，把对应风格的 CFG 调到 1.5~2.5。'),
           h('div', { key: 'note2', className: 'dim' },
             '卡库目录是「导入 PNG 故事书」扫描角色卡的地方：目录下的 cards/<分类>/*.png 会被列出来。改完记得保存。'),
+          h('div', { key: 'note3', className: 'dim' },
+            '卡里的 {{user}} / {{char}} / <USER> 等占位符在**导入时**展开成「玩家称呼」与卡名 —— 留着的话 DM 只会看到一串全角括号。'),
           // 预览结果就放在这条配置里（卡片的「试出」按钮在风格库那边，滚过来即可见）
           preview ? h('div', { key: 'prev', className: 'card', ref: previewRef }, [
             h('div', { key: 'l', className: 'row' }, [
@@ -599,6 +615,8 @@ window.__ModuleLoader__.load({
       const [msg, setMsg] = React.useState(null);
       const [preview, setPreview] = React.useState(null);
       const [rolls, setRolls] = React.useState([]);
+      // 世界书条目（面板上要能看见导入进来的条目）
+      const [lore, setLore] = React.useState(null);
       const [tableDraft, setTableDraft] = React.useState({ name: '', dice: '', entries: '' });
       // 每个角色自己的立绘：{ [角色名]: { url, style, elapsedMs } }
       const [portraits, setPortraits] = React.useState({});
@@ -616,6 +634,11 @@ window.__ModuleLoader__.load({
           setStyles(global);
           setDraft(JSON.parse(JSON.stringify(data.session)));
           setMsg(null);
+          // 世界书条目单独取（放在工作区的文件里，不在会话配置里）
+          try {
+            const l = await API.lore(sessionId);
+            setLore(l?.ok ? l : { exists: false, total: 0, entries: [], error: l?.error });
+          } catch { setLore({ exists: false, total: 0, entries: [] }); }
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }
@@ -648,6 +671,17 @@ window.__ModuleLoader__.load({
           setMsg({ kind: 'ok', text: '已保存（仅本会话）' });
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
+      /** 读世界书条目（面板「世界书」卡片用；只读，文件本身由用户/DM 维护）。 */
+      async function loadLore() {
+        setBusy('lore');
+        try {
+          const res = await API.lore(sessionId);
+          setLore(res?.ok ? res : { exists: false, total: 0, entries: [], error: res?.error });
+        } catch (error) {
+          setLore({ exists: false, total: 0, entries: [], error: String(error?.message ?? error) });
         } finally { setBusy(''); }
       }
 
@@ -733,6 +767,42 @@ window.__ModuleLoader__.load({
             onChange: (e) => patch({ world: e.target.value }),
           }),
           h('div', { key: 'd', className: 'dim' }, `本会话配置文件（DM 也能用 read/write 直接改）：${state.file ?? ''}`),
+        ]),
+
+        // 世界书：条目都在工作区的 rp-worldbook.md 里，只有命中的才进每轮上下文。
+        // 之前面板看不到它，导入完一本故事书后完全不知道「条目到底进没进」（用户提的）。
+        h('div', { key: 'lore', className: 'card' }, [
+          h('div', { key: 'h', className: 'row' }, [
+            h('h4', { key: 't' }, `世界书（${lore?.total ?? '…'} 条）`),
+            h('span', { key: 'sep', className: 'sep' }),
+            h('button', { key: 'r', className: 'tiny', onClick: () => void loadLore(), disabled: busy === 'lore' },
+              busy === 'lore' ? '读取中…' : '刷新'),
+          ]),
+          lore && lore.exists === false
+            ? h('div', { key: 'none', className: 'dim' }, '这个会话的工作区里还没有 rp-worldbook.md。用「📖 导入故事书」导入一张卡，或让 DM 用 rp_lore 生成模板。')
+            : null,
+          lore && lore.exists
+            ? h('div', { key: 'stat', className: 'dim' },
+              `${lore.total} 条（常驻 ${lore.constant}｜带触发词 ${lore.keyed}）· ${lore.chars} 字 · ${lore.relative ?? 'rp-worldbook.md'}`)
+            : null,
+          lore && lore.exists
+            ? h('div', { key: 'list', className: 'scroll lorelist' }, (lore.entries ?? []).map((e, i) => h('div', { key: `e${i}`, className: 'loreitem' }, [
+              h('div', { key: 'h', className: 'row' }, [
+                h('span', { key: 't', className: 'loretitle' }, e.title),
+                e.constant ? h('span', { key: 'c', className: 'badge ok' }, '常驻') : null,
+                e.order ? h('span', { key: 'o', className: 'badge' }, `order ${e.order}`) : null,
+                e.probability !== undefined && e.probability < 100 ? h('span', { key: 'p', className: 'badge warn' }, `${e.probability}%`) : null,
+                h('span', { key: 'n', className: 'dim' }, `${e.chars} 字`),
+              ]),
+              h('div', { key: 'k', className: 'dim' },
+                (Array.isArray(e.keys) && e.keys.length) ? `触发词：${e.keys.join('、')}` : '无触发词（非常驻 → 永远不会被触发，建议补 keys 或 constant）'),
+              h('div', { key: 'p', className: 'loreprev' }, e.preview),
+            ])))
+            : null,
+          lore && lore.exists
+            ? h('div', { key: 'note', className: 'dim' },
+              `只有命中的条目才进每轮上下文。文件：${lore.file ?? ''} —— 可以直接编辑，DM 也能用 read/write 维护。`)
+            : null,
         ]),
 
         h('div', { key: 'chars', className: 'card' }, [
@@ -1419,6 +1489,12 @@ window.__ModuleLoader__.load({
           + `｜开场白来源：${preview.character?.greetingSource === 'alternate_greetings'
             ? `备用开场白（共 ${preview.character?.greetingAlternatives} 条）`
             : preview.character?.greetingSource === 'first_mes' ? 'first_mes' : '无'}`),
+        // 卡里常见的 {{user}} / {{char}} / <USER>：导入时就会展开成玩家称呼与卡名，
+        // 这里先摊给用户看（免得「导入后我卡里的 {{user}} 怎么没了」）
+        preview.placeholders?.total
+          ? h('div', { key: 'ph', className: 'dim' },
+            `占位符：${Object.entries(preview.placeholders.counts ?? {}).map(([k, n]) => `${k}×${n}`).join('、')} → 导入时展开为玩家称呼与卡名`)
+          : null,
         preview.world ? h('div', { key: 'w', className: 'prevbox' }, preview.world) : null,
         preview.character?.personality ? h('div', { key: 'p', className: 'prevbox' }, preview.character.personality) : null,
         h('label', { key: 'auto', className: 'cb' }, [
@@ -1440,6 +1516,10 @@ window.__ModuleLoader__.load({
       const resultCard = result ? h('div', { key: 'res', className: 'prev' }, [
         h('div', { key: 'h', className: 'row' }, [h('strong', { key: 't' }, '导入完成'), h('span', { key: 'b', className: 'badge' }, result.name)]),
         h('div', { key: 'f', className: 'mono dim' }, `世界书 ${result.files?.world}（+${result.lore?.added ?? 0} 条）｜全文 ${result.files?.markdown}｜卡面 ${result.files?.image ?? '—'}`),
+        result.placeholders?.total
+          ? h('div', { key: 'ph', className: 'dim' },
+            `已展开占位符 ${result.placeholders.total} 处：${Object.entries(result.placeholders.counts ?? {}).map(([k, n]) => `${k}×${n}`).join('、')}`)
+          : null,
         result.previousWorldChars
           ? h('div', { key: 'w', className: 'dim' }, `注意：本会话原有的世界设定（${result.previousWorldChars} 字）已被这次的卡组设定覆盖；世界书文件是追加合并的，没动你手写的条目。`)
           : null,

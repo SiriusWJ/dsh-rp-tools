@@ -669,8 +669,10 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     join(libRoot, 'cards', '测试分类', '烟测卡.card.png'),
     simpleCardPng('烟测卡', {
       description: '设定正文',
-      scenario: '情境正文',
-      character_book: { entries: [{ name: '烟测条目', keys: ['烟测'], content: '条目正文' }] },
+      // 占位符：导入时必须**就地展开**（{{user}} → 玩家，{{char}} → 卡名）。
+      // 留给注入端的话，neutralizeMustache 会把它变成全角括号，DM 看到的是一串 ｛｛user｝｝。
+      scenario: '{{char}}的情境正文：{{user}}站在门外',
+      character_book: { entries: [{ name: '烟测条目', keys: ['烟测'], content: '{{user}}来到{{char}}的门前。' }] },
     }),
   );
   writeFileSync(join(libRoot, 'cards', '解压密码Wait', '坏卡.png'), simpleCardPng('坏卡'));
@@ -699,6 +701,10 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('card：规范识别 v3', preview.json.kind, 'v3');
   check('card：世界书一条', preview.json.stats?.entries, 1);
   check('card：情境进了 world 预览', String(preview.json.world).includes('情境正文'), true);
+  check('card：{{user}} 预览时就已展开成玩家称呼', String(preview.json.world).includes('玩家站在门外'), true);
+  check('card：{{char}} 已展开成卡名', String(preview.json.world).includes('烟测卡的情境正文'), true);
+  check('card：预览里不再有占位符', /\{\{/.test(String(preview.json.world)), false);
+  check('card：返回占位符统计', (preview.json.placeholders?.counts?.['{{user}}'] ?? 0) >= 1, true);
 
   // 路径逃逸：卡库之外、非 .png、不存在的文件都必须是 400
   const escape = await callGet('/rp-tools/card', '?path=../../../../Windows/win.ini');
@@ -738,6 +744,8 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   const sess = await callGet('/rp-tools/session', `?sessionId=${IMPORT_SID}`);
   check('导入：会话角色卡已写入', sess.json.session?.characters?.[0]?.name, '烟测卡');
   check('导入：会话世界已写入', String(sess.json.session?.world).includes('情境正文'), true);
+  check('导入：会话世界里的占位符已展开', String(sess.json.session?.world).includes('玩家站在门外'), true);
+  check('导入：返回占位符统计', (imported.json.placeholders?.total ?? 0) >= 2, true);
   check('导入：会话立绘已登记', sess.json.session?.portraits?.['烟测卡']?.card, rel);
   check('导入：战役名补成卡名', sess.json.session?.campaign?.name, '烟测卡');
 
@@ -758,12 +766,27 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   mod.__debug.setSessionCwd(IMPORT_SID, ws);
   const sessObj = (await callGet('/rp-tools/session', `?sessionId=${IMPORT_SID}`)).json.session;
   const turnHit = mod.__debug.buildTurnContext(sessObj, '我们来聊聊烟测这件事', { sessionId: IMPORT_SID, turn: 3 });
-  check('导入的世界书按触发词进注入', turnHit.includes('条目正文'), true);
+  check('导入的世界书按触发词进注入', turnHit.includes('玩家来到烟测卡的门前'), true);
   const turnMiss = mod.__debug.buildTurnContext(sessObj, '完全无关的一句话', { sessionId: IMPORT_SID, turn: 3 });
-  check('没命中触发词就不注入该条目', turnMiss.includes('条目正文'), false);
+  check('没命中触发词就不注入该条目', turnMiss.includes('玩家来到烟测卡的门前'), false);
   const standing = mod.__debug.buildStandingText(sessObj);
   check('导入的世界设定进了常驻段', standing.includes('情境正文'), true);
   check('导入的角色卡进了角色索引', standing.includes('烟测卡'), true);
+  // 注入端的中和是**兜底**：走到这一步说明导入没展开干净，那就至少别变成全角括号
+  check('注入文本里没有残留占位符', /\{\{/.test(`${turnHit}${standing}`), false);
+
+  // ── 世界书面板数据源：/rp-tools/lore ────────────────────────────────
+  const loreRes = await callGet('/rp-tools/lore', `?sessionId=${IMPORT_SID}&workspace=${encodeURIComponent(ws)}`);
+  check('lore 路由 status=200', loreRes.status, 200);
+  check('lore：条数与文件一致', loreRes.json.total, 2);   // 用户手写 1 条 + 导入 1 条
+  check('lore：能列出导入的条目', loreRes.json.entries?.some((e) => e.title === '烟测条目'), true);
+  const loreEntry = loreRes.json.entries?.find((e) => e.title === '烟测条目');
+  check('lore：条目带触发词', loreEntry?.keys, ['烟测']);
+  check('lore：正文已展开占位符', String(loreEntry?.preview).includes('玩家来到烟测卡的门前'), true);
+  check('lore：能列出用户手写的条目', loreRes.json.entries?.some((e) => e.title === '我自己的条目'), true);
+  check('lore：给出文件绝对路径', typeof loreRes.json.file === 'string' && loreRes.json.file.endsWith('rp-worldbook.md'), true);
+  const loreMissing = await callGet('/rp-tools/lore', `?sessionId=${crypto.randomUUID()}`);
+  check('lore：拿不到工作区时不报错、只说明', loreMissing.json.exists, false);
 
   // 卡面路由：只服务卡库内的 png
   const imgRoute = routes.get('/rp-tools/card-image');
