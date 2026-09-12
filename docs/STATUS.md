@@ -1,6 +1,6 @@
 # 开发状态（STATUS）
 
-> 快照时间：2026-09-12 · 版本 1.8.0 · 状态：**可用；架构已收敛为「一切都在 dm 预设作用域」，262 条断言全绿（含会话隔离回归）**
+> 快照时间：2026-09-12 · 版本 1.11.0 · 状态：**可用；修掉一处「测试全绿、生产却完全没注入」的重大缺陷**
 > 这份文档记录「现在做到哪了、什么验证过、什么没验证、坑在哪」——给未来的自己和协作者看。
 
 ---
@@ -15,8 +15,8 @@
 | `rp_illustrate` / `rp_styles` | ✅ 已验证 | 出图、风格列举、aspect→尺寸换算 |
 | **PNG 故事书导入** | ✅ 宿主已验证（界面待确认） | 工作区那一行的「📖 导入 PNG 故事书」：列卡库（3269 张，服务端过滤/分页）→ 预览 → 导入。世界书**追加合并**进 `<工作区>/rp-worldbook.md`、卡全文 `rp-sessions/<会话 id>/cards/<slug>.md`（超预算条目的去处）、卡面复制当立绘；角色/世界/战役名写进会话配置；自动切 `dm` 预设 + 发开场指令。真卡库实测：160/160 解析成功（中位 1ms）、642 条目的卡导入 25 条 |
 | `rp_character`（8 字段） | ✅ 已验证 | 增删查 + 立绘；字段含 `first_mes` / `mes_example` 两个**样本字段**（给样本 > 给形容词）。导入的卡面会作为默认立绘显示在角色卡下面 |
-| **提示词注入（两条通道）** | ✅ **已实测生效** | `rp:standing`(order 210) 放战役名/世界设定/**角色索引**；`rp:turn`(order 20) 放**当前状态 + 世界书命中 + 在场角色详细卡**。实测：Cordis 会话为空、dm 会话三条通道齐全 |
-| **世界书** | ✅ 已实现（未实跑） | 会话工作区的 `rp-worldbook.md`；`##` 分条、`keys/constant/order/prob` 标记；触发式注入 + 预算 + 被裁列出标题；`rp_lore` 按条补读 |
+| **提示词注入（两条通道）** | ✅ 代码已修，**待重启实测** | `rp:standing`(order 210) 放战役名/世界设定/**角色索引**/**常驻世界书条目**；`rp:turn`(order 20，runtime context) 放**当前状态 + 命中条目 + 在场角色详细卡**。⚠️ 1.10.x 及以前这两条**在生产里一次都没生效**（会话 id 取成了 `default` + dm 预设关掉了 runtime context），修法见 §7 的 1.11.0；用 `tools/verify-injection.mjs` 读会话日志验证 |
+| **世界书** | ✅ 已实现（未长跑验证） | 会话工作区的 `rp-worldbook.md`；`##` 分条、`keys/constant/order/prob` 标记；常驻进系统提示、命中进每轮快照 + 预算 + 被裁列出标题；**空壳条目（正文只有模板残留）一律不注入**并在面板折叠提示；`rp_lore` 按条补读 |
 | **状态追踪（`rp_state`）** | ✅ 已实现（未长跑验证） | 场景/时间/地点/在场/线索 + 队伍（状态·持有·伤病·目标）+ 自由旗标；空串即清除；注入在 turn 通道最前；多轮未更新会提醒 |
 | `rp_session`（会话隔离） | ✅ 已验证 | A/B 两会话实测互不干扰 |
 | `rp_scenes`（整幕批量） | ⚠️ 已实现，未实跑 | 逻辑与 `rp_illustrate` 同源，未用真实 `scenes_*.json` 跑过整幕 |
@@ -147,26 +147,33 @@ PASS  agent/created 不误登记非 dm =false
 | 9 | 预设 id 硬编码为 `dm` | 预设目录改名则判定失效 | 客户端、`markDmSession`、导入时的 `agentPresets.select()` 都写死 `'dm'`；要支持改名就提成常量/配置项 |
 | 11 | 故事书导入的**界面**未肉眼确认 | 点「导入并开始」后是否真的切预设 + 发开场 | 宿主 4 条路由已 HTTP 实测（列表 3269 张、解析成功、逃逸 400）；`remote.agentPresets.select()` 与 `uiWorkspace.startSession()` 只在页面里能验。**失败时面板会显示原因**，不会静默 |
 | 10 | ~~fork 分叉后会话配置丢失~~ | ~~新建分支后世界 / 角色卡 / 随机表全没了~~ | **已修（待重启确认）**：`session/created` 时按 `header.parentSession` + `header.isSeeded` 判定「这是一次 fork」，把父会话的 RP 配置复制给子会话（快照语义，父子之后各改各的）；子会话已有配置则不覆盖；`isSeeded` 对 resume 为 false，所以重启恢复不会被误判。**宿主半侧改动，需重启生效** |
+| 12 | ~~注入在生产里完全没生效~~ | 世界设定/角色卡/世界书**一次都没进过上下文**（只有占位文案） | **已修（待重启实测）**：① 会话 id 从 `ctx.agent.id`（不存在的属性）改为装配上下文的 `context.agent`；② dm 预设的 `suppressRuntimeContext: true` 改为显式 `false`（`session-filter-v2.mjs`）。用 `node tools/verify-injection.mjs` 读会话日志验收：修好后应看到 `世界设定=YES` 与 `轮次快照>0` |
+| 13 | 世界书里「状态/历史」类条目 | 当常驻会一直占每轮上下文，且会过期 | 面板已给类别标签与「常驻存疑」提示，**但不自动改语义**（不替用户把 constant 关掉）。待定：是否把这类条目自动降级为触发式，或引导改写成 `rp_state` |
+| 14 | 「很多卡不像世界书、像历史状态」 | 规则解码出来的条目质量不稳 | 用户问过「要不要导入时让临时 agent 来填」。**建议不走额外 agent**：卡全文已经落在 `rp-sessions/<id>/cards/<slug>.md` 里，让 DM 在开局那一轮顺手整理更省（上下文已经在了、由真人看着改）。待定：面板给一个「让 DM 整理世界书」的按钮（发一条指令） |
 
 ---
 
 ## 5. 路线图（按优先级）
 
-1. **肉眼确认两处界面**：① 头部「🎲 RP」→ 右栏 RP 面板；② 工作区那一行的「📖 导入 PNG 故事书」→
+1. **重启后跑一次 `node tools/verify-injection.mjs`** 验收 1.11.0 的修复：全新的 DM 会话里
+   `世界设定=YES`、`轮次快照>0`（旧会话的历史改不了，只有新回合才走新代码）。
+2. **肉眼确认两处界面**：① 头部「🎲 RP」→ 右栏 RP 面板；② 工作区那一行的「📖 导入 PNG 故事书」→
    完整走一遍「选卡 → 导入并开始」，确认预设真切成 `dm`、开场指令真发出、工作区真落了文件。
    之后读 `_agent-probe.json`：若 `options.scalars.preset === 'dm'`，说明宿主侧 `agent/created`
    也能直接识别，可删掉 `rp-bridge.mjs` 里的登记段，把三条路径收敛成一条。
-2. **让 DM 首轮把导入的设定拆成 8 个字段**（`personality` 目前整段塞进去，`appearance`/`speech`/
+3. **让 DM 首轮把导入的设定拆成 8 个字段**（`personality` 目前整段塞进去，`appearance`/`speech`/
    `behavior`/`relations` 留空等 DM 提炼；`rp_character` 已支持）。
-3. **角色一致性**：基于 Qwen-Image-Edit（本机 `qwen_image_2512_fp8_e4m3fn` + `Qwen-Image-Edit-2509-Lightning-4steps` LoRA）做「参考图 → 同角色新姿势」，作为 `rp_illustrate` 的可选 `reference` 参数。导入的卡面已经在工作区里，可直接当参考图。
-4. **LoRA 强度**：风格条目加 `loraStrength`，设置页给滑块/输入框。
-5. **整幕流水线**：用真实 `scenes_*.json` 跑通 `rp_scenes`，并把「幕 → 多格 → 拼页」流程写进文档。
-6. **随机表联动**：`rp_table` 掷出的结果可以一键转为配图提示词（"掷到幽灵 → 顺手出一张幽灵立绘"）。
-7. **导出**：把整个会话的 RP 配置（角色卡/世界/随机表/出图历史）导出成一份复盘文档。
-8. **预设 id 参数化**：把硬编码的 `'dm'` 提成常量/配置，支持预设目录改名。
-9. **ST 式正则表：不做**（2026-09-12 决定）。`{{user}}` 这类是**宏**（已用宿主变量 `systemPrompt.variable` 实现），
-   正则表是另一件事，且要求把用户正则放进隔离执行器（参考实现如此），与轻量定位不符。详见 HANDOFF §5.11。
-10. **卡库可搜索化增强**：现在按卡名/作者/标签搜；可以再加「按世界书条目数 / 分类多选 / 只看 v3 卡」。`/rp-tools/cards` 的参数已经留好了扩展位。
+4. **角色一致性**：基于 Qwen-Image-Edit（本机 `qwen_image_2512_fp8_e4m3fn` + `Qwen-Image-Edit-2509-Lightning-4steps` LoRA）做「参考图 → 同角色新姿势」，作为 `rp_illustrate` 的可选 `reference` 参数。导入的卡面已经在工作区里，可直接当参考图。
+5. **LoRA 强度**：风格条目加 `loraStrength`，设置页给滑块/输入框。
+6. **整幕流水线**：用真实 `scenes_*.json` 跑通 `rp_scenes`，并把「幕 → 多格 → 拼页」流程写进文档。
+7. **随机表联动**：`rp_table` 掷出的结果可以一键转为配图提示词（"掷到幽灵 → 顺手出一张幽灵立绘"）。
+8. **导出**：把整个会话的 RP 配置（角色卡/世界/随机表/出图历史）导出成一份复盘文档。
+9. **预设 id 参数化**：把硬编码的 `'dm'` 提成常量/配置，支持预设目录改名。
+10. **ST 式正则表：不做**（2026-09-12 决定）。`{{user}}` 这类是**宏**（已用宿主变量 `systemPrompt.variable` 实现），
+    正则表是另一件事，且要求把用户正则放进隔离执行器（参考实现如此），与轻量定位不符。详见 HANDOFF §5.11。
+11. **卡库可搜索化增强**：现在按卡名/作者/标签搜；可以再加「按世界书条目数 / 分类多选 / 只看 v3 卡」。`/rp-tools/cards` 的参数已经留好了扩展位。
+12. **世界书整理入口**（见 §4 的 13/14）：面板加一个「让 DM 整理世界书」按钮 —— 把「状态/历史」类条目
+    降级为触发式、把能改成状态表的挪进 `rp_state`。**不加临时 agent**：卡全文已在会话目录里。
 
 ---
 
@@ -176,11 +183,13 @@ PASS  agent/created 不误登记非 dm =false
 源码        D:\Code\dsh\rp-tools-plugin
 安装位置    ~/.dsh/profiles/web/node_modules/dsh-rp-tools        （file: 依赖，安装期拷贝）
 预设接线    ~/.dsh/.agent-presets/dm/agent.cordis.yml            （白名单 + rp-bridge 条目）
+            ~/.dsh/.agent-presets/dm/session-filter-v2.mjs       （仓库内有副本 preset/）
             ~/.dsh/.agent-presets/dm/rp-bridge.mjs               （仓库内有副本 preset/rp-bridge.mjs）
-数据        ~/.dsh/data/dsh-rp-tools/{styles.json, sessions/*.json, dm-sessions.json, _agent-probe.json}
+数据        ~/.dsh/data/dsh-rp-tools/{styles.json, sessions/*.json, dm-sessions.json, _agent-probe.json, _standing-probe.json}
 私有卡索引  lib/card-index.js                                    （gitignore；缺失时自动扫目录兜底）
-卡库        D:\Story\sillytavernassets\cards\<分类>\*.png        （3269 张，设置页「卡库目录」可改）
+卡库        D:\Story\rp-cards\<分类>\*.png                       （设置页「卡库目录」可改）
 导入产物    <会话工作区>\rp-sessions\<会话 id>\{rp-worldbook.md, cards\<slug>.{md,json,png}}
+诊断        tools/verify-injection.mjs                           （读真机会话日志，查注入有没有真的生效）
 ComfyUI     Comfy Desktop 0.35.0 · http://127.0.0.1:8188 · RTX 5080 16GB
 模型        E:\AI\Models\models\{diffusion_models,text_encoders,vae,loras}
 ```
@@ -191,6 +200,7 @@ ComfyUI     Comfy Desktop 0.35.0 · http://127.0.0.1:8188 · RTX 5080 16GB
 
 | 版本 | 主要变化 |
 |---|---|
+| **1.11.0** | 用户问「我在系统提示词里没发现有开常驻的世界书条目注入，这是否是问题？」—— **是问题，而且是两处叠加的静默失效，注入在生产里一次都没成功过**（冒烟断言却 421 条全绿）。① **会话 id 取错**：`sessionIdOfCtx()` 读 `ctx.agent.id`，而 agent 作用域 ctx 上**根本没有 `agent`**（`createScope` 只 extend 一个 scope 标记；真实来源是装配上下文的 `context.agent` —— `assembleContextFor(agent)` 造的 `{agent, scope: agent}`）。`normalizeSessionId(undefined)` 落到 `'default'`，于是每轮都去读那个空会话：世界设定/角色卡/世界书全空，`_standing-probe.json` 里 `sessionId: "default"`、`loreEntries: 0`。测试桩之所以没抓到，是因为它**凭空给了 `ctx.agent`**（桩错了，不是代码对了）。② **dm 预设里 `suppressRuntimeContext: true`** 把 `rp:turn` 整条通道关掉了 —— 而「按关键词触发的世界书」正走这条通道。修法：会话 id 一律取 `context.agent ?? context.scope`（provider 也接 `(context)`），注册记账改成**作用域粒度**，`known` 改成**本次装配的 variables 快照**（宿主对未注册名与 undefined 值都直接抛错，而 variables 在 waterfall 之前收集）；`session-filter` 改名 v2、`suppressRuntimeContext` 改成**显式 true 才关**，预设里显式写 false。顺带按用户预期把**常驻世界书条目移进 `rp:standing`（系统提示）**：内容稳定，没必要每轮往历史里再追加一份全文（10 条常驻 ≈ 4.5 千字），`rp:turn` 只留状态 + 命中条目 + 在场角色；`rp:turn` 注册文本改成**空串**（宿主会丢掉空文本 → 没有可注入内容就不产生快照消息）。世界书**智能过滤**：正文只有模板残留的条目（`1.` + 空 markdown 块那类）解析时标 `empty`、**不注入**（常驻也不注入），面板默认折叠并给一行「已隐藏 N 条空条目（M 字）」+ 展开清理开关；条目类别标签 设定/规则/状态/历史，**常驻的「状态/历史」条目额外标「常驻存疑」**（它们会过期，占着每轮上下文）。面板顶部新增「每轮都会注入：常驻 N 条 ≈ M 字/轮」（只报条数回答不了「占了多少上下文」）。世界设定输入框拉伸到与封面等高（`align-items: stretch` + `flex:1` + `min-height:150px`）。新增 `tools/verify-injection.mjs`：**直接读会话日志**（多帧 zstd 逐个解）统计每个会话的「占位/世界设定/世界书路径/轮次快照」，一跑就看出 9 个 DM 会话全是「只有占位文案」。测试：smoke-dm 445（+24：装配上下文取 id、裸装配不注入、常驻条进 standing 且不进快照、空壳不进 standing、空壳不注入、总览数字、冷启动补读宏表）、smoke-card 196（+22：空壳判定 9 条反例、空壳不计入世界书、类别标签、导入摘要说明）、smoke-client 新增空条目折叠/常驻体积/`worldtext` 拉伸断言。变异验证：把 `context.agent` 换回 `ctx.agent` → 7 条立刻变红；让 `renderConstantLore` 返回空串 → 2 条变红 |
 | **1.10.2** | 用户确认「角色卡是好的，只是第一条不对」+「不要把 PNG 的名字写到角色卡里」→ 定位到 1.10.1 的判定**太宽**：它把 `first_mes`（开场白）也算成「角色字段」，而真事故那张卡 `description/personality/mes_example/scenario` 全是 0，只有 206 字的 `first_mes`（**故事开场白**）+ 22 条世界书 + 书名，于是照样被建成了一个空壳角色。**收紧为只认 `description` / `personality`**（故事书同样有开场白与对白，这两项不是角色专属）；用真卡回归验证：`hasCharacterFields(那张卡) === false`。另外按用户要求把**卡封面移到「世界设定」旁边**：新增 `session.cover = { card, file, name }`，面板那张卡改成两列（封面 116×150 在左、设定在右，封面走 `thumb=1&width=240` 降采样）；角色行不再拿卡面当立绘（只有**生成出来的**立绘才挂在角色行上，仍是有图两列、图在左）。面板标题改回「角色卡」。**老数据自动迁移**：`loadSession()` 把「键不在角色表里」的 `portraits[name].card` 认成封面，用户不必重导（真事故那张就是这种形状）。测试：smoke-card 174、smoke-dm 421（+3 封面迁移：认得出、属于角色的不当封面）、smoke-client（角色卡标题 / 只有卡面时角色行不出图 / 有生成立绘才两列 / 封面在世界设定卡内且带 thumb 与 sessionId / worldwrap 两列样式）；把 `first_mes` 加回判定、去掉 `data-cover`，用例立刻变红 |
 | **1.10.1** | 用户对 RP 面板的三条要求：① **去掉「＋ 添加宏」**（面板的宏卡片改成**只改值**：名字来自卡里的占位符，改名/加宏都和卡对不上；要加宏去设置页「默认宏列表」）；② **去掉面板里的「PNG 故事书导入」**（导入入口回到工作区那一行的 chip，1.8.5 修好重新判断后它已经可靠）；③ **「角色卡」→「人物」，并且卡名不再无条件当人物** —— 故事书（卡里没有角色字段）的 `name` 是**书名**，早先会被建成人，于是「下班，然后成为魔法少女」这种书名出现在人物列表里。判定收在 `hasCharacterFields()`：描述/性格/对白范例/开场白（含备用）任一非空才算角色卡；`scenario`/`creator_notes` **不算**（故事书也有）。故事书仍导世界书与情境（`world` 里标「【故事书】」），只是不建人物、不登记立绘，导入结果里明确写「卡里没有角色字段 → 没建人物」。另外**有立绘的人物行改成两列布局（图在左 104×140、文字在右）**，不再把大图竖着塞在文字下面把面板拉长。测试：smoke-card 172（+16：字段判定 9 条 + 故事书/角色卡两条 import 路径）、smoke-dm 412（+8：故事书不建人物/不登记立绘/卡面仍复制/文案标注）、smoke-client（人物标题、无「＋ 添加宏」、无导入卡片、`data-hasface` + `charface`→`charbody` 顺序 + 两列样式） |
 | **1.10.0** | **卡面按「选中再看」加载**（用户要求：列表不出缩略图，选中那张才看图）。新增 `lib/png-thumb.js` —— 纯 `node:zlib` 的 PNG 解码 + 整数倍 box 降采样 + 重编码（**无第三方依赖**）：8bit 非隔行的灰度/灰度+A/RGB/RGBA/调色板都支持，16bit/Adam7/无像素数据一律返回 `null`，卡面路由 `?thumb=1&width=N` 收到 `null` 就**回退原图**（宁可慢也不发坏图）。为什么必须降采样：卡 PNG 单张可能几百 KB～数 MB（正文上百万字），原图直出会拖死两端；配合 `cache`（mtime+宽度的内存缓存 300 条）后重复请求不再重算。界面：列表**一张图都不请求**，选中后预览区出 `.face`（`thumb=1&width=420`、`loading=lazy`）。测试：smoke-card 156（新增 14 条**像素级**断言：纯色保持、左红右蓝 box 平均分界、黑白各半取中灰、灰度单通道、带 ccv3 文本块的真图、以及 16bit/隔行/截断/非 PNG/无 IDAT 全部回退）、smoke-dm 403（路由：体积变小、IHDR 宽度=请求值、源图够大时回退、解不了回退原图字节一致）、smoke-client（列表无 img、预览恰好一张、带 thumb/width/sessionId/lazy） |

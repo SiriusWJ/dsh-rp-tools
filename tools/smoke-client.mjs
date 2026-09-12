@@ -212,10 +212,15 @@ globalThis.fetch = async (url, options = {}) => {
     if (wanted) return reply({ ok: false, error: `找不到条目：${wanted}` });
     return reply({
       ok: true, exists: true, file: 'D:\\Story\\rp-worldbook.md', relative: 'rp-worldbook.md',
-      chars: 1234, total: 2, constant: 1, keyed: 1,
+      chars: 1234, total: 3, constant: 1, keyed: 1,
+      // 总览数字（宿主 loreOverview）：面板顶部要显示「常驻 N 条 ≈ M 字/轮」与「隐藏了几条空壳」
+      empty: 1, emptyChars: 18, constantChars: 46,
+      kinds: { 设定: 2, 规则: 0, 状态: 0, 历史: 0 },
       entries: [
-        { title: '长安城', keys: ['长安'], constant: false, order: 0, probability: 100, chars: 22, preview: '天宝年间的长安城，坊市分明。' },
-        { title: '世界总纲', keys: [], constant: true, order: 0, probability: 100, chars: 30, preview: '盛唐末年，边镇不稳。' },
+        { title: '长安城', keys: ['长安'], constant: false, order: 0, probability: 100, chars: 22, preview: '天宝年间的长安城，坊市分明。', empty: false, kind: '设定' },
+        { title: '世界总纲', keys: [], constant: true, order: 0, probability: 100, chars: 30, preview: '盛唐末年，边镇不稳。', empty: false, kind: '设定' },
+        // 空壳条目：正文只有模板残留 —— 界面要默认藏起来
+        { title: '足', keys: [], constant: true, order: 0, probability: 100, chars: 18, preview: '1. ```markdown', empty: true, kind: '设定' },
       ],
       note: '只有命中的条目才进每轮上下文。',
     });
@@ -659,9 +664,17 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     inputActions,
   }, tab.component);
   const text = textOf(panel2);
-  assert.ok(text.includes('世界书（2 条）'), '面板应显示世界书条目数（含导入进来的那些）');
+  assert.ok(text.includes('世界书（3 条）'), '面板应显示世界书条目数（含导入进来的那些）');
   assert.ok(text.includes('长安城'), '面板应列出世界书条目标题');
   assert.ok(text.includes('世界总纲') && text.includes('常驻'), '面板应标出常驻条目');
+  // 用户要求「智能过滤世界书，无内容的不要」：正文只有模板残留的条目默认不列出，
+  // 但**不是**删掉 —— 给一行提示 + 展开开关，方便自己清理
+  assert.equal(text.includes('足'), false, '空壳条目默认不在列表里');
+  assert.ok(text.includes('已隐藏 1 条空条目'), '应提示隐藏了几条空条目');
+  assert.ok(text.includes('显示 / 清理'), '应给一个展开空条目的开关');
+  // 常驻体积：用户问过「常驻条目到底占了多少上下文」，只报条数回答不了
+  assert.ok(text.includes('常驻 1 条 ≈ 46 字/轮'), '应显示每轮注入的常驻体积');
+  assert.equal(text.includes('常驻存疑'), false, '设定类常驻不该被标「常驻存疑」');
   // 折叠态只留一行：名称 / 徽标 / 字数 + 常驻开关 + 详情按钮；触发词与正文都收进详情里
   assert.equal(text.includes('触发词：长安'), false, '折叠态不该铺开触发词行');
   assert.equal(text.includes('天宝年间的长安城，坊市分明。'), false, '折叠态不该铺开正文');
@@ -675,7 +688,25 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.ok(boxes.length >= 2, '每个条目应有「常驻」复选框');
   assert.ok(textOf(panel2).includes('＋ 新建条目'), '面板应有新建条目入口');
   const editBtns = findAll(panel2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '详情 / 编辑');
-  assert.equal(editBtns.length, 2, '每个条目应有「详情 / 编辑」按钮');
+  assert.equal(editBtns.length, 2, '每个条目应有「详情 / 编辑」按钮（空壳条目默认不列）');
+
+  // 点「显示 / 清理」→ 空条目才出现在列表里（带「空」徽标，标题划线）
+  const showBtn = findAll(panel2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '显示 / 清理')[0];
+  assert.ok(showBtn, '应有「显示 / 清理」按钮');
+  await showBtn.props.onClick();
+  await tick(30);
+  const withEmpty = render({
+    sessionId: SID,
+    useSessions: (sel) => sel(store),
+    useInput: (sel) => sel({ draft: '' }),
+    inputActions,
+  }, tab.component);
+  const emptyText = textOf(withEmpty);
+  assert.ok(emptyText.includes('足'), '展开后应看到空壳条目');
+  assert.ok(emptyText.includes('空'), '空壳条目应带「空」徽标');
+  // 复原（组件 state 会跨 render 保留，不还原会影响后面的断言）
+  await showBtn.props.onClick();
+  await tick(30);
 
   // 点「编辑」→ 取回完整正文 → 展示表单（标题/触发词/常驻/order/概率/正文）
   await editBtns[0].props.onClick();
@@ -848,6 +879,16 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     // 封面必须在世界设定卡**内部**（与 textarea 同一个 wrap 里），而不是另起一张卡
     assert.equal(byClass(worldCard, 'worldcol').length, 1, '世界设定卡里应有设定那一列');
     assert.equal(byClass(worldCard, 'worldwrap').length, 1, '世界设定卡里应有封面+设定的两列容器');
+    // 世界设定的输入框要**拉伸到与封面同高**（用户要求：「世界那个介绍文本框拉大，对齐图片」）：
+    // grid 必须 stretch（不能是 start），列内 textarea 要 flex:1 + min-height:150px
+    assert.ok(/\.rpt \.worldwrap \{[^}]*align-items:\s*stretch/.test(style.textContent),
+      'worldwrap 要对齐拉伸（align-items: stretch），否则文本框和封面不等高');
+    assert.ok(/\.rpt \.worldcol textarea \{[^}]*flex:\s*1/.test(style.textContent),
+      'worldcol 里的 textarea 要 flex:1 撑满列高');
+    assert.ok(/\.rpt textarea\.worldtext \{[^}]*min-height:\s*150px/.test(style.textContent),
+      '世界设定 textarea 要有 150px 的最小高度（无封面时也不该只有 62px）');
+    const worldArea = findAll(worldCard, (n) => n.type === 'textarea' && String(n.props.className ?? '').includes('worldtext'))[0];
+    assert.ok(worldArea, '世界设定卡里的 textarea 要带 worldtext 类（样式靠它定位）');
     sessionStub.cover = null;
     resetHooks();
   }

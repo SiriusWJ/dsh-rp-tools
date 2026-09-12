@@ -33,7 +33,7 @@
 | PNG 卡库（导入源） | `D:\Story\sillytavernassets`（3269 张，`cards/<分类>/*.png`）—— 设置页「卡库目录」可改，存 `styles.json` 的 `cards.root` |
 | 导入产物（按会话） | `<会话工作区>/rp-sessions/<会话 id>/cards/<slug>.{md,json,png}`（卡全文 / 规范化结果 / 卡面） |
 | 卡库目录 | `cards.root`（设置页）；**留空 = 会话工作区下的 `rp-cards/`**。不再有任何固定路径兜底，也不再有私有索引 |
-| dm 预设 | `~/.dsh/.agent-presets/dm/agent.cordis.yml`、`~/.dsh/.agent-presets/dm/rp-bridge.mjs`（仓库内有副本 `preset/rp-bridge.mjs`） |
+| dm 预设 | `~/.dsh/.agent-presets/dm/agent.cordis.yml`、`~/.dsh/.agent-presets/dm/session-filter-v2.mjs`、`~/.dsh/.agent-presets/dm/rp-bridge.mjs`（仓库内 `preset/` 有同名副本，**权威仍在预设目录**） |
 | ComfyUI | Comfy Desktop **0.35.0** · `http://127.0.0.1:8188` · RTX 5080 16GB |
 | 模型 | `E:\AI\Models\models\{diffusion_models,text_encoders,vae,loras}`（`Documents\ComfyUI\models` 是指向它的 junction） |
 | 重启器 | 计划任务 `dsh-rp-restart` → `D:\Code\dsh\comfyui-workflows\rp-restart.cmd`（延迟 75 秒后 POST dsh-restart-btn 的重启接口） |
@@ -297,18 +297,26 @@ Copy-Item lib/card-import.js "$dst\lib\card-import.js" -Force   # 故事书导�
 Copy-Item client/client.js   "$dst\client\client.js"   -Force
 # ⚠️ 改了 agent 作用域那半边（如 rp-bridge.mjs）还要同步到预设目录：
 Copy-Item preset/rp-bridge.mjs "$env:USERPROFILE\.dsh\.agent-presets\dm\rp-bridge.mjs" -Force
+# 预设组合/过滤器：`preset/*.yml|mjs` 只是仓库副本，**改完要拷回预设目录**才生效
+Copy-Item preset/agent.cordis.yml       "$env:USERPROFILE\.dsh\.agent-presets\dm\agent.cordis.yml" -Force
+Copy-Item preset/session-filter-v2.mjs  "$env:USERPROFILE\.dsh\.agent-presets\dm\session-filter-v2.mjs" -Force
+# ⚠️ session-filter 改内容必须**换文件名**（Node 会按 URL 缓存 .mjs，进程内改动不生效），
+#    并在 agent.cordis.yml 里同步 `name: ./session-filter-vN.mjs`。v2 就是这么来的。
 
 # 4) 重启 dsh web（75 秒后自动重启，避免打断当前回合）
 schtasks /Run /TN dsh-rp-restart
 
 # 5) 冒烟测试（宿主逻辑不必等重启就能验）
-node tools/smoke-dm.mjs        # 194 条断言：作用域隔离、工具/路由注册、dm 判定、世界书、状态、风格库、LoRA、卡库导入
-node tools/smoke-card.mjs      # 64 条：合成 PNG 解码（三种文本块 / ccv3 优先 / 截断容错）+ 广告过滤 + 世界书限量 + 开场指令
+node tools/smoke-dm.mjs        # 445 条断言：作用域隔离、装配注入（含会话 id 来源）、工具/路由注册、dm 判定、世界书、状态、风格库、LoRA、卡库导入
+node tools/smoke-card.mjs      # 196 条：合成 PNG 解码（三种文本块 / ccv3 优先 / 截断容错）+ 广告过滤 + 世界书限量/空壳过滤 + 开场指令
 node tools/smoke-client.mjs    # 客户端：样式在 apply 时就注入（防 FOUC 回归）、槽位注册（含 id/order）、bundle 工厂可跑
 #    ★ 数据隔离：smoke-dm.mjs 把 DSH_HOME 指向临时目录，跑完就删 —— 绝不碰真实 ~/.dsh/data。
 #      （早期版本直接写真实数据目录，测试记录混进真实会话登记表，清理时极易误删
 #        真实会话 —— 已经被这个坑咬过一次，别再改回去。）
 #    依赖从 profile 解析（同 rp-bridge.mjs 的 createRequire 办法），所以要在仓库根跑。
+#    ★ **测试桩必须照着宿主的真实契约写**：1.11.0 修的那个「测试全绿、生产零注入」
+#      就是桩凭空给了 `ctx.agent`（真实 host 没有）＋ waterfall 的 `next` 写成带参。
+#      改桩之前先回去读宿主源码（dsh-agent 的 assembleContextFor / dsh-system-prompt 的 assemble）。
 #    ★ 断言要覆盖「真的能跑」，不只是「定义正确」：曾经删掉全局 tools 数组后漏改
 #      /rp-tools/tools 里的引用，路由直接 400，而当时 140 条断言全绿 ——
 #      因为它们只测工具定义与纯函数，从没真的打过路由。现在有 7 条「路由体检」。
@@ -444,6 +452,8 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen |
 | 卡面缩略图为什么自己写解码 | DSH 没有可复用的服务端缩放（客户端的缩略图能力在浏览器里，宿主侧没有），而卡 PNG 单张可能几 MB。`lib/png-thumb.js` 只实现「8bit 非隔行 + 已知通道数」这一条最常走的路，其余全部返回 `null` 让路由**回退原图** —— 生产里绝不能出现「缩出一张坏图」。改它的时候务必跑 `smoke-card` 的那组**像素级**断言（纯色/左右分界/取平均/灰度），只断言「体积变小」会漏掉「整张压成空白色块」 |
 | 主题 token 用错 → 按钮变白底白字 | DSH 的 `--dsw-alias-brand-primary` **不是品牌蓝**，是**高对比前景色**：浅色主题 = 近黑 `#0f1115`，深色主题 = 近白 `#f9fafb`。主按钮要按宿主自己的配法来：底色 `--dsw-alias-button-primary-fill`、文字 `--dsw-alias-label-primary-foreground`、hover `--dsw-alias-button-primary-hover`；**永远不要**自己配 `color:#fff`。要蓝色就用 `--dsw-alias-button-info-fill`。改完一定在**深色 + 浅色两种主题**下看一眼（这次只在深色下就翻车了）。token 全表在 `dsh-client-ui-theme/lib/client.js` 的 `design_platform_css_default` 里，可以直接 grep 值 |
 | 界面是新的、宿主却是旧的 | `dsh-client-modules` 会**监视插件 bundle 文件**：改 `client.js` 后刷新页面就能生效（不必重启）。而宿主 `lib/` 只有重启才加载 —— 两者不同步就会出现「新界面 + 旧数据」的诡异组合（实测：设置页有三大类，但 `/rp-tools/state` 里没有 `imageSizes`，尺寸行显示 0）。**排查手法：先看监听进程的 StartTime 是否晚于 profile 里 `lib/index.js` 的 mtime**；判断界面新旧则看有没有刚加的那条文案/class。**结论：客户端要按「旧宿主」防御**（缺字段给默认值、并把自己解析出的值保存回去自愈） |
+| **注入在生产里一次都没生效（421 条断言全绿）** | 最贵的一次踩坑，两个独立原因叠加，且**都静默无报错**：<br>① **会话 id 取错**：`sessionIdOfCtx()` 读 `ctx.agent.id`，但 agent 作用域 ctx 上**没有 `agent`** —— `createScope()` 只 `extend({ [kScope]: key })`。真实来源是**装配上下文的 `context.agent`**：`assembleContextFor(agent, signal)` 造 `{ agent, scope: agent, signal }`（`agent.id === agent.session.id`）。`normalizeSessionId(undefined)` 返回 `'default'`，于是每轮装配都去读那个空会话：世界设定/角色卡/世界书全空，只剩占位文案。<br>② **dm 预设里 `suppressRuntimeContext: true`**（`session-filter.mjs`）把 `rp:turn`（状态 + 命中条目 + 在场角色）整条通道关掉。<br>**怎么发现的**：代码看多少遍都没用，是读**会话日志**读出来的 —— system 段里永远只有那句占位；`_standing-probe.json` 里 `sessionId: "default"`、`loreEntries: 0`。为此留了 `tools/verify-injection.mjs`（多帧 zstd 逐个解 → 统计每个会话的「占位/世界设定/世界书路径/轮次快照」）。<br>**测试为什么没抓到**：桩**凭空给了 `ctx.agent`**（真实 host 没有），并且 waterfall 的 `next` 桩写成带参（真实是 `() => Promise.resolve(assembly)`）。**教训：测试桩必须照宿主源码的契约写 —— 写桩前先回去读 `dsh-agent`/`dsh-system-prompt` 的实现**，否则「全绿」只是证明了桩和代码犯了同一个错。变异验证：把 `context.agent` 换回 `ctx.agent` → 7 条立刻红 |
+| 宿主对 `{{变量}}` 是**严格插值**，且 variables 在 waterfall **之前**收集 | 未注册的名字、值为 `undefined` 的名字都会**直接抛错**，整轮装配挂掉。所以瀑布里判断「哪些 `{{x}}` 能留在文本里」只能看**本次装配的 `assembly.variables` 快照**，不能看「我们注册过什么」—— 这一轮刚补注册的名字不在快照里。留不住的一律用 `neutralizeMustache()` 中和成全角（下一轮就正常了）。宏 provider 的签名是 `(context: AssembleContext) => string`，**会话 id 从 `context` 取**，别闭包挂载时的值 |
 | 客户端改了但页面没变 | `dsh-client-modules` 在**宿主启动时**就把各插件的 bundle 字节读进内存（`responses` 表），并按内容哈希定 rev —— 所以**改客户端也要重启宿主**，只刷新页面拿不到新字节（HMR 只有在跑 `pnpm run dev:web` 时才生效）。判断有没有生效：比对 profile 里 `client/client.js` 的 mtime 与宿主进程的 StartTime |
 
 ---

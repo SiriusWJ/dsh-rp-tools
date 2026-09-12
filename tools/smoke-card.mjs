@@ -14,7 +14,7 @@ import { pathToFileURL } from 'node:url';
 const here = new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const mod = (p) => import(pathToFileURL(join(here, '..', 'lib', p)).href);
 const { readPngTextChunks, decodeCardPng } = await mod('card-png.js');
-const { buildImport, worldBookMarkdown, pickGreeting, isAdText, cardToCharacter, cardToMarkdown, buildOpeningPrompt, resolvePlaceholders, describePlaceholders, localizeAttributes, discoverMacros, collectCardText } = await mod('card-import.js');
+const { buildImport, worldBookMarkdown, pickGreeting, isAdText, cardToCharacter, cardToMarkdown, buildOpeningPrompt, resolvePlaceholders, describePlaceholders, localizeAttributes, discoverMacros, collectCardText, isJunkLoreBody, loreKindOf } = await mod('card-import.js');
 
 let pass = 0; let fail = 0;
 const check = (name, got, want) => {
@@ -250,6 +250,41 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
   check('超上限的进 dropped', capped.skipped, 7);
 }
 
+// ── 智能过滤世界书：正文只有模板残留的条目不要（用户实测「足 / 14 字」这种） ──────
+{
+  const fence = '```';
+  // 真卡里最常见的两种「空壳」：纯占位词、以及 `1.` + 空 markdown 代码块
+  const junkish = `1.\n${fence}markdown\n${fence}`;
+  check('空壳：编号 + 空 markdown 块', isJunkLoreBody(junkish), true);
+  check('空壳：单个占位词', isJunkLoreBody('content'), true);
+  check('空壳：只有一个「空」字', isJunkLoreBody('空'), true);
+  check('空壳：全角括号里的占位词', isJunkLoreBody('（空）'), true);
+  check('空壳：纯空白', isJunkLoreBody('   '), true);
+  // 反例（**必须有**）：第一版把这些判成了空壳，是测试抓出来的
+  check('不是空壳：正文 A', isJunkLoreBody('正文 A'), false);
+  check('不是空壳：含「无」的短句', isJunkLoreBody('无言'), false);
+  check('不是空壳：正常短句', isJunkLoreBody('魔法少女也要打卡。'), false);
+  check('不是空壳：内容 A', isJunkLoreBody('内容 A'), false);
+
+  const md = worldBookMarkdown([
+    { name: '正常条目', keys: ['甲'], content: '正文 A' },
+    { name: '空壳条目', keys: ['乙'], content: junkish },
+    { name: '占位条目', keys: ['丙'], content: '待填' },
+  ]);
+  check('空壳条目没写进世界书', md.markdown.includes('空壳条目'), false);
+  check('占位条目没写进世界书', md.markdown.includes('占位条目'), false);
+  check('正常条目照常写进世界书', md.markdown.includes('正文 A'), true);
+  check('只保留 1 条', md.kept, 1);
+  check('统计丢掉的空壳条数', md.emptySkipped, 2);
+  check('空壳不算「被禁用」', md.enabledOff, 0);
+
+  // 类别标签：状态/历史 是**运行期快照**（用户问「很多卡不像世界书，像历史状态，怎么处理」）
+  check('类别：世界观 → 设定', loreKindOf({ title: '世界总纲', body: '时代与基调' }), '设定');
+  check('类别：当前进度 → 状态', loreKindOf({ title: '当前进度', body: '主角已到第三关' }), '状态');
+  check('类别：前情提要 → 历史', loreKindOf({ title: '前情提要', body: '三天前发生的事' }), '历史');
+  check('类别：输出格式 → 规则', loreKindOf({ title: '输出格式要求', body: '必须用第二人称' }), '规则');
+}
+
 // ── 端到端：一张典型的「广告卡」全流程 ────────────────────────────────────
 {
   const AD = '酒馆专属大模型 Deepseek Tavern Pro deepseektavern.com';
@@ -436,7 +471,11 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
     first_mes: '广告 deepseektavern.com',
     alternate_greetings: ['{{char}}推门进来，看见{{user}}还在睡。'],
     scenario: '{{user}}拜入{{char}}门下。',
-    character_book: { entries: [{ name: '拜师', keys: ['拜师'], content: '{{user}}在{{char}}面前跪了三下。' }] },
+    character_book: { entries: [
+      { name: '拜师', keys: ['拜师'], content: '{{user}}在{{char}}面前跪了三下。' },
+      // 真卡里常见的模板残留：这类条目以前会被当成「规则」常驻注入（用户实测的面板里那条「足 / 14 字」）
+      { name: '足', keys: [], content: `1.\n\`\`\`markdown\n\`\`\`` },
+    ] },
   }, 'chara_card_v3'))]);
   const decoded = decodeCardPng(png);
   const imp = buildImport(decoded, { userLabel: '阿岚' });
@@ -449,6 +488,9 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
   check('导入：world 字段保留 {{user}}', imp.world.includes('{{user}}拜入沈砚门下'), true);
   check('导入：给出占位符统计', imp.placeholders.total >= 4, true);
   check('导入：摘要里带上统计', imp.summary.some((s) => s.includes('已展开占位符')), true);
+  check('导入：stats 带上被丢掉的空壳条数', imp.stats.emptySkipped, 1);
+  check('导入：空壳条目没进世界书', imp.worldBookMarkdown.includes('## 足'), false);
+  check('导入：摘要说明丢掉了空壳', imp.summary.some((s) => s.includes('丢掉 1 条空条目')), true);
   const md = cardToMarkdown(decoded, { userLabel: '阿岚', keepMacros: false });
   check('卡全文（导出模式）：占位符都换成具体值', /\{\{/.test(md.text), false);
   check('卡全文（导出模式）：用上了玩家称呼', md.text.includes('阿岚'), true);

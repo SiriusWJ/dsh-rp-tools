@@ -193,6 +193,11 @@ window.__ModuleLoader__.load({
 .rpt .badge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; }
 .rpt .badge.ok { background: color-mix(in oklab, #22c55e 24%, transparent); }
 .rpt .badge.warn { background: color-mix(in oklab, #f59e0b 26%, transparent); }
+/* 世界书条目类别标签：设定/规则 是正常内容，状态/历史 更像运行期快照（着色提醒） */
+.rpt .badge.kind { background: color-mix(in oklab, currentColor 12%, transparent); opacity: .9; font-weight: 400; }
+.rpt .badge.kind-状态, .rpt .badge.kind-历史 { background: color-mix(in oklab, #38bdf8 24%, transparent); }
+.rpt .loreempty { padding: 6px 0; }
+.rpt .loreempty .loretitle { text-decoration: line-through; opacity: .6; }
 .rpt .msg { padding: 6px 9px; border-radius: 6px; background: color-mix(in oklab, currentColor 8%, transparent); }
 .rpt img.pv { max-width: 100%; border-radius: 8px; }
 .rpt .stylecard { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: start;
@@ -279,9 +284,13 @@ window.__ModuleLoader__.load({
   border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent)); }
 .rpt .charface .row { gap: 8px; align-items: center; }
 .rpt .charbody { display: flex; flex-direction: column; min-width: 0; }
-/* 世界设定 + 卡封面：有封面就两列（封面在左 116×150、设定在右） */
-.rpt .worldwrap { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 12px; align-items: start; }
+/* 世界设定 + 卡封面：有封面就两列（封面在左 116×150、设定在右）
+   右侧输入框**拉伸到与封面同高**（用户要求：「世界那个介绍文本框拉大，对齐图片」）：
+   grid 用 stretch，列内 textarea flex:1，封面列多高它就多高。 */
+.rpt .worldwrap { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 12px; align-items: stretch; }
 .rpt .worldcol { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.rpt .worldcol textarea { flex: 1 1 auto; min-height: 150px; }
+.rpt textarea.worldtext { min-height: 150px; line-height: 1.6; }
 .rpt .cover { display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
 .rpt .cover img { width: 116px; height: 150px; object-fit: cover; border-radius: 8px;
   border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent)); }
@@ -829,6 +838,8 @@ window.__ModuleLoader__.load({
       /** 正在编辑的世界书条目草稿：{ title(原值), keysText, constant, order, probability, body, isNew } */
       const [loreEdit, setLoreEdit] = React.useState(null);
       const [loreQuery, setLoreQuery] = React.useState('');
+      /** 是否把「空条目」（正文只有模板残留，永不注入）也列出来 —— 默认藏起来 */
+      const [showEmptyLore, setShowEmptyLore] = React.useState(false);
       // 宿主对「这个会话是不是 dm / 有没有开局」的答复：面板里显示一行诊断，
       // 也是导入入口的第二条判据（见 dock 里的说明）。
       const [gate, setGate] = React.useState(null);
@@ -923,12 +934,15 @@ window.__ModuleLoader__.load({
         } finally { setBusy(''); }
       }
 
-      /** 搜索过滤（标题 / 触发词 / 正文预览都搜，与 liketavern 的搜索框一致）。 */
+      /** 搜索过滤（标题 / 触发词 / 正文预览都搜，与 liketavern 的搜索框一致）。
+       *  **空条目默认不显示**（用户要求：「需要智能过滤世界书，无内容的不要」）：
+       *  它们不会进上下文，但也没从文件里删掉 —— 想看/想删就点那一行提示展开。 */
       function visibleLoreEntries() {
         const all = lore?.entries ?? [];
+        const base = showEmptyLore ? all : all.filter((e) => !e.empty);
         const q = loreQuery.trim().toLowerCase();
-        if (!q) return all;
-        return all.filter((e) => [e.title, ...(e.keys ?? []), e.preview]
+        if (!q) return base;
+        return base.filter((e) => [e.title, ...(e.keys ?? []), e.preview]
           .some((v) => String(v ?? '').toLowerCase().includes(q)));
       }
 
@@ -1203,7 +1217,7 @@ window.__ModuleLoader__.load({
             : '';
           const body = [
             h('textarea', {
-              key: 'w', value: draft.world ?? '', placeholder: '世界观、时代、地点、基调……',
+              key: 'w', className: 'worldtext', value: draft.world ?? '', placeholder: '世界观、时代、地点、基调……',
               onChange: (e) => patch({ world: e.target.value }),
             }),
             h('div', { key: 'd', className: 'dim' }, `本会话配置文件（DM 也能用 read/write 直接改）：${state.file ?? ''}`),
@@ -1294,6 +1308,25 @@ window.__ModuleLoader__.load({
               `${lore.total} 条（常驻 ${lore.constant}｜带触发词 ${lore.keyed}）· ${lore.chars} 字 · ${lore.relative ?? 'rp-worldbook.md'}`
               + `${lore.truncated ? '（条目过多，只列出前 400 条）' : ''}`)
             : null,
+          // 常驻条目是**每轮都注入**的（而且直接写进系统提示的常驻段，不进每轮快照），
+          // 所以这里把体积直接算出来（只报条数回答不了「这本世界书到底占了多少上下文」）。
+          // 数字来自宿主 loreOverview，口径与注入时的成本一致。
+          lore && lore.exists && lore.constant
+            ? h('div', { key: 'cost', className: 'dim' },
+              `每轮都会注入：常驻 ${lore.constant} 条 ≈ ${lore.constantChars ?? 0} 字/轮（写进系统提示的常驻段）`
+              + (lore.kinds ? `（设定 ${lore.kinds['设定'] ?? 0}｜规则 ${lore.kinds['规则'] ?? 0}｜状态 ${lore.kinds['状态'] ?? 0}｜历史 ${lore.kinds['历史'] ?? 0}）` : ''))
+            : null,
+          // 空条目：不注入上下文，但还在文件里 —— 默认藏起来，给一行提示 + 展开开关
+          lore && lore.exists && lore.empty
+            ? h('div', { key: 'empty', className: 'row loreempty dim' }, [
+              h('span', { key: 't' },
+                `已隐藏 ${lore.empty} 条空条目（正文只有 markdown 残留，${lore.emptyChars ?? 0} 字，不会被注入）`),
+              h('span', { key: 's', className: 'sep' }),
+              h('button', {
+                key: 'b', className: 'tiny', onClick: () => setShowEmptyLore((v) => !v),
+              }, showEmptyLore ? '收起' : '显示 / 清理'),
+            ])
+            : null,
           // 搜索：条目一多就得能筛（标题 / 触发词 / 正文预览）
           lore && lore.exists && (lore.entries ?? []).length > 6
             ? h('input', {
@@ -1302,10 +1335,31 @@ window.__ModuleLoader__.load({
             })
             : null,
           lore && lore.exists
-            ? h('div', { key: 'list', className: 'scroll lorelist' }, visibleLoreEntries().map((e, i) => h('div', { key: `e${i}`, className: 'loreitem' }, [
+            ? h('div', { key: 'list', className: 'scroll lorelist' }, visibleLoreEntries().map((e, i) => h('div', {
+              key: `e${i}`, className: 'loreitem', 'data-empty': e.empty ? 'true' : 'false',
+            }, [
               h('div', { key: 'h', className: 'row' }, [
                 h('span', { key: 't', className: 'loretitle' }, e.title),
+                // 类别标签：状态/历史 是**运行期快照**（导入时从卡里带进来的「当前进度」「前情」），
+                // 当常驻设定用会一直占上下文而且是过时信息 —— 着色 + 提示，让人一眼看出来。
+                e.kind && e.kind !== '设定'
+                  ? h('span', {
+                    key: 'k', className: `badge kind kind-${e.kind}`,
+                    title: e.kind === '历史'
+                      ? '这条看起来是历史/前情记录（会随时间过期）。当常驻设定注入会一直占上下文，也会让模型按旧状态写。'
+                      : e.kind === '状态'
+                        ? '这条看起来是运行期状态（进度/好感/物品）。用状态表记更合适，写进世界书当常驻会过期。'
+                        : '这条看起来是玩法/输出规则类条目。',
+                  }, e.kind)
+                  : null,
+                e.empty ? h('span', { key: 'em', className: 'badge warn', title: '正文只有 markdown 脚手架/占位词：不会注入上下文。留着没用，建议删掉。' }, '空') : null,
                 e.constant ? h('span', { key: 'c', className: 'badge ok' }, '常驻') : null,
+                e.constant && (e.kind === '历史' || e.kind === '状态')
+                  ? h('span', {
+                    key: 'cw', className: 'badge warn',
+                    title: '常驻的「状态/历史」条目每轮都会注入，但它们的内容会过期 —— 建议改成按关键词触发（或直接删掉，状态用状态表维护）。',
+                  }, '常驻存疑')
+                  : null,
                 e.order ? h('span', { key: 'o', className: 'badge' }, `order ${e.order}`) : null,
                 e.probability !== undefined && e.probability < 100 ? h('span', { key: 'p', className: 'badge warn' }, `${e.probability}%`) : null,
                 h('span', { key: 'n', className: 'dim' }, `${e.chars} 字`),
@@ -2251,6 +2305,7 @@ window.__ModuleLoader__.load({
         h('div', { key: 's', className: 'dim' },
           `世界书 ${preview.stats?.entries ?? 0} 条 / ${preview.stats?.totalChars ?? 0} 字`
           + `${preview.stats?.skipped ? `（另有 ${preview.stats.skipped} 条超预算，只写进全文文件）` : ''}`
+          + `${preview.stats?.emptySkipped ? `（已丢掉 ${preview.stats.emptySkipped} 条空条目：正文只有模板残留）` : ''}`
           + `｜开场白来源：${preview.character?.greetingSource === 'alternate_greetings'
             ? `备用开场白（共 ${preview.character?.greetingAlternatives} 条）`
             : preview.character?.greetingSource === 'first_mes' ? 'first_mes' : '无'}`),

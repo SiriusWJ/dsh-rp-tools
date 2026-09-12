@@ -69,6 +69,42 @@ const systemPromptStub = {
   context: (c) => { promptContexts.set(c.name, c); return () => {}; },
   variable: (name, provider) => { promptVars.set(name, provider); return () => {}; },
 };
+/**
+ * 真机装配上下文的形状（`assembleContextFor(agent, signal)`，见 dsh-agent）：
+ * `{ agent, scope: agent }`，而 `agent.id` 就等于 `agent.session.id`。
+ * 会话 id 只能从这里取 —— 插件作用域 ctx 上没有 `agent`。
+ */
+const fakeAgent = (sessionId) => ({ id: `session-${sessionId}`, session: { id: sessionId } });
+const assembleCtx = (sessionId) => {
+  const agent = fakeAgent(sessionId);
+  return { agent, scope: agent, signal: undefined };
+};
+/**
+ * 造一份「宿主已经收集好 variables」的 assembly。
+ *
+ * 真机 `assemble()` 的顺序是：**先**收集 variables（逐个调 provider），**再**跑 waterfall。
+ * 桩必须照这个顺序，否则「这一轮刚注册的宏不在 variables 快照里 → 必须中和」这条
+ * 关键安全性就测不出来。
+ */
+const mkAssembly = (sections, sessionId) => {
+  const context = assembleCtx(sessionId);
+  const variables = {};
+  for (const [name, provider] of promptVars) variables[name] = provider(context);
+  return {
+    sections: sections ?? [...promptSections.values()].map((s) => ({ name: s.name, text: s.text })),
+    contexts: [...promptContexts.values()].map((c) => ({ name: c.name, text: c.text })),
+    tools: [],
+    variables,
+    context,
+  };
+};
+/**
+ * 水位的 `next` 是**无参**的，返回上一段处理后的 assembly（宿主实现是
+ * `() => Promise.resolve(assembly)`）。桩写成 `async (a) => a` 会让 `next()` 得到
+ * `undefined`，于是「注入有没有生效」这类断言会因为 result 变成 undefined 而假通过/假失败 ——
+ * 别改成带参形式。
+ */
+const nextOf = (asm) => async () => asm;
 
 // 全局作用域：故意**不给** systemPrompt stub —— 用来证明全局 apply() 不做提示词注入。
 // （这是架构约束的回归测试：注入只允许发生在 dm 预设的 agent 作用域。）
@@ -95,7 +131,10 @@ const hostCtx = {
 };
 mod.apply(hostCtx);
 
-// agent 作用域：就是 dm 预设的 rp-bridge 调用 registerRpTools 的那个上下文
+// agent 作用域：就是 dm 预设的 rp-bridge 调用 registerRpTools 的那个上下文。
+// ⚠️ 这里**故意不放 `agent`** —— 真实宿主的作用域 ctx 上就没有这个属性，
+//    当初正是测试桩凭空给了 `ctx.agent`，才让「注入永远读 default 会话」这个重大缺陷
+//    在 400 多条断言全绿的情况下溜进了生产（会话日志 + 探针文件才抓到）。
 const agentCtx = {
   tools: { register: (t) => { tools.set(t.name, t); } },
   on,
@@ -103,7 +142,6 @@ const agentCtx = {
   webServer: { register: (r) => { routes.set(r.path, r); } },
   inject: (names, fn) => { fn(agentCtx); },
   get: (name) => (name === 'systemPrompt' ? systemPromptStub : undefined),
-  agent: { id: `session-${SMOKE_AGENT_SESSION}` },
 };
 mod.registerRpTools(agentCtx);
 
@@ -270,9 +308,7 @@ if (onSessionCreated) {
   if (onAssemble) {
     const SID = crypto.randomUUID();
     const SID2 = crypto.randomUUID();
-    // 注入是按「作用域自带的身份」定位会话的 —— 这正是它不需要猜会话的原因。
-    // 测试里把 agent 作用域的身份设成这个会话，模拟 rp-bridge 挂载时的真实情形。
-    agentCtx.agent.id = `session-${SID}`;
+    // 注入按**装配上下文里的 agent** 定位会话；这里让 agent 指向 SID，模拟真实装配。
     onSessionCreated({ id: SID, header: { id: SID } });
     await callPost('/rp-tools/session', {
       sessionId: SID,
@@ -283,8 +319,13 @@ if (onSessionCreated) {
     });
 
     // 模拟宿主装配：初始 assembly 里只有我们注册的那段占位短文案
-    const assembly = { sections: [{ name: 'rp:standing', text: sec.text }, { name: 'other', text: 'x' }], contexts: [], tools: [], variables: {} };
-    const out = await onAssemble(assembly, {}, async () => assembly);
+    // 模拟宿主装配：初始 assembly 里只有我们注册的那段占位短文案
+    const assembly = mkAssembly([
+      { name: 'rp:standing', text: sec.text },
+      { name: 'other', text: 'x' },
+    ], SID);
+    const base = nextOf(assembly);
+    const out = await onAssemble(assembly, assembly.context, base);
     const mine = (out?.sections ?? []).find((s) => s?.name === 'rp:standing');
     check('注入后 rp:standing 段仍在', Boolean(mine), true);
     check('世界设定真的进了系统提示词', mine?.text?.includes('诸神陨落后的第三百年'), true);
@@ -292,6 +333,53 @@ if (onSessionCreated) {
     check('角色卡进了系统提示词', mine?.text?.includes('凯尔'), true);
     check('随机表目录进了系统提示词', mine?.text?.includes('遭遇表'), true);
     check('其它段未被破坏', (out?.sections ?? []).length, 2);
+    // 会话 id 必须来自**装配上下文**（曾经写成 ctx.agent.id，于是每次都读 default 会话：
+    // 世界设定/世界书在生产里从来没注入过，探针文件里 sessionId 是 "default"）
+    check('装配上下文里的 agent 决定注入哪个会话（插件 ctx 上没有 agent）', agentCtx.agent === undefined, true);
+    // 裸装配（没有 scope/agent）必须原样返回：既不注入，也不能猜成别的会话
+    const bareAsm = mkAssembly(null, SID);
+    const bare = await onAssemble(bareAsm, {}, nextOf(bareAsm));
+    check('拿不到 agent 的裸装配不注入（保持占位文案）',
+      bare?.sections?.find((s) => s?.name === 'rp:standing')?.text === sec.text, true);
+
+    // ── 常驻世界书条目：进 **standing（系统提示）**，本来每轮都一样的全文不该塞进每轮快照 ──
+    {
+      const wsC = join(TEST_HOME, 'ws-const');
+      mkdirSync(wsC, { recursive: true });
+      mod.__debug.setSessionCwd(SID, wsC);
+      await callPost('/rp-tools/lore', {
+        sessionId: SID, workspace: wsC, action: 'add',
+        entry: { title: '世界总纲', keys: [], constant: true, body: '永夜笼罩的第三百年。' },
+      });
+      await callPost('/rp-tools/lore', {
+        sessionId: SID, workspace: wsC, action: 'add',
+        entry: { title: '长安城', keys: ['长安'], constant: false, body: '天宝年间的坊市分明。' },
+      });
+      // 语料里有「长安」→ 非常驻那条应当命中
+      onSessionCreated({
+        id: SID,
+        header: { id: SID },
+        deriveMessages: () => [{ role: 'user', content: [{ type: 'text', text: '我们去长安' }] }],
+      });
+      const asmC = mkAssembly(null, SID);
+      const outC = await onAssemble(asmC, asmC.context, nextOf(asmC));
+      const standingC = outC.sections.find((s) => s.name === 'rp:standing')?.text ?? '';
+      const turnC = outC.contexts.find((c) => c.name === 'rp:turn')?.text ?? '';
+      check('常驻条目进了系统提示（standing）', standingC.includes('永夜笼罩的第三百年'), true);
+      check('常驻条目在系统提示里带来源标签', standingC.includes('【世界书·常驻】'), true);
+      check('常驻条目不再进每轮快照（否则每轮都往历史里追加一份全文）',
+        turnC.includes('永夜笼罩的第三百年'), false);
+      check('非常驻条目命中后仍进每轮快照', turnC.includes('天宝年间的坊市分明'), true);
+      // 空壳条目：连系统提示都不该进
+      await callPost('/rp-tools/lore', {
+        sessionId: SID, workspace: wsC, action: 'add',
+        entry: { title: '空壳', keys: [], constant: true, body: '1.\n```markdown\n```' },
+      });
+      const asmD = mkAssembly(null, SID);
+      const outD = await onAssemble(asmD, asmD.context, nextOf(asmD));
+      const standingD = outD.sections.find((s) => s.name === 'rp:standing')?.text ?? '';
+      check('空壳条目进不了系统提示', standingD.includes('### 空壳'), false);
+    }
 
     // ── 默认宏列表（设置页的键值对预设）────────────────────────────────
     // 语义：**只提供默认值**，会话里填过的同名键优先。原先只有「玩家称呼」一个字段
@@ -329,14 +417,26 @@ if (onSessionCreated) {
       check('设置页：非法名字被丢掉', Object.hasOwn(stateAfter.json.config?.cards?.macros ?? {}, 'bad name'), false);
       check('设置页：空值被丢掉', Object.hasOwn(stateAfter.json.config?.cards?.macros ?? {}, 'empty'), false);
 
-      await onAssemble(assembly, {}, async () => assembly);
+      const asm2 = mkAssembly(null, SID);
+      await onAssemble(asm2, asm2.context, nextOf(asm2));
       check('默认宏：装配后被注册成宿主变量', promptVars.has('era'), true);
-      check('默认宏：变量值就是默认值', promptVars.get('era')?.({}), '天宝年间');
-      check('默认宏：{{user}} 用新的默认值', promptVars.get('user')?.({}), '阿岚');
+      check('默认宏：变量值就是默认值', promptVars.get('era')?.(assembleCtx(SID)), '天宝年间');
+      check('默认宏：{{user}} 用新的默认值', promptVars.get('user')?.(assembleCtx(SID)), '阿岚');
       // 会话宏表里填过的同名键仍然优先（这条是「默认值」语义的核心）
       await callPost('/rp-tools/session', { sessionId: SID, macros: { era: '开元' } });
-      await onAssemble(assembly, {}, async () => assembly);
-      check('默认宏：会话值覆盖默认值', promptVars.get('era')?.({}), '开元');
+      const asm3 = mkAssembly(null, SID);
+      await onAssemble(asm3, asm3.context, nextOf(asm3));
+      check('默认宏：会话值覆盖默认值', promptVars.get('era')?.(assembleCtx(SID)), '开元');
+
+      // 刚重启那一轮：会话宏表只在盘上、还没被任何路由写过内存缓存 ——
+      // provider 必须自己补读一次盘，否则面板里填过会话值的宏会退回全局默认值。
+      const SID_DISK = crypto.randomUUID();
+      mkdirSync(join(TEST_HOME, 'data', 'dsh-rp-tools', 'sessions'), { recursive: true });
+      writeFileSync(
+        join(TEST_HOME, 'data', 'dsh-rp-tools', 'sessions', `${SID_DISK}.json`),
+        JSON.stringify({ sessionId: SID_DISK, macros: { era: '只在盘上' } }),
+      );
+      check('冷启动：宏值从磁盘补读（没经过任何路由）', promptVars.get('era')?.(assembleCtx(SID_DISK)), '只在盘上');
 
       // ── 出厂默认：列表里就该有一条 `user -> 玩家`（用户要求：不要给个空列表看不懂）──
       await callPost('/rp-tools/reset', {});
@@ -370,9 +470,10 @@ if (onSessionCreated) {
 
     // 未配置世界设定的会话 → 回落固定短文案，不应把上一个会话的内容泄露过去
     onSessionCreated({ id: SID2, header: { id: SID2 } });
-    const out3 = await onAssemble({ sections: [], contexts: [], tools: [], variables: {} }, {}, async (a) => a);
+    const out3 = await onAssemble(mkAssembly(null, SID2), assembleCtx(SID2), nextOf(mkAssembly(null, SID2)));
     const t3 = (out3?.sections ?? []).find((s) => s?.name === 'rp:standing')?.text ?? '';
     check('无配置会话不泄露上一会话的设定', t3.includes('诸神陨落'), false);
+    check('无配置会话仍带占位文案（段没被清掉）', t3.length > 0, true);
   } else { console.log('WARN: 未捕获 system-prompt/assemble 监听'); fail++; }
 }
 
@@ -523,6 +624,38 @@ if (onSessionCreated) {
   const many = Array.from({ length: 20 }, (_, i) => ({ title: `T${i}`, keys: ['k'], body: 'x', constant: false, order: 0, probability: 100 }));
   const a4 = D.activateLore(many, 'k', { sessionId: 's', turn: 1, maxEntries: 5, budgetChars: 1e6 });
   check('世界书：条目数上限生效', a4.active.length, 5);
+
+  // 空壳条目：解析时就打上 `empty`（面板据此折叠、注入时据此跳过）
+  // —— 真卡里「足 / 14 字」那条正文就是 `1.` + 空 markdown 代码块
+  const junkMd = [
+    '## 足',
+    '<!-- constant -->',
+    '1.',
+    '```markdown',
+    '```',
+    '',
+    '## 前情提要',
+    '<!-- constant -->',
+    '三天前主角刚进城。',
+    '',
+  ].join('\n');
+  const junkEntries = D.parseLoreMarkdown(junkMd);
+  check('世界书：空壳条目被标 empty', junkEntries[0].empty, true);
+  check('世界书：正常条目不是 empty', junkEntries[1].empty, false);
+  check('世界书：类别标成 历史', junkEntries[1].kind, '历史');
+  const a5 = D.activateLore(junkEntries, '随便说点什么', { sessionId: 's', turn: 1 });
+  check('世界书：空壳条目**不注入**（即便是常驻）', a5.active.map((e) => e.title).join(), '前情提要');
+  check('世界书：空壳条数被记下来', a5.emptySkipped, 1);
+
+  // 总览数字：面板顶部那行 / 常驻体积（用户问过「常驻到底占了多少上下文」）
+  const ov = D.loreOverview(junkEntries);
+  check('总览：条目总数', ov.total, 2);
+  check('总览：常驻条数', ov.constant, 2);
+  check('总览：空壳条数', ov.empty, 1);
+  check('总览：空壳字数', ov.emptyChars, 18);           // "1.\n```markdown\n```"
+  // 常驻体积 = Σ(标题 + 正文 + 8)，与注入时的成本口径**必须一致**
+  check('总览：常驻体积按注入口径算', ov.constantChars, (1 + 18 + 8) + (4 + 9 + 8));
+  check('总览：类别计数', JSON.stringify(ov.kinds), JSON.stringify({ 设定: 1, 规则: 0, 状态: 0, 历史: 1 }));
 
   // 模板：DM 一键生成 → 生成出来的文件必须能被自己解析（闭环）
   const rpLore2 = tools.get('rp_lore');
@@ -1133,6 +1266,11 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('lore：能列出用户手写的条目', loreRes.json.entries?.some((e) => e.title === '我自己的条目'), true);
   check('lore：给出文件绝对路径', typeof loreRes.json.file === 'string' && loreRes.json.file.endsWith('rp-worldbook.md'), true);
   check('lore：文件在会话自己的目录里（不是工作区根）', String(loreRes.json.file).includes(IMPORT_SID), true);
+  // 面板顶部那行数字：常驻体积（每轮注入）与空壳条目（被过滤掉的）都要能从响应里拿到
+  check('lore：回传每轮注入的常驻体积（此刻没有常驻条目 → 0）', loreRes.json.constantChars, 0);
+  check('lore：回传空壳条数', loreRes.json.empty, 0);
+  check('lore：每条都带 empty 标记', loreEntry?.empty, false);
+  check('lore：每条都带类别标签', typeof loreEntry?.kind === 'string' && loreEntry.kind.length > 0, true);
   const loreMissing = await callGet('/rp-tools/lore', `?sessionId=${crypto.randomUUID()}`);
   check('lore：拿不到工作区时不报错、只说明', loreMissing.json.exists, false);
 
