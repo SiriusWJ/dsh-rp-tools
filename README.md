@@ -259,6 +259,11 @@ dsh-rp-tools/
 
 ## 开发
 
+> **所有改动都在这个 git 仓库里做**（`D:\Code\dsh\rp-tools-plugin`，它本身就是
+> `github.com/SiriusWJ/dsh-rp-tools` 的克隆）。**不要改 profile 里那份安装副本**
+> （`~/.dsh/profiles/web/node_modules/dsh-rp-tools`）—— 它是重装时会被覆盖的产物，
+> 改了既不进版本库，下次安装就没了。
+
 ```bash
 node --check lib/index.js && node --check client/client.js      # 语法检查
 ```
@@ -282,6 +287,8 @@ Copy-Item preset\rp-bridge.mjs         "$env:USERPROFILE\.dsh\.agent-presets\dm\
 ```
 
 重启 `dsh web` 后生效（`lib/` 与 `preset/` 在启动时装载；`client/` 只需刷新页面）。
+
+> 只改了文档（`docs/`、`README.md`）时第 2 步可以跳过 —— 安装副本里的文档不参与运行。
 
 > 想跳过「push + 重装」这两步（改成改完即生效）：把依赖换成
 > `dsh plugin --profile web add link:D:/Code/dsh/rp-tools-plugin`。
