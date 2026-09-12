@@ -360,6 +360,16 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen |
     `tools/smoke-dm.mjs`、`docs/REFERENCE-COMPARISON.md` 上，还留下过 `lib/card-index.js`
     （482KB 私人卡库索引 —— 已加进 `.gitignore`，因为 `package.json` 的 `files` 含 `lib/`，
     不加会被提交并随 npm 包发布）。**同时开两个会话改这个仓库前，先约定分工。**
+11. **ST 式「正则表」：明确不做**（用户 2026-09-12 决定，别再自作主张加）。理由与现状：
+    - 两个参考仓库里 **`{{user}}` 不是正则，是「宏」**：dsh-liketavern 有独立的宏展开器
+      （`lib/core/macros.d.ts`，支持清单明确），dsh-roleplay 的 `rp-macro` 更保守（只有 `{{char}}`/`{{user}}`）。
+      正则表是**另一件事**：作用域（用户输入 / AI 输出 / 发送给模型）＋ 时机（组装前 / 发送前 / 渲染前）＋
+      find/replace ＋ 深度 ＋ 来源（用户 / 角色卡 / 预设 `extensions.regex_scripts`）。
+    - 代价：liketavern 的 AGENTS.md 明确要求**第三方正则不许在宿主主线程跑**（必须进 QuickJS 隔离 worker，防 ReDoS）；
+      要作用到「AI 输出」还得在 DSH 里挂 `conversation.chat.node`。与「轻量跑团工具」的定位不符。
+    - 我们现在走的是 DSH 原生路线：`{{user}}` 注册成**宿主变量**（`systemPrompt.variable`），
+      导入时再按卡名展开 `{{char}}` 等（`resolvePlaceholders`），其余未注册的宏中和成全角。
+      需要「清标签 / 统一标点」时，用 dm 预设的 persona 指令或直接改世界书条目即可。
 
 ---
 
