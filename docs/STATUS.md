@@ -3,9 +3,13 @@
 > 快照时间：2026-09-12 · 版本 1.12.9 · 状态：**分层注入与去重已落地；开局任务全在 `cards/<slug>.launch.md`；诊断只报「条目名与人物卡重名」；角色行 = 36px 头像 + 名称；技能/装备等动态值住 `rp_state`；出图工具已声明并发安全**
 > 这份文档记录「现在做到哪了、什么验证过、什么没验证、坑在哪」——给未来的自己和协作者看。
 >
-> ⚠️ **改完源码必须同步到 profile 再重启**：`file:` 依赖是安装期拷贝，不会自动跟随。
-> 本轮就踩过——源码改完没同步，真机还在跑旧代码（`lib/card-import.js`、`client/client.js`
-> 的 SHA256 与 profile 里那份对不上）。命令见 README「开发」一节。
+> ⚠️ **这个插件在 profile 里是从 GitHub 装的**（`github:SiriusWJ/dsh-rp-tools`）：
+> 改完源码要 **commit → push → `dsh plugin --profile web add github:SiriusWJ/dsh-rp-tools` → 重启**，
+> 只改本地目录**不会生效**；**dm 预设的活动目录**（`~/.dsh/.agent-presets/dm/`）不属于这个包，仍要手动拷。
+> 命令见 README「开发」一节。
+>
+> 本机到 `codeload.github.com`（GitHub 打包下载域名）吞吐只有 ~25KB/s，仓库 tarball 必须保持小 ——
+> `temp_output/` 里的试出图（4.3MB）已移出仓库，否则 `github:` 安装会卡满 pnpm 超时。
 
 ---
 

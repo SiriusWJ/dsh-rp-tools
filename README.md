@@ -263,28 +263,43 @@ dsh-rp-tools/
 node --check lib/index.js && node --check client/client.js      # 语法检查
 ```
 
-改完源码要**同步到 profile**（`file:` 依赖是安装期拷贝，不会自动跟随），然后重启 `dsh web`：
+这个插件在 profile 里是**从 GitHub 装的**（`"dsh-rp-tools": "github:SiriusWJ/dsh-rp-tools"`），
+所以「本地源码 → GitHub → profile」是一条链，**本地不再是权威副本**：
 
 ```powershell
-$dst = "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-rp-tools"
-Copy-Item lib/index.js       "$dst\lib\index.js"       -Force
-Copy-Item lib/card-png.js    "$dst\lib\card-png.js"    -Force
-Copy-Item lib/card-import.js "$dst\lib\card-import.js" -Force
-Copy-Item client/client.js   "$dst\client\client.js"   -Force
-# 改了 dm 预设那一半还要同步预设目录：
-Copy-Item preset/rp-bridge.mjs "$env:USERPROFILE\.dsh\.agent-presets\dm\rp-bridge.mjs" -Force
+# 1) 改完 → 提交并推送（profile 装的就是 push 上去的那个 commit）
+git -C D:\Code\dsh\rp-tools-plugin add -A
+git -C D:\Code\dsh\rp-tools-plugin commit -m "feat(x): …"
+git -C D:\Code\dsh\rp-tools-plugin push origin main
+
+# 2) 重装，让 profile 跟上新 commit（不重装的话它还停在旧 commit）
+dsh plugin --profile web add github:SiriusWJ/dsh-rp-tools
+
+# 3) 改的是 dm 预设那一半，还要同步**活动预设目录**（它不属于这个包，只能手动拷）
+Copy-Item preset\agent.cordis.yml     "$env:USERPROFILE\.dsh\.agent-presets\dm\agent.cordis.yml" -Force
+Copy-Item preset\session-filter-v2.mjs "$env:USERPROFILE\.dsh\.agent-presets\dm\session-filter-v2.mjs" -Force
+Copy-Item preset\rp-bridge.mjs         "$env:USERPROFILE\.dsh\.agent-presets\dm\rp-bridge.mjs" -Force
 ```
+
+重启 `dsh web` 后生效（`lib/` 与 `preset/` 在启动时装载；`client/` 只需刷新页面）。
+
+> 想跳过「push + 重装」这两步（改成改完即生效）：把依赖换成
+> `dsh plugin --profile web add link:D:/Code/dsh/rp-tools-plugin`。
+> 代价是 profile 直接读源码目录，与「商店里声明的是 GitHub」不一致 —— 二选一。
+>
+> ⚠️ 本机到 `codeload.github.com`（GitHub 打包下载域名）吞吐只有 ~25KB/s，且 Node 的 fetch
+> 比系统下载慢十倍量级 —— **仓库 tarball 必须保持小**（这也是 `temp_output/` 被移出仓库的原因：
+> 四张试出图占了 4.3MB，会让 `github:` 安装卡满超时）。
 
 测试：
 
 ```bash
-node tools/smoke-dm.mjs        # 宿主：作用域隔离 / 路由 / 世界书 / 状态 / 风格库 / 卡库导入（194 条断言）
-node tools/smoke-card.mjs      # PNG 卡解码 + 映射 + 开场指令（64 条，合成 PNG 字节）
-node tools/smoke-client.mjs    # 客户端 bundle：样式注入时机 / 槽位注册
+node tools/smoke-dm.mjs        # 宿主：作用域隔离 / 路由 / 世界书 / 状态 / 风格库 / 卡库导入
+node tools/smoke-card.mjs      # PNG 卡解码 + 映射 + 开场指令 / 引导文件（合成 PNG 字节）
+node tools/smoke-client.mjs    # 客户端 bundle：样式注入时机 / 槽位注册 / 面板渲染
+node tools/verify-roundtrip.mjs <card-import.js>   # 导入↔解析往返（需 profile 里那份）
 node tools/probe-cardlib.mjs   # 真卡库探针（只读 + 临时目录，手动跑）
 ```
-
-> 客户端 bundle 只在**页面加载时**读取 —— 改 `client/` 只需刷新页面；改 `lib/` 与 `preset/` 才需要重启宿主。
 
 当前开发状态、验证记录、已知问题与路线图见 **[docs/STATUS.md](docs/STATUS.md)**，
 给新会话的交接文档见 **[docs/HANDOFF.md](docs/HANDOFF.md)**。
