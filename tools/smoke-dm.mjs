@@ -7,7 +7,7 @@
 import crypto from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
@@ -223,6 +223,65 @@ if (rpTable) {
   await rpTable.execute({ action: 'set', name: '冒烟表', entries: ['甲', '乙'] }, { agent: { id: `session-${VIA_TOOL}` } });
   check('工具调用保底登记', (await callGet('/rp-tools/session', `?sessionId=${VIA_TOOL}`)).json.isDm, true);
 } else { console.log('WARN: rp_table 未注册'); fail++; }
+
+// ── 并发：出图慢，模型一轮里发多个调用时必须真的并行（否则一张一张等，白等两倍）──
+// 宿主 `executionMode()` 只认 `isConcurrencySafe(args) === true`，其余一律 exclusive；
+// 所以出图工具必须**显式声明**，而写会话/配置的工具（read-modify-write 会撞车）不声明。
+{
+  const safe = (n, args) => {
+    const t = tools.get(n);
+    if (!t || typeof t.isConcurrencySafe !== 'function') return false;
+    try { return t.isConcurrencySafe(args) === true; } catch { return false; }
+  };
+  check('并发：rp_illustrate 声明并发安全', safe('rp_illustrate', { prompt: '一张图' }), true);
+  check('并发：rp_scenes 声明并发安全', safe('rp_scenes', { scenesFile: 'x.json' }), true);
+  // 宿主那边是 fail-closed：参数校验不过就是 false（不会把坏调用丢进并行池）
+  check('并发：参数不合法时退回串行', safe('rp_illustrate', {}), false);
+  check('并发：写会话的工具不声明（fail-closed）', safe('rp_session', { action: 'get' }), false);
+  check('并发：写角色的工具不声明', safe('rp_character', { action: 'list' }), false);
+  check('并发：写配置的工具不声明', safe('rp_config', { action: 'get' }), false);
+}
+
+// ── 出图即登记成立绘：DM 给角色出的第一张图 = 它的立绘（用户要求）──────────────
+// 以前只有**面板**上点「立绘」才落盘，DM 出的图只活在聊天里：角色行还是占位、
+// 下一轮也没有可复用的地址，于是可能又出一张。
+{
+  const D = mod.__debug;
+  const sid = crypto.randomUUID();
+  const ws2 = join(TEST_HOME, 'ws-portrait-auto');
+  mkdirSync(ws2, { recursive: true });
+  D.setSessionCwd(sid, ws2);
+  const files = [{ file: 'rp_auto_1.png', subfolder: '', type: 'output' }];
+  check('出图登记：第一次写入成功',
+    D.recordGeneratedPortrait(sid, '祁俊', files, { style: '二次元', elapsedMs: 9500 }), true);
+  const after = D.loadSession(sid).portraits?.祁俊;
+  check('出图登记：三要素落盘', JSON.stringify(after?.generated),
+    JSON.stringify({ file: 'rp_auto_1.png', subfolder: '', type: 'output' }));
+  check('出图登记：风格与耗时也记下', `${after?.style}|${after?.elapsedMs}`, '二次元|9500');
+  // 常驻段里要能直接用它（下一轮 DM 就看这一行决定要不要重出）
+  const standing = D.buildStandingText({
+    ...D.loadSession(sid), sessionId: sid, characters: [{ name: '祁俊' }],
+  }, {});
+  check('出图登记：下一轮的可复用图里有它', standing.includes('/rp-tools/media?file=rp_auto_1.png'), true);
+  check('出图登记：常驻段说明「有就直接展示」', standing.includes('有就直接展示，不要再生成'), true);
+  // 已有立绘 → 不覆盖（面板里那张、或用户自己配的那张都该保住）
+  check('出图登记：已有立绘时不覆盖',
+    D.recordGeneratedPortrait(sid, '祁俊', [{ file: 'rp_auto_2.png', subfolder: '', type: 'output' }], {}), false);
+  check('出图登记：原立绘没被换掉', D.loadSession(sid).portraits?.祁俊?.generated?.file, 'rp_auto_1.png');
+  // 认不出唯一角色（群像/场景图）→ 不记
+  check('出图登记：认不出角色时不记', D.recordGeneratedPortrait(sid, '', files, {}), false);
+  check('出图登记：没有文件描述符时不记', D.recordGeneratedPortrait(sid, '祝婉宁', [], {}), false);
+  check('出图登记：先出图后登记角色也能建',
+    D.recordGeneratedPortrait(sid, '祝婉宁', files, {}), true);
+  // ⚠️ **不对称是故意的**（用户拍板：「已有立绘就不覆盖；立绘不满意，用户可以通过按钮新建」）：
+  //    - 自动登记（DM 出图）：只在空着时写，绝不动已有那张；
+  //    - 面板「立绘」按钮（用户主动要求重出）：走 HTTP 路由，**总是覆盖**。
+  //    下面这条就是那条覆盖路径，别把两者改成同一个行为。
+  const rerun = await callPost('/rp-tools/portrait', {
+    sessionId: sid, name: '祁俊', action: 'save', file: 'rp_auto_3.png', subfolder: '', type: 'output', style: '写实',
+  });
+  check('出图登记：用户点按钮重出**可以**覆盖', rerun.json.portraits?.祁俊?.generated?.file, 'rp_auto_3.png');
+}
 
 // agent/created：宿主侧能否直接识别预设并自动登记
 const onCreated = (payload) => emit('agent/created', payload);
@@ -650,12 +709,43 @@ if (onSessionCreated) {
   // 总览数字：面板顶部那行 / 常驻体积（用户问过「常驻到底占了多少上下文」）
   const ov = D.loreOverview(junkEntries);
   check('总览：条目总数', ov.total, 2);
-  check('总览：常驻条数', ov.constant, 2);
+  // 常驻口径 = **真的会进系统提示的**：空壳常驻不进 standing（它本来就不注入），
+  // 所以这里是 1 条 / 21 字，而不是「文件里标了 constant 的条数」（那会把不注入的也算进去）。
+  check('总览：常驻条数（只数真的进 standing 的）', ov.constant, 1);
   check('总览：空壳条数', ov.empty, 1);
   check('总览：空壳字数', ov.emptyChars, 18);           // "1.\n```markdown\n```"
   // 常驻体积 = Σ(标题 + 正文 + 8)，与注入时的成本口径**必须一致**
-  check('总览：常驻体积按注入口径算', ov.constantChars, (1 + 18 + 8) + (4 + 9 + 8));
+  check('总览：常驻体积按注入口径算', ov.constantChars, (4 + 9 + 8));
+  // 空壳常驻不进 standing，但也不谎报成「按需注入」—— 它本来就不注入（面板另有空条目提示）
+  check('总览：空壳常驻不计入常驻也不谎报降级', ov.demoted.length, 0);
   check('总览：类别计数', JSON.stringify(ov.kinds), JSON.stringify({ 设定: 1, 规则: 0, 状态: 0, 历史: 1 }));
+
+  // ── 注入规划（计划 §3.1）：导入的常驻不得自动获得 system 权限；standing 有总预算 ──
+  {
+    const mk = (title, body, extra = {}) => ({ title, keys: [title], constant: true, order: 0, body, empty: false, source: '', ...extra });
+    const plan = D.planLoreInjection([
+      mk('手写核心', '短的常驻'),
+      mk('导入的人物', '这是从卡里导进来的大段人物正文', { source: 'card' }),
+    ]);
+    check('规划：手写常驻进 standing', plan.standing.map((e) => e.title).join(), '手写核心');
+    check('规划：导入的常驻被降级（不给 system 权限）', plan.runtime.map((e) => e.title).sort().join(), '导入的人物');
+    check('规划：降级原因记为 imported', plan.demoted.find((d) => d.title === '导入的人物')?.reason, 'imported');
+    check('规划：降级后 constant 被清掉（改按触发词命中）', plan.runtime[0].constant, false);
+    check('规划：standing 字数按注入口径上报', plan.standingChars, 4 + 4 + 8);
+    // 预算：手写常驻超预算 → 降级（不截断、不残句）
+    const big = D.planLoreInjection([mk('巨大设定', 'x'.repeat(20000))]);
+    check('规划：手写常驻超预算也降级', big.standing.length === 0 && big.demoted[0]?.reason === 'budget', true);
+    check('规划：降级条目的正文一字不动（不截断）', big.runtime[0].body.length, 20000);
+    // 注入侧：导入的常驻改为**按触发词**进 runtime；**条目名**是本轮已展开的人物时跳过（§3.3 去重）
+    const a = D.activateLore([mk('诸葛大力', '人物正文')], '诸葛大力走进来', { sessionId: 's', turn: 1, skipTitles: new Set(['诸葛大力']) });
+    check('规划：命中的条目若人物已展开则跳过', a.active.length, 0);
+    check('规划：跳过原因写进诊断', a.skipped[0]?.reason, 'character-duplicate');
+    // 只看条目名：条目名不同、只是触发词撞上人物名 → **照常注入**（用户口径：键不用管）
+    const a2 = D.activateLore([mk('室友', '人物正文')], '诸葛大力', { sessionId: 's', turn: 1, skipTitles: new Set(['诸葛大力']) });
+    check('规划：触发词撞上人物名不算重复（只看条目名）', a2.active.length, 1);
+    const b = D.activateLore([mk('诸葛大力', '人物正文')], '诸葛大力走进来', { sessionId: 's', turn: 1 });
+    check('规划：人物没展开时照常注入', b.active.length, 1);
+  }
 
   // 模板：DM 一键生成 → 生成出来的文件必须能被自己解析（闭环）
   const rpLore2 = tools.get('rp_lore');
@@ -686,6 +776,198 @@ if (onSessionCreated) {
     const miss = await rpLore2.execute({ query: '不存在的条目xyz' }, exec);
     check('rp_lore find：未命中时给出说明而非报错', String(miss.note).includes('没有匹配'), true);
   } else { console.log('WARN: rp_lore 未注册'); fail++; }
+}
+
+// ── 世界书边界：**只有** `##` 是新条目，`###` 属于上一条的正文 ─────────────
+// 历史 bug：解析器用 `#{2,6}`，于是卡正文里的 `### 外貌` 也变成条目 ——
+// 《爱情公寓》那张卡 29 个顶级条目被解析成 44 个，世界书体积与面板条数一起虚高。
+{
+  const D = mod.__debug;
+  const md = [
+    '# 文件标题（不是条目）',
+    '',
+    '## 诸葛大力',
+    '<!-- keys: 大力 | source: card -->',
+    '正文开头。',
+    '### 外貌',
+    '短发，戴眼镜。',
+    '### 关系',
+    '胡一菲的室友。',
+    '',
+    '## 胡一菲',
+    '<!-- constant -->',
+    '正文二。',
+    '',
+  ].join('\n');
+  const parsed = D.parseLoreMarkdown(md);
+  const topLevel = (md.match(/^## /gm) ?? []).length;
+  check('边界：顶级条目数 == 解析条目数', parsed.length, topLevel);
+  check('边界：`###` 不再自成一个条目', parsed.map((e) => e.title).join(), '诸葛大力,胡一菲');
+  check('边界：`###` 留在上一条正文里', parsed[0].body.includes('### 外貌') && parsed[0].body.includes('短发，戴眼镜。'), true);
+  check('边界：`#` 文件标题不成条目', parsed.some((e) => e.title.includes('文件标题')), false);
+  check('边界：无 keys 时标题当触发词', parsed[0].keys.join(), '大力');
+  check('边界：source: card 被解析出来', parsed[0].source, 'card');
+  // 编辑一条导入来的条目时必须把来源标记写回去，否则它会「变回手写」并重新拿到 system 权限
+  const block = D.renderLoreEntryBlock(parsed[0]);
+  check('边界：编辑后 source: card 仍在', block.includes('source: card'), true);
+  const round = D.parseLoreMarkdown(block)[0];
+  check('边界：往返一致（标题/标记/正文）',
+    `${round.title}|${round.source}|${round.constant}|${round.body}`, `${parsed[0].title}|card|false|${parsed[0].body}`);
+}
+
+// ── 诊断：**只看条目名**与人物卡重不重名（键一律不管 —— 用户口径）────────────────
+{
+  const D = mod.__debug;
+  check('key 规范化：全角与空白与标点都归一', D.normalizeLoreKey(' 诸葛大力： '), D.normalizeLoreKey('诸葛大力'));
+  check('key 规范化：大小写归一', D.normalizeLoreKey('Lisa榕'), D.normalizeLoreKey('lisa榕'));
+  const diag = D.loreNameConflicts([
+    { title: '诸葛大力', keys: ['大力', '诸葛大力'], body: 'A', empty: false },
+    { title: '大力（旧版）', keys: ['诸葛大力'], body: 'B', empty: false },
+    { title: '广寒宫', keys: ['广寒宫'], body: 'C', empty: false },
+  ], { characterNames: ['广寒宫'] });
+  // 两条条目共用 key「诸葛大力」→ 不报；条目名与人物名不同 → 也不报
+  check('诊断：不再产出 duplicateKeys', diag.duplicateKeys, undefined);
+  check('诊断：只有条目名 == 人物名才报', diag.characterOverlap.map((o) => o.title).join(), '广寒宫');
+  check('诊断：条目级说明可直接显示', String(diag.byTitle['广寒宫']).includes('人物卡'), true);
+  check('诊断：只认条目名（条目名不同、触发词带人物名 → 不报）',
+    D.loreNameConflicts([{ title: '室友', keys: ['诸葛大力'], body: 'D', empty: false }], { characterNames: ['诸葛大力'] })
+      .characterOverlap.length, 0);
+  check('诊断：条目名的全半角/标点差异仍算重名',
+    D.loreNameConflicts([{ title: '广寒宫：', keys: [], body: 'E', empty: false }], { characterNames: ['广寒宫'] })
+      .characterOverlap.length, 1);
+  check('诊断：空壳条目不参与诊断',
+    D.loreNameConflicts([{ title: '足', keys: ['足'], body: '1.', empty: true }], { characterNames: ['足'] }).characterOverlap.length, 0);
+}
+
+// ── 给无名条目重命名（老导入器把没名字的条目编成「条目 4」…）──────────────────
+{
+  const sid = crypto.randomUUID();
+  const ws = join(TEST_HOME, 'ws-rename');
+  const loreFile = join(ws, 'rp-sessions', sid, 'rp-worldbook.md');
+  mkdirSync(dirname(loreFile), { recursive: true });
+  writeFileSync(loreFile, [
+    '# 测试世界书',
+    '',
+    '## 世界总纲',
+    '<!-- constant -->',
+    '时代与基调。',
+    '',
+    '## 条目名单',
+    '<!-- keys: 名单 -->',
+    '用户自己起的名，不许动。',
+    '',
+    '## 条目 4',
+    '<!-- keys: --战斗、--b | source: card -->',
+    '<rule>',
+    '中文输出',
+    'D4=1-4',
+    '',
+    '## 条目 5',
+    '<!-- keys: --营地、--派系 | source: card -->',
+    '<tfau>',
+    '中文输出',
+    '',
+  ].join('\n'), 'utf8');
+  mod.__debug.setSessionCwd(sid, ws);
+  const res = await callPost('/rp-tools/lore', { sessionId: sid, workspace: ws, action: 'renameUnnamed' });
+  check('重命名：ok', res.json.ok, true);
+  check('重命名：改了两条', res.json.changed, 2);
+  check('重命名：按触发词起名',
+    (res.json.renamed ?? []).map((r) => `${r.from}→${r.to}`).join(','), '条目 4→战斗,条目 5→营地');
+  const text = readFileSync(loreFile, 'utf8');
+  check('重命名：文件里出现新标题', text.includes('## 战斗') && text.includes('## 营地'), true);
+  check('重命名：不再有编号标题', /^## 条目 \d+/m.test(text), false);
+  check('重命名：用户自己起的名一字不动', text.includes('## 条目名单'), true);
+  check('重命名：触发词原样保留', text.includes('keys: --战斗、--b'), true);
+  check('重命名：source 标记保留（否则导入条目会变回「手写」拿到 system 权限）',
+    (text.match(/source: card/g) ?? []).length, 2);
+  check('重命名：正文没被重写', text.includes('D4=1-4') && text.includes('用户自己起的名，不许动。'), true);
+  // 幂等：再跑一次没事可做，也不许报错
+  const again = await callPost('/rp-tools/lore', { sessionId: sid, workspace: ws, action: 'renameUnnamed' });
+  check('重命名：重复执行幂等', again.json.changed, 0);
+  check('重命名：列表里能看到新名字',
+    (again.json.entries ?? []).some((e) => e.title === '战斗'), true);
+}
+
+// ── rp_lore 的 localize / rename_unnamed：DM 开局时一次调用做完（见 launch 文件）──
+// 面板上不再有「属性中文化」「重命名无名条目」按钮 —— 这两件事改由 DM 按初始引导文件做，
+// 所以**工具侧必须有对应动作**，否则那条路走不通。
+{
+  const sid = crypto.randomUUID();
+  const ws = join(TEST_HOME, 'ws-lore-tools');
+  const loreFile = join(ws, 'rp-sessions', sid, 'rp-worldbook.md');
+  mkdirSync(dirname(loreFile), { recursive: true });
+  writeFileSync(loreFile, [
+    '# 世界书',
+    '',
+    '## 条目 7',
+    '<!-- keys: --配方、--recipe | source: card -->',
+    'name: 配方',
+    'gender: Female',
+    '放进合成台就能做东西。',
+    '',
+  ].join('\n'), 'utf8');
+  mod.__debug.setSessionCwd(sid, ws);
+  const rpLore3 = tools.get('rp_lore');
+  if (rpLore3) {
+    const exec = { agent: { id: `session-${sid}` } };
+    const rn = await rpLore3.execute({ action: 'rename_unnamed' }, exec);
+    check('rp_lore rename_unnamed：列出一条改名', rn.lines.length, 1);
+    check('rp_lore rename_unnamed：说清改了什么', String(rn.note).includes('已重命名 1 条'), true);
+    const lz = await rpLore3.execute({ action: 'localize' }, exec);
+    check('rp_lore localize：列出一处中文化', lz.lines.length, 1);
+    check('rp_lore localize：说清改了哪几行', String(lz.note).includes('行英文属性键'), true);
+    const text = readFileSync(loreFile, 'utf8');
+    check('rp_lore：标题按触发词改名', text.includes('## 配方'), true);
+    check('rp_lore：属性标签中文化', text.includes('名称：配方') && text.includes('性别：女'), true);
+    check('rp_lore：来源标记与触发词保留', text.includes('keys: --配方、--recipe') && text.includes('source: card'), true);
+    check('rp_lore：正文没被改', text.includes('放进合成台就能做东西。'), true);
+    // 两个动作都幂等：再来一次无事可做、也不报错
+    check('rp_lore rename_unnamed：再跑无事可做', (await rpLore3.execute({ action: 'rename_unnamed' }, exec)).lines.length, 0);
+    check('rp_lore localize：再跑无事可做', (await rpLore3.execute({ action: 'localize' }, exec)).lines.length, 0);
+  } else { console.log('WARN: rp_lore 未注册'); fail++; }
+}
+
+// ── rp_session：DM 设定与本会话生图策略（Agent 与面板共用同一份配置）──────────
+{
+  const D = mod.__debug;
+  const rpSession = tools.get('rp_session');
+  if (rpSession) {
+    const SID = crypto.randomUUID();
+    const cwd = join(TEST_HOME, 'ws-session-tool');
+    mkdirSync(cwd, { recursive: true });
+    D.setSessionCwd(SID, cwd);
+    const exec = { agent: { id: `session-${SID}` } };
+    const read = () => D.loadSession(SID);
+
+    await rpSession.execute({ action: 'set', dm_prompt: 'DM 规则：扮演所有 NPC，第二人称叙述。' }, exec);
+    check('rp_session：dm_prompt 落盘', read().dm?.prompt, 'DM 规则：扮演所有 NPC，第二人称叙述。');
+
+    // 只改生图开关**不能**把 DM 正文清掉（两者同在 session.dm 下，最容易写错）
+    await rpSession.execute({ action: 'set', images_enabled: false }, exec);
+    check('rp_session：关生图后 DM 正文还在', read().dm?.prompt, 'DM 规则：扮演所有 NPC，第二人称叙述。');
+    check('rp_session：images_enabled=false 落盘', read().dm?.images?.enabled, false);
+    // 面板与工具共用同一份配置：常驻段渲染必须跟着变（这里趁 enabled 还是 false 时验）
+    check('rp_session：常驻段反映生图开关', D.renderDmSetup(read()).includes('生图：**关**'), true);
+
+    await rpSession.execute({ action: 'set', images_enabled: true, images_first_appearance: false, images_key_scenes: false }, exec);
+    check('rp_session：总开关打开', read().dm?.images?.enabled, true);
+    check('rp_session：首次出场可单独关', read().dm?.images?.firstAppearance, false);
+    check('rp_session：重要场景可单独关', read().dm?.images?.keyScenes, false);
+    check('rp_session：关生图后 DM 正文仍在（第二次校验）', read().dm?.prompt, 'DM 规则：扮演所有 NPC，第二人称叙述。');
+
+    await rpSession.execute({ action: 'set', images_first_appearance: true, images_key_scenes: true }, exec);
+    const on = D.renderDmSetup(read());
+    check('rp_session：常驻段反映打开状态', on.includes('生图：开（角色第一次出场给 1 张立绘；重要场景给 1 张氛围图）'), true);
+    // 每轮都在的常驻行里也要提醒**并发出图**（一张 15~25 秒，串行等于把等待叠加）
+    check('rp_session：常驻段提醒并发出图', on.includes('要 2 张以上时在同一步里并发发出多个'), true);
+    check('rp_session：常驻段带上 DM 设定正文', on.includes('DM 规则：扮演所有 NPC'), true);
+
+    // get 的输出要把这两个都报出来（不然 DM 只能靠猜自己设过什么）
+    const got = await rpSession.execute({ action: 'get' }, exec);
+    check('rp_session：get 报告 DM 设定字数', got.lines.some((l) => l.includes('DM 设定：')), true);
+    check('rp_session：get 报告生图开关', got.lines.some((l) => l.startsWith('本会话生图：开')), true);
+  } else { console.log('WARN: rp_session 未注册'); fail++; }
 }
 
 // ── 角色固定种子（跨场景一致性） ──────────────────────────────────────────
@@ -727,12 +1009,19 @@ if (onSessionCreated) {
       scene: '雨夜客栈', time: '三更', location: '玉湖山庄·东厢',
       present: '祝婉宁、两名麒麟卫',
       clues: '地图在西厢夹墙内',
-      party: [{ character: '祁俊', status: '警戒', inventory: '短枪枪头、腰刀', conditions: '左臂擦伤', goal: '找到地图' }],
+      party: [{
+        character: '祁俊', status: '警戒',
+        abilities: '短枪枪法·乱星、听声辨位',
+        inventory: '短枪枪头、腰刀', conditions: '左臂擦伤', goal: '找到地图',
+      }],
       flags: { 伏笔_黑猫: '已埋', 义王_好感: '警惕' },
     }, exec);
     const after = (await callGet('/rp-tools/session', `?sessionId=${SID}`)).json.session.state;
     check('状态：场景落盘', after?.scene, '雨夜客栈');
     check('状态：队伍成员状态落盘', after?.party?.[0]?.conditions, '左臂擦伤');
+    // 技能/能力与持有物都是**动态值**（会学新的、会换装备），所以住在状态层而不是人物卡
+    check('状态：能力/技能落盘', after?.party?.[0]?.abilities, '短枪枪法·乱星、听声辨位');
+    check('状态：持有/装备落盘', after?.party?.[0]?.inventory, '短枪枪头、腰刀');
     check('状态：旗标落盘', after?.flags?.伏笔_黑猫, '已埋');
 
     // ② 局部更新：没传的字段保持原值
@@ -747,14 +1036,16 @@ if (onSessionCreated) {
     const cleared = (await callGet('/rp-tools/session', `?sessionId=${SID}`)).json.session.state;
     check('状态：空串清除字段', 'conditions' in (cleared ?? {}), false);
     check('状态：空串删除旗标键', '伏笔_黑猫' in (cleared?.flags ?? {}), false);
-    check('状态：清除后其它旗标仍在', cleared?.flags?.义王_好感, '警惕');
+    check('状态：植入的旗标仍在', cleared?.flags?.义王_好感, '警惕');
 
-    // ④ 注入：状态在最前、带权威标注
-    const session = { state: cleared, world: '', tables: [], characters: [] };
+    // ④ 注入：状态在最前、带权威标注；队伍行要带上**能力**与**持有**（都是动态值）
+    const session = { state: after, world: '', tables: [], characters: [] };
     const turn = D.buildTurnContext(session, '没什么特别的', {});
     check('状态：进了每轮注入', turn.includes('本场当前状态'), true);
     check('状态：注入带「唯一权威」标注', turn.includes('唯一权威'), true);
     check('状态：注入在最前（先于世界书）', turn.indexOf('本场当前状态') < (turn.indexOf('世界书') === -1 ? Infinity : turn.indexOf('世界书')), true);
+    check('状态：注入里带能力/技能字段', turn.includes('能力/技能=短枪枪法·乱星'), true);
+    check('状态：注入里带持有/装备字段', turn.includes('持有/装备=短枪枪头、腰刀'), true);
     check('状态：没有任何状态时不注入空段', D.buildTurnContext({ state: {} }, '', {}).includes('本场当前状态'), false);
 
     // ⑤ 陈旧提醒：状态多轮未更新时提示模型去更新（防静默漂移）
@@ -878,12 +1169,12 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('风格：旧内置风格已移除', ['darkbrush', 'dotmatrix', 'kidsdrawing', 'neondrip', 'rainywindow', 'retroanime', 'softwatercolor', 'sunsetblur', 'vintagetarot', 'anime', 'realistic']
     .some((k) => state.config.styles[k]), false);
   check('风格：默认风格是二次元', state.config.defaultStyle, 'uncensored_anime');
-  // 尺寸调小：三档都是小尺寸（scene 1024×576 / portrait 640×896 / item 768×768）
+  // 尺寸调小：三档都是小尺寸（scene 768×432 / portrait 512×768 / item 512×512，1.12.8 起的出厂值）
   const sizesOf = (k) => state.config.styles[k]?.sizes;
-  check('风格尺寸：二次元的场景尺寸变小', sizesOf('uncensored_anime')?.scene, [1024, 576]);
-  check('风格尺寸：二次元的立绘尺寸变小', sizesOf('uncensored_anime')?.portrait, [640, 896]);
-  check('风格尺寸：写实同步', sizesOf('uncensored_real')?.item, [768, 768]);
-  check('风格尺寸：黑白漫画也变小（krea2 老默认 1344×768）', sizesOf('manga')?.scene, [1024, 576]);
+  check('风格尺寸：二次元的场景尺寸变小', sizesOf('uncensored_anime')?.scene, [768, 432]);
+  check('风格尺寸：二次元的立绘尺寸变小', sizesOf('uncensored_anime')?.portrait, [512, 768]);
+  check('风格尺寸：写实同步', sizesOf('uncensored_real')?.item, [512, 512]);
+  check('风格尺寸：黑白漫画也变小（krea2 老默认 1344×768）', sizesOf('manga')?.scene, [768, 432]);
   // 用户自己改过的尺寸不该被迁移覆盖
   await callPost('/rp-tools/config', { styles: { manga: { sizes: { scene: [1536, 864] } } } });
   const after = (await callGet('/rp-tools/state')).json.config.styles.manga.sizes.scene;
@@ -1167,7 +1458,13 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('导入：卡 JSON 已写出', existsSync(join(ws, 'rp-sessions', IMPORT_SID, 'cards', '烟测卡.card.json')), true);
   check('导入：卡面已复制（当立绘）', existsSync(join(ws, 'rp-sessions', IMPORT_SID, 'cards', '烟测卡.card.png')), true);
   check('导入：立绘登记在会话里', imported.json.files?.image, `rp-sessions/${IMPORT_SID}/cards/烟测卡.card.png`);
-  check('导入：返回开场指令', String(imported.json.opening).includes('不要再问世界从哪来'), true);
+  // 开局消息：**只发一个指针**（计划 §4）—— 不内联开场白、不附全量整理任务
+  check('导入：返回开场指令', String(imported.json.opening).includes('【开局】'), true);
+  check('导入：开场指令指向 launch 文件',
+    String(imported.json.opening).includes(`rp-sessions/${IMPORT_SID}/cards/烟测卡.card.launch.md`), true);
+  check('导入：开场指令很短（<500 字）', String(imported.json.opening).length < 500, true);
+  check('导入：开场指令不内联开场白原文', String(imported.json.opening).includes('开场白一'), false);
+  check('导入：开局消息里不出现全量整备', String(imported.json.opening).includes('【设定整备】'), false);
 
   const wbText = readFileSync(LORE_FILE, 'utf8');
   check('导入：本会话原有的手写条目还在', wbText.includes('我自己的条目'), true);
@@ -1182,7 +1479,17 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   // 开场白引导文件：全部开场白都写进去（不截断），DM 需要时自己 read
   check('导入：写出开场白引导文件', existsSync(join(ws, 'rp-sessions', IMPORT_SID, 'cards', '烟测卡.card.opening.md')), true);
   check('导入：结果里有引导文件路径', imported.json.files?.opening, `rp-sessions/${IMPORT_SID}/cards/烟测卡.card.opening.md`);
-  check('导入：开场指令指向引导文件', String(imported.json.opening).includes(`rp-sessions/${IMPORT_SID}/cards/烟测卡.card.opening.md`), true);
+  // 开局引导文件（§4）：launch 文件真的落盘，且含「选定开场 + 文件清单 + 不要再问世界从哪来」
+  check('导入：写出开局引导文件', existsSync(join(ws, 'rp-sessions', IMPORT_SID, 'cards', '烟测卡.card.launch.md')), true);
+  check('导入：结果里有 launch 路径', imported.json.files?.launch, `rp-sessions/${IMPORT_SID}/cards/烟测卡.card.launch.md`);
+  {
+    const launchText = readFileSync(join(ws, 'rp-sessions', IMPORT_SID, 'cards', '烟测卡.card.launch.md'), 'utf8');
+    check('导入：launch 含选定开场', launchText.includes('## 选定开场'), true);
+    check('导入：launch 给出全部开场白文件', launchText.includes('烟测卡.card.opening.md'), true);
+    check('导入：launch 给出卡全文', launchText.includes('烟测卡.card.md'), true);
+    check('导入：launch 明确不要再问世界从哪来', launchText.includes('不要再问玩家「世界从哪来」'), true);
+    check('导入：launch 明确不要复述', launchText.includes('不要复述本文件'), true);
+  }
   // 四个产物（世界书 / 全文 / JSON / 卡面 / 开场白引导）**全部**在会话目录里，
   // 工作区根目录不许再冒出共享的 rp-cards/
   check('隔离：工作区根不再产生 rp-cards/', !existsSync(join(ws, 'rp-cards')), true);
@@ -1264,7 +1571,44 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     check('DM 设定：生图开关进常驻段', standing.includes('生图：开'), true);
     check('DM 设定：重要场景关掉时不列进频次', standing.includes('重要场景给 1 张'), false);
     check('DM 设定：已有立绘给出可直接用的地址', standing.includes('/rp-tools/card-image?path=x%2F%E5%BC%A5%E7%8F%A5.png'), true);
-    check('DM 设定：明说不要重复生成', standing.includes('不要重复生成'), true);
+    check('DM 设定：明说先找现成的、不要再生成', standing.includes('有就直接展示，不要再生成'), true);
+    // **立绘复用**（用户要求）：导入卡的卡面就是它的立绘 —— 常驻段要把它列成可用图，
+    // DM 第一次出场直接展示这张，不再花 15~25 秒重出一张。
+    {
+      const withCover = mod.__debug.buildStandingText({
+        ...sessObj,
+        portraits: {},
+        characters: [{ name: '星渊', appearance: '黑发红斗篷' }],
+        cover: { card: '2025/RPG/星渊.png', file: 'rp-sessions/x/cards/星渊.png', name: '星渊' },
+      }, {});
+      check('立绘复用：卡面被列成可用图（认给同名角色）', withCover.includes('星渊（卡面＝立绘）'), true);
+      check('立绘复用：给的是卡面路由地址', withCover.includes('/rp-tools/card-image?path=2025%2FRPG%2F%E6%98%9F%E6%B8%8A.png'), true);
+      // 卡名与角色名不同、但只有一个角色 → 也认给它（一对一的角色卡最常见）
+      const oneChar = mod.__debug.buildStandingText({
+        ...sessObj,
+        portraits: {},
+        characters: [{ name: '星渊' }],
+        cover: { card: 'a/b.png', name: '某个卡名' },
+      }, {});
+      check('立绘复用：只有一个角色时也算它的', oneChar.includes('星渊（卡面＝立绘）'), true);
+      // 故事书（多个角色、卡名对不上）→ 不硬塞给某个角色，只当一张可用图列出
+      const multi = mod.__debug.buildStandingText({
+        ...sessObj,
+        portraits: {},
+        characters: [{ name: '甲' }, { name: '乙' }],
+        cover: { card: 'a/b.png', name: '某故事书' },
+      }, {});
+      check('立绘复用：认不出归属时只列成卡面', multi.includes('卡面《某故事书》'), true);
+      check('立绘复用：认不出归属时不硬塞给角色', multi.includes('（卡面＝立绘）'), false);
+      // 已经有真立绘时不重复列卡面（避免同一张图占两行、让 DM 以为有两张）
+      const hasGen = mod.__debug.buildStandingText({
+        ...sessObj,
+        portraits: { 星渊: { generated: { file: 'p.png', subfolder: '', type: 'output' } } },
+        characters: [{ name: '星渊' }],
+        cover: { card: 'a/b.png', name: '星渊' },
+      }, {});
+      check('立绘复用：已有生成立绘时不再列卡面', hasGen.includes('（卡面＝立绘）'), false);
+    }
     // 关掉生图 → 常驻段必须明确写「关」，否则 DM 还是会去调工具
     const offStanding = mod.__debug.buildStandingText({ ...sessObj, dm: { ...sessObj.dm, images: { enabled: false, firstAppearance: true, keyScenes: true } } }, {});
     check('DM 设定：关掉生图时写明「关」', offStanding.includes('生图：**关**'), true);
@@ -1574,6 +1918,33 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('迁移过之后删除不再补回', Object.hasOwn(again.json.config?.cards?.macros ?? {}, 'user'), false);
 }
 
+// ── 降尺寸迁移：全局 imageSizes 还等于**旧出厂值**（= 用户没动过）就换成新出厂值 ──
+// 出图时间基本正比于像素；聊天里根本用不到 1024 宽，所以出厂值调小了。
+// 但**自己改过尺寸的人不该被静默改掉**（§9 不替用户猜）。
+{
+  const stylesFile = join(TEST_HOME, 'data', 'dsh-rp-tools', 'styles.json');
+  const base = JSON.parse(readFileSync(stylesFile, 'utf8'));
+  // ① 没动过（旧出厂值）→ 跟着换成新的
+  writeFileSync(stylesFile, JSON.stringify({
+    ...base, imageSizes: { scene: [1024, 576], portrait: [640, 896], item: [768, 768] },
+  }, null, 2), 'utf8');
+  const bumped = await callGet('/rp-tools/state');
+  check('降尺寸：旧出厂值被换成新值（场景）', bumped.json.config?.imageSizes?.scene, [768, 432]);
+  check('降尺寸：旧出厂值被换成新值（立绘）', bumped.json.config?.imageSizes?.portrait, [512, 768]);
+  check('降尺寸：旧出厂值被换成新值（道具）', bumped.json.config?.imageSizes?.item, [512, 512]);
+  // ② 自己改过 → 原样保留
+  writeFileSync(stylesFile, JSON.stringify({
+    ...base, imageSizes: { scene: [1200, 700], portrait: [640, 896], item: [640, 640] },
+  }, null, 2), 'utf8');
+  const kept2 = await callGet('/rp-tools/state');
+  check('降尺寸：自定义尺寸不动', kept2.json.config?.imageSizes?.scene, [1200, 700]);
+  check('降尺寸：只有等于旧出厂值的那档才换', kept2.json.config?.imageSizes?.portrait, [512, 768]);
+  check('降尺寸：另一档自定义也不动', kept2.json.config?.imageSizes?.item, [640, 640]);
+  // 还原，别影响后面的用例
+  writeFileSync(stylesFile, JSON.stringify(base, null, 2), 'utf8');
+  await callGet('/rp-tools/state');
+}
+
 // ── 自动宏：日期/时间及其**分量**都由宿主现算（用户不用填）────────────────────
 // 用户反馈「很多宏其实可以自动设置」——`{{year}}年{{month}}月{{day}}日` 这种写法在卡里
 // 很常见，以前要手填。现在它们全在 AUTO_MACROS 里，导入界面会标「自动」。
@@ -1623,7 +1994,7 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('尺寸：保存全局尺寸', saved.json.config?.imageSizes?.scene, [1200, 700]);
   check('尺寸：保存立绘尺寸', saved.json.config?.imageSizes?.portrait, [640, 960]);
   check('尺寸：未知槽位被忽略', Object.hasOwn(saved.json.config?.imageSizes ?? {}, 'bogus'), false);
-  check('尺寸：道具那档保持原值', saved.json.config?.imageSizes?.item, [768, 768]);
+  check('尺寸：道具那档保持原值', saved.json.config?.imageSizes?.item, [512, 512]);
   const bad = await callPost('/rp-tools/config', { imageSizes: { scene: [10, 10] } });
   check('尺寸：非法宽高不改动旧值', bad.json.config?.imageSizes?.scene, [1200, 700]);
   const kept = await callGet('/rp-tools/state');
@@ -1657,6 +2028,51 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   }, null, 2), 'utf8');
   const got2 = await callGet('/rp-tools/session', `?sessionId=${id2}`);
   check('封面迁移：属于角色的卡面不当封面', got2.json.session?.cover, null);
+}
+
+// ── dm 预设本身：渲染方案与过滤开关（真机踩过坑，放这里当回归闸门）────────────
+// 用户实测：导入的卡自带的 ASCII「状态面板 / 战斗面板」被 DM 当成模板照抄，
+// 于是回复里全是代码块画的方框 —— 预设必须明确「一律用 GenUI 组件重画」。
+{
+  let yaml = null;
+  // js-yaml 是宿主的依赖，不一定在被测的那份 profile 里（用临时 profile 跑源码时会缺）——
+  // 先问被测 profile，再退回默认 profile，都拿不到才跳过（别让套件因为解析器缺失而红）。
+  for (const pkg of [PROFILE_PACKAGE, join(homedir(), '.dsh', 'profiles', 'web', 'package.json')]) {
+    try { yaml = createRequire(pkg)('js-yaml'); break; } catch { /* 换下一个 */ }
+  }
+  if (!yaml) { console.log('WARN: 拿不到 js-yaml，跳过 dm 预设断言'); }
+  else {
+    const presetFile = join(here, '..', 'preset', 'agent.cordis.yml');
+    const doc = yaml.load(readFileSync(presetFile, 'utf8'));
+    const rows = Array.isArray(doc) ? doc : [];
+    const persona = rows.find((row) => row?.id === 'persona');
+    const prefix = String(persona?.config?.prefix ?? '');
+    check('预设：persona 段存在', Boolean(persona), true);
+    check('预设：有「渲染方案」小节', prefix.includes('## 渲染方案'), true);
+    check('预设：点明不要照抄卡里的 ASCII 面板', prefix.includes('不要照抄卡里的画法'), true);
+    check('预设：给了替代组件（keyvalue/progress/table）',
+      ['`keyvalue`', '`progress`', '`table`'].every((k) => prefix.includes(k)), true);
+    check('预设：把「必须输出面板」解释成「必须给出数据」', prefix.includes('不是必须用代码块'), true);
+    check('预设：禁止同一批数据发两份', prefix.includes('同一批数据只出现一次'), true);
+    check('预设：图片用 image 组件且不许贴裸 URL',
+      prefix.includes('图片一律用 `image` 组件') && prefix.includes('不要贴裸 URL'), true);
+    // 出图慢（一张 15~25 秒）→ 必须提醒 DM **一次发多个调用**，别一张一张串行等
+    check('预设：提醒并发出图', prefix.includes('一次要几张就一次发几个调用'), true);
+    check('预设：串行的代价说清楚了', prefix.includes('串行') && prefix.includes('15~25 秒'), true);
+    check('预设：多张图放同一个围栏', prefix.includes('多张图放在**同一个**'), true);
+    // 立绘复用：先查「已有可用图」，卡面就是角色卡的立绘，别重复生成
+    check('预设：要求先复用已有图', prefix.includes('先查「已有可用图」，能复用就不生成'), true);
+    check('预设：明确指出卡面＝角色卡的立绘', prefix.includes('导入卡的卡面') && prefix.includes('那张 PNG 就是它的立绘'), true);
+    check('预设：说明出图会自动记成角色立绘', prefix.includes('第一张图会自动记成它的立绘'), true);
+    // 围栏必须成对：奇数个三反引号会让模型把后文当代码块（persona 里踩过）
+    const ticks = prefix.split('```').length - 1;
+    check('预设：三反引号成对出现（不留未闭合围栏）', ticks % 2, 0);
+    // 每轮注入通道**不能**被关掉（关掉 = 世界书命中/在场角色静默丢失）
+    const filter = rows.find((row) => row?.id === 'dm-filter');
+    check('预设：dm-filter 显式 suppressRuntimeContext=false', filter?.config?.suppressRuntimeContext, false);
+    check('预设：保留 validate_dsh_ui（围栏自检靠它）',
+      (filter?.config?.keepGlobalTools ?? []).includes('validate_dsh_ui'), true);
+  }
 }
 
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);

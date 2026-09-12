@@ -6,7 +6,7 @@
  * 也被用来挡住调研文档里那三个「会改变设计的实测数字」：
  *   ① `first_mes` 是广告 → 必须丢弃并改用 `alternate_greetings`
  *   ② 正文常在 `character_book` 里 → 导入主战场是世界书
- *   ③ 32% 条目无 keys → 必须补 `constant`，否则导入死条目
+ *   ③ 32% 条目无 keys → 保留非常驻语义，由运行时用标题作为默认触发 key
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -14,7 +14,7 @@ import { pathToFileURL } from 'node:url';
 const here = new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const mod = (p) => import(pathToFileURL(join(here, '..', 'lib', p)).href);
 const { readPngTextChunks, decodeCardPng } = await mod('card-png.js');
-const { buildImport, worldBookMarkdown, pickGreeting, isAdText, cardToCharacter, cardToMarkdown, buildOpeningPrompt, buildTidyPrompt, resolvePlaceholders, describePlaceholders, localizeAttributes, discoverMacros, collectCardText, isJunkLoreBody, loreKindOf, isDmCardData, dmCardToPrompt } = await mod('card-import.js');
+const { buildImport, worldBookMarkdown, pickGreeting, isAdText, cardToCharacter, cardToMarkdown, cardToOpeningFile, cardToLaunchFile, buildOpeningPrompt, buildTidyPrompt, resolvePlaceholders, describePlaceholders, localizeAttributes, discoverMacros, collectCardText, isJunkLoreBody, loreKindOf, isDmCardData, detectDmCardData, dmCardToPrompt, stripPromo } = await mod('card-import.js');
 
 let pass = 0; let fail = 0;
 const check = (name, got, want) => {
@@ -224,7 +224,7 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
   check('appearance 留空待 DM 提炼', ch.appearance, '');
 }
 
-// ── 世界书映射：无 keys 补 constant（调研数字 ③） ─────────────────────────
+// ── 世界书映射：无 keys 保持非常驻，用标题作运行时 key（调研数字 ③） ───────
 {
   const md = worldBookMarkdown([
     { name: '有键条目', keys: ['广寒宫', '祝婉宁'], content: '正文 A', insertion_order: 80 },
@@ -234,12 +234,16 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
   ]);
   check('有 keys 的条目写 keys', md.markdown.includes('keys: 广寒宫、祝婉宁'), true);
   check('order 被保留', md.markdown.includes('order: 80'), true);
-  check('无 keys 的条目被补上 constant', /## 无键条目\n<!-- constant -->/.test(md.markdown), true);
-  check('原卡 constant 保留', /## 原卡常驻\n<!-- constant -->/.test(md.markdown), true);
+  check('无 keys 的条目不再自动 constant', /## 无键条目\n<!--[^\n>]*\bconstant\b[^\n>]*-->/.test(md.markdown), false);
+  check('无 keys 的条目保留标题供运行时触发',
+    /## 无键条目\n<!--[^>]*-->\n正文 B/.test(md.markdown), true);
+  check('原卡 constant 保留', /## 原卡常驻\n<!--[^\n>]*\bconstant\b[^\n>]*-->/.test(md.markdown), true);
+  // 来源标记：导入侧的每一条都要能被注入侧认出来（否则外部世界书会因 constant 拿到 system 权限）
+  check('每条导入条目都带 source: card', (md.markdown.match(/source: card/g) ?? []).length, 3);
   check('被禁用的条目不导入', md.markdown.includes('正文 D'), false);
   check('统计被禁用的条数', md.enabledOff, 1);
   check('保留 3 条', md.kept, 3);
-  // 注：「导出的世界书能被解析器读回、且无键条目真的会激活」这条往返一致性
+  // 注：「导出的世界书能被解析器读回、且无键条目用标题触发」的往返一致性
   // 由 tools/verify-roundtrip.mjs 在 profile 上下文里验（lib/index.js 依赖 profile 的
   // @deepseek-ai/dsh-tools，从仓库路径直接 import 会解析不到）。
 
@@ -248,6 +252,68 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
   const capped = worldBookMarkdown(many, { maxEntries: 3, maxChars: 1e6 });
   check('条目数上限生效', capped.kept, 3);
   check('超上限的进 dropped', capped.skipped, 7);
+}
+
+// ── 无名条目的标题：不能只剩「条目 4」（用户实测面板里 17 行编号）────────────
+{
+  const titles = (list) => worldBookMarkdown(list).markdown
+    .split('\n').filter((l) => l.startsWith('## ')).map((l) => l.slice(3)).sort();
+  // ① 卡自己给了名字就用它（永远第一顺位）
+  check('标题：卡给的名字优先', titles([{ name: 'Basic needs', keys: ['--x'], content: '正文够长的一句话' }]), ['Basic needs']);
+  // ② 正文第一个 markdown 标题（代码围栏里的不算 —— 那是卡画的面板）
+  check('标题：用正文里的第一个标题',
+    titles([{ keys: ['--map'], content: '# Template and Status Panel\n- 面板说明' }]), ['Template and Status Panel']);
+  check('标题：代码围栏里的 # 不算标题（退回触发词）',
+    titles([{ keys: ['--scan'], content: '```\n# Scan initialized...\n```\n扫描规则说明' }]), ['scan']);
+  check('标题：中文触发词直接当名字',
+    titles([{ keys: ['--战斗', '--b'], content: '<rule>\n中文输出\nD4=1-4' }]), ['战斗']);
+  check('标题：触发词只取第一个（别名不进标题）',
+    titles([{ keys: ['--详细地图', '--dmap'], content: '详细地图规则说明' }]), ['详细地图']);
+  // ④ 都没有才用正文首行
+  check('标题：退回正文首行', titles([{ keys: [], content: '雨夜客栈的规矩：进门先交刀。' }]), ['雨夜客栈的规矩：进门先交刀。']);
+  // ⑤ 实在没信息才编号；而且**编号也要唯一**（世界书按标题合并/触发，重名会互相吃掉）
+  //    `<rule>` / `<tfau>` 这种只有标签的正文没有可用标题 —— 正是最该编号的情形
+  check('标题：完全无信息时才编号', titles([{ keys: [], content: '<rule>' }]), ['条目 1']);
+  check('标题：编号回退也不重名', titles([{ keys: [], content: '<rule>' }, { keys: [], content: '<tfau>' }]), ['条目 1', '条目 2']);
+  check('标题：重名自动加序号', titles([
+    { keys: ['--map'], content: 'A 规则说明文字' },
+    { name: 'map', keys: ['--map2'], content: 'B 规则说明文字' },
+  ]), ['map', 'map（2）']);
+}
+
+// ── 作者注里的广告/授权/社群信息（用户截图：分享群号 + CC 协议占了半屏）────────
+{
+  const real = [
+    '使用方法：只需在输入中提及命令即可。',
+    '',
+    '本角色卡分享于破限组交流群：704819371 ，类脑Discord社区:https://discord.com/invite/B7Wr25Z7BZ，请勿倒卖，侵删，如有疑问，请联系我们！',
+    '本内容依据“CC BY-SA 4.0”许可证进行授权。要查看该许可证， 可访问：https://creativecommons.org/licenses/by-nc-sa/4.0/',
+  ].join('\n');
+  const r = stripPromo(real);
+  check('广告过滤：去掉 2 行', r.dropped, 2);
+  check('广告过滤：留下真正的说明', r.text, '使用方法：只需在输入中提及命令即可。');
+  check('广告过滤：整段是广告时返回空串', stripPromo('请加QQ群12345，Discord: https://discord.gg/abc').text, '');
+  check('广告过滤：空输入不炸', stripPromo('').dropped, 0);
+  // 端到端：creator_notes 整段都是广告 → 【作者注】不进【世界设定】
+  const adPng = makePng([textChunk('ccv3', card({
+    name: '广告卡',
+    description: '一个角色',
+    personality: '冷淡',
+    creator_notes: '请加QQ群12345，Discord: https://discord.gg/abc',
+  }, 'chara_card_v3'))]);
+  const adImp = buildImport(decodeCardPng(adPng));
+  check('广告过滤：整段广告的作者注不进世界设定', adImp.world.includes('【作者注】'), false);
+  check('广告过滤：摘要里说明去掉了广告', adImp.summary.some((s) => s.includes('作者注里去掉')), true);
+  // 一半说明一半广告 → 说明留下
+  const mixPng = makePng([textChunk('ccv3', card({
+    name: '混合卡',
+    description: '一个角色',
+    personality: '冷淡',
+    creator_notes: '战斗时输出战斗面板。\n请加QQ群12345',
+  }, 'chara_card_v3'))]);
+  const mixImp = buildImport(decodeCardPng(mixPng));
+  check('广告过滤：一半说明一半广告时留下说明', mixImp.world.includes('战斗时输出战斗面板。'), true);
+  check('广告过滤：但广告那行不在', mixImp.world.includes('QQ群'), false);
 }
 
 // ── 智能过滤世界书：正文只有模板残留的条目不要（用户实测「足 / 14 字」这种） ──────
@@ -341,7 +407,10 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
   check('端到端：角色名', imp.character.name, '汴京残梦录');
   check('端到端：开场白来自备用而非广告', imp.character.first_mes.includes('宣德楼下'), true);
   check('端到端：世界书写出两条', imp.stats.kept, 2);
-  check('端到端：无键条目被补 constant', /<!-- constant -->/.test(imp.worldBookMarkdown), true);
+  // 无 keys 的条目**不再**被补 constant（早先的「否则永不触发」判断已被运行时用标题兜底取代）
+  check('端到端：无键条目不补 constant', /<!--[^\n>]*\bconstant\b[^\n>]*-->/.test(imp.worldBookMarkdown), false);
+  check('端到端：无键条目带正文且可从标题触发',
+    /## 世界背景\n<!--[^>]*-->\n北宋末年，山河破碎。/.test(imp.worldBookMarkdown), true);
   check('端到端：情境进了 world', imp.world.includes('靖康二年'), true);
   check('端到端：摘要说明了开场白来源', imp.summary.some((s) => s.includes('备用开场白')), true);
   check('端到端：摘要提示丢广告', imp.summary.some((s) => s.includes('广告')), true);
@@ -381,32 +450,75 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
   check('全文：超上限会截断', cut.truncated, true);
   check('全文：截断后带说明', cut.text.includes('已截断'), true);
 
-  // 开场指令：必须显式拦住 dm persona 的「先问世界从哪来」
+  // ── 开局消息：**只发一个指针**（计划 §4）──────────────────────────────
+  // 早先它内联开场白 + 附全量整理任务，真机实测一轮 95 万 token；现在消息只给路径，
+  // 细节（选定开场 / 文件清单 / 已写入什么 / 待确认）全在 launch 文件里。
   const built = buildImport(decoded);
   const opening = buildOpeningPrompt(built, {
-    worldFile: 'rp-worldbook.md', cardFile: 'rp-cards/测试卡.md', imageRel: 'rp-cards/测试卡.png',
+    launchFile: 'rp-sessions/x/cards/测试卡.launch.md',
+    greetingFile: 'rp-sessions/x/cards/测试卡.opening.md',
+    worldFile: 'rp-sessions/x/rp-worldbook.md',
+    cardFile: 'rp-sessions/x/cards/测试卡.md',
   });
-  check('开场指令：明说不要再问世界从哪来', opening.includes('不要再问世界从哪来'), true);
-  check('开场指令：带卡名', opening.includes('测试卡'), true);
-  check('开场指令：带世界书文件名', opening.includes('rp-worldbook.md'), true);
-  check('开场指令：带全文文件名', opening.includes('rp-cards/测试卡.md'), true);
-  check('开场指令：带立绘路径', opening.includes('rp-cards/测试卡.png'), true);
-  check('开场指令：要求给带 action 的选项', opening.includes('action'), true);
-  check('开场指令：附上卡组开场白作参考', opening.includes('开场白一'), true);
-  // 设定整备（用户要求：「开局第一轮提示 DM 完善角色卡和世界书」/「这样就可以过滤无关项了」）
-  check('开场指令：带上设定整备', opening.includes('【设定整备】'), true);
-  check('整备：要求角色字段归位', opening.includes('把外貌搬进 appearance'), true);
-  check('整备：点名要删的是「会过期」的条目', opening.includes('当前进度 / 前情提要 / 历史纪要 / 物品清单'), true);
-  check('整备：要求删掉空壳条目', opening.includes('空的 markdown 代码块'), true);
-  check('整备：要求补触发词', opening.includes('玩家真的会说出口'), true);
-  check('整备：常驻只留核心的 1-3 条', opening.includes('只留给真正的核心设定'), true);
-  check('整备：不许动玩家手写的条目', opening.includes('玩家手写的条目与注释不要动'), true);
-  check('整备：强调只搬家不缩写', opening.includes('只搬家、不缩写、不自己编'), true);
-  check('整备：带上世界书文件路径', opening.includes('rp-worldbook.md'), true);
-  const bare = buildOpeningPrompt({ character: { name: '无开场' }, stats: {}, }, {});
-  check('开场指令：无开场白时不出现参考段', bare.includes('只作场景与文风参考'), false);
-  check('开场指令：缺文件名时有兜底', bare.includes('rp-worldbook.md'), true);
-  check('开场指令：可以整备（历史行为不变）', bare.includes('【设定整备】'), true);
+  check('开局消息：指向 launch 文件', opening.includes('测试卡.launch.md'), true);
+  check('开局消息：说的是「选定开场」', opening.includes('选定开场'), true);
+  check('开局消息：明确不要复述', opening.includes('不要复述文件内容'), true);
+  check('开局消息：**不内联**开场白原文', opening.includes('开场白一'), false);
+  check('开局消息：**不带**全量设定整备', opening.includes('【设定整备】'), false);
+  check('开局消息：不带立绘路径（那是 launch 文件里的事）', opening.includes('.png'), false);
+  check('开局消息：少于 500 字（验收线）', opening.length < 500, true);
+  // 没有 launch 文件时回退：greeting → 卡全文 → 世界书
+  const noLaunch = buildOpeningPrompt(built, { greetingFile: 'a.opening.md' });
+  check('开局消息：缺 launch 时回退到开场白文件', noLaunch.includes('a.opening.md'), true);
+  const bare = buildOpeningPrompt({ character: { name: '无开场' }, stats: {} }, {});
+  check('开局消息：什么都没有时兜底到世界书', bare.includes('rp-worldbook.md'), true);
+  check('开局消息：兜底也不带整备', bare.includes('【设定整备】'), false);
+  // 显式整备仍然可用（面板「整理设定」走的是 buildTidyPrompt，这里只保留开关语义）
+  const tidyOn = buildOpeningPrompt({ character: { name: 'x' }, stats: {} }, { tidy: true });
+  check('开局消息：tidy=true 才带整备段', tidyOn.includes('【设定整备】'), true);
+
+  // ── launch 文件：消息短，信息不能丢（§4）──────────────────────────────
+  {
+    const { cardToLaunchFile } = await mod('card-import.js');
+    const imp = buildImport(decoded);
+    const launch = cardToLaunchFile(decoded, {
+      greetings: imp.greetings,
+      chosenIndex: 0,
+      files: { world: 'rp-sessions/x/rp-worldbook.md', markdown: 'rp-sessions/x/cards/a.md', opening: 'rp-sessions/x/cards/a.opening.md' },
+      built: imp,
+      warnings: ['卡数据里有个小问题'],
+    });
+    check('launch：含卡名标题', launch.text.includes('# 《测试卡》开局引导'), true);
+    check('launch：含选定开场原文', launch.text.includes('开场白一'), true);
+    check('launch：标注开场来源', launch.text.includes('备用开场白 #1'), true);
+    check('launch：给出全部开场白文件路径', launch.text.includes('a.opening.md'), true);
+    check('launch：给出卡全文路径', launch.text.includes('cards/a.md'), true);
+    check('launch：给出世界书路径', launch.text.includes('rp-worldbook.md'), true);
+    check('launch：含解析告警（待人工确认）', launch.text.includes('卡数据里有个小问题'), true);
+    check('launch：明确不要再问世界从哪来', launch.text.includes('不要再问玩家「世界从哪来」'), true);
+    check('launch：明确不要复述本文件', launch.text.includes('不要复述本文件'), true);
+    // **初始要做的事全在这份文件里**（用户拍板）：面板不再有「属性中文化」「重命名无名条目」
+    // 那两个按钮，DM 读到这段才知道开局要先收拾什么。
+    check('launch：含开局收尾清单', launch.text.includes('【开局收尾】'), true);
+    check('launch：要求按当前语言写属性标签', launch.text.includes('按**当前对话的语言**收拾'), true);
+    check('launch：给出中文化的调用方式', launch.text.includes('rp_lore(action:"localize")'), true);
+    check('launch：要求条目名一眼看出是什么', launch.text.includes('条目标题要一眼看出是什么'), true);
+    check('launch：给出重命名的调用方式', launch.text.includes('rp_lore(action:"rename_unnamed")'), true);
+    check('launch：含世界书过滤要点（状态类改触发式）', launch.text.includes('当前进度 / 前情提要 / 历史纪要'), true);
+    check('launch：含角色字段归位要点', launch.text.includes('把外貌搬进 appearance'), true);
+    check('launch：先做收尾再开场', launch.text.includes('开始剧情之前'), true);
+    // 收尾清单只有一处措辞：buildTidyPrompt 的三种语气都要能对上
+    const tidyLaunch = buildTidyPrompt({ worldFile: 'w.md', character: '测试卡', when: 'launch' });
+    check('整备：launch 语气说「开始剧情之前」', tidyLaunch.includes('开始剧情之前'), true);
+    check('整备：launch 语气不说「开场画面之后」', tidyLaunch.includes('开场画面之后'), false);
+    check('整备：when=now 仍然是「只做这一件事」',
+      buildTidyPrompt({ when: 'now' }).includes('只做这一件事'), true);
+    // 没有开场白时也要能开局（不能生成一份空文件）
+    const empty = cardToLaunchFile(decoded, { greetings: [], files: {} });
+    check('launch：无开场白时给出替代指令', empty.text.includes('自行开一个场'), true);
+    check('launch：声明开场白条数', empty.text.includes('共 0 条可选'), true);
+    check('launch：无开场白时也给出唯一可读的指引', empty.text.includes('## 现在做什么'), true);
+  }
 
   // 已开局的会话让面板再发一次：同一段措辞，但语气是「现在做」而不是「开局顺手做」
   const tidyNow = buildTidyPrompt({
@@ -420,31 +532,25 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
   check('整备指令：列出条目名供对照', tidyNow.includes('世界总纲、当前进度'), true);
   check('整备指令：带上本会话世界书路径', tidyNow.includes('rp-sessions/abc/rp-worldbook.md'), true);
   check('整备指令：指名角色卡', tidyNow.includes('《祁俊》'), true);
-  // 关掉整备 = 老行为（给测试与将来留一个开关）
-  const noTidy = buildOpeningPrompt({ character: { name: 'x' }, stats: {} }, { tidy: false });
-  check('开场指令：tidy=false 时不带整备段', noTidy.includes('【设定整备】'), false);
+  // 整理指令仍然保留全部要点（它现在是**用户显式触发**的那条路）
+  check('整备：要求角色字段归位', tidyNow.includes('把外貌搬进 appearance'), true);
+  check('整备：点名要删的是「会过期」的条目', tidyNow.includes('当前进度 / 前情提要 / 历史纪要 / 物品清单'), true);
+  check('整备：要求删掉空壳条目', tidyNow.includes('空的 markdown 代码块'), true);
+  check('整备：要求补触发词', tidyNow.includes('玩家真的会说出口'), true);
+  check('整备：常驻只留核心的 1-3 条', tidyNow.includes('只留给真正的核心设定'), true);
+  check('整备：不许动玩家手写的条目', tidyNow.includes('玩家手写的条目与注释不要动'), true);
+  check('整备：强调只搬家不缩写', tidyNow.includes('只搬家、不缩写、不自己编'), true);
 
-  // ⚠️ 回归：截断绝不能往引用正文里插「（已截断）」这类元信息
+  // ⚠️ 回归：任何注入/引用文本都不能出现「已截断」这类元信息
   // —— 模型会把它当叙事照念（用户实测：DM 第一条回复里原样出现了那行字）。
-  const long = '第一段。'.repeat(1200);   // 6000 字，超过内联引用上限
+  const long = '第一段。'.repeat(1200);
   const cutPrompt = buildOpeningPrompt(
-    { character: { name: '长卡', first_mes: '短版' }, stats: {} },
-    { greeting: long, greetingFile: 'rp-cards/长卡.opening.md', greetingCount: 4 },
+    { character: { name: '长卡' }, stats: {} },
+    { launchFile: 'rp-sessions/x/cards/长卡.launch.md', greeting: long, greetingFile: 'rp-cards/长卡.opening.md', greetingCount: 4 },
   );
-  check('开场指令：引用里不出现「已截断」', cutPrompt.includes('已截断'), false);
-  check('开场指令：引用里不出现「全文见导出的 JSON」', cutPrompt.includes('全文见导出的 JSON'), false);
-  check('开场指令：超长时不内联，改指向引导文件', cutPrompt.includes('开场前先 read 这个文件'), true);
-  check('开场指令：给出引导文件路径', cutPrompt.includes('rp-cards/长卡.opening.md'), true);
-  check('开场指令：说明有几条可选', cutPrompt.includes('共 4 条可选'), true);
-  check('开场指令：超长时不把原文塞进指令里', cutPrompt.includes('第一段。第一段。'), false);
-
-  // 短开场白仍然直接内联（省掉一次工具往返）
-  const shortPrompt = buildOpeningPrompt(
-    { character: { name: '短卡' }, stats: {} },
-    { greeting: '天宝年间，长安城。', greetingFile: 'rp-cards/短卡.opening.md' },
-  );
-  check('开场指令：短开场白直接内联', shortPrompt.includes('天宝年间，长安城。'), true);
-  check('开场指令：内联时也附引导文件路径', shortPrompt.includes('卡组开场白：rp-cards/短卡.opening.md'), true);
+  check('开局消息：引用里不出现「已截断」', cutPrompt.includes('已截断'), false);
+  check('开局消息：引用里不出现「全文见导出的 JSON」', cutPrompt.includes('全文见导出的 JSON'), false);
+  check('开局消息：超长开场白绝不内联', cutPrompt.includes('第一段。第一段。'), false);
 
   // 角色字段被截断时，也只在数据里标记，不污染文本
   const longPng = makePng([textChunk('ccv3', card({

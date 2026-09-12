@@ -33,6 +33,12 @@ globalThis.document = {
     return el;
   },
   head: { appendChild: (el) => { el.isConnected = true; head.push(el); } },
+  // body 必须存在：共享大编辑器（世界书/角色卡/DM 设定）走 createPortal(content, document.body)，
+  // 没有它就永远走「退回原位」那条分支，测出来的不是真实布局。
+  body: { children: [] },
+  activeElement: null,
+  addEventListener: () => {},
+  removeEventListener: () => {},
   querySelector: () => null,
 };
 
@@ -75,8 +81,23 @@ const React = {
     if (!(i in cells)) cells[i] = { current: init };
     return cells[i];
   },
-  useEffect(fn) { rt.cursor++; rt.effects.push(fn); },
-  useLayoutEffect(fn) { rt.cursor++; rt.effects.push(fn); },
+  useEffect(fn, deps) {
+    // ⚠️ 必须与真实 React 一样**按依赖决定跑不跑**：早先这里无条件 push，于是每次 render()
+    //    都把「挂载时的 reload()」又跑一遍 —— 它会把 draft 铺回宿主版本，测试里刚改的字段
+    //    被静默冲掉（加角色浮窗用例时就是这么被打中的）。真实 React 不会这样。
+    const cells = rt.cells;
+    const i = rt.cursor++;
+    const prev = cells[i];
+    const list = Array.isArray(deps) ? deps : null;
+    const changed = !prev
+      || (list === null) !== (prev.list === null)
+      || (list !== null && (list.length !== prev.list.length || list.some((d, k) => !Object.is(d, prev.list[k]))));
+    if (changed) {
+      cells[i] = { list };
+      rt.effects.push(fn);
+    }
+  },
+  useLayoutEffect(fn, deps) { React.useEffect(fn, deps); },
   useMemo(fn) { return fn(); },
   useCallback(fn) { return fn; },
 };
@@ -119,6 +140,9 @@ globalThis.window = {
   __ModuleLoader__: {
     load(spec) { captured = spec; },
   },
+  // 面板里几个破坏性/批量操作都会先 confirm（删除、属性中文化、重命名无名条目）——
+  // 无头环境里给个「确定」，否则点击会被静默拦下，测出来的是假的。
+  confirm: () => true,
 };
 
 // fetch 桩：按 URL 回应并记录调用，让导入流程能真的走完
@@ -216,8 +240,11 @@ globalThis.fetch = async (url, options = {}) => {
       // 总览数字（宿主 loreOverview）：面板顶部要显示「常驻 N 条 ≈ M 字/轮」与「隐藏了几条空壳」
       empty: 1, emptyChars: 18, constantChars: 46,
       kinds: { 设定: 2, 规则: 0, 状态: 0, 历史: 0 },
+      // 唯一要显示的诊断：**条目名与人物卡重名**（键一律不管 —— 用户口径）
+      characterOverlap: [{ title: '长安城', character: '长安' }],
       entries: [
-        { title: '长安城', keys: ['长安'], constant: false, order: 0, probability: 100, chars: 22, preview: '天宝年间的长安城，坊市分明。', empty: false, kind: '设定' },
+        { title: '长安城', keys: ['长安'], constant: false, order: 0, probability: 100, chars: 22, preview: '天宝年间的长安城，坊市分明。', empty: false, kind: '设定',
+          nameConflict: '与人物卡「长安」同名，正文已由人物卡承载（不会再从世界书重复注入）' },
         { title: '世界总纲', keys: [], constant: true, order: 0, probability: 100, chars: 30, preview: '盛唐末年，边镇不稳。', empty: false, kind: '设定' },
         // 空壳条目：正文只有模板残留 —— 界面要默认藏起来
         { title: '足', keys: [], constant: true, order: 0, probability: 100, chars: 18, preview: '1. ```markdown', empty: true, kind: '设定' },
@@ -525,6 +552,13 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   //   （用户明确说「选中再看」——几十张几 MB 的卡同时拉会拖死两端。）
   const listImgs = findAll(byClass(tree2, 'list')[0] ?? [], (n) => n.type === 'img');
   assert.equal(listImgs.length, 0, '列表里不该有缩略图（只在选中后加载）');
+  // 左列表要**撑满左列**（与右侧预览等高）—— 用户反馈「左侧列表长一点」：
+  // 原来 max-height 300px，5 张卡时只有一百多像素，旁边预览七百多
+  assert.ok(/\.rpc \.split \{[^}]*align-items:\s*stretch/.test(style.textContent),
+    '两列要等高（align-items: stretch），左列表才会长');
+  assert.ok(/\.rpc \.list \{[^}]*min-height:\s*320px/.test(style.textContent), '列表至少 320px 高');
+  assert.ok(/\.rpc \.list \{[^}]*max-height:\s*min\(78vh/.test(style.textContent), '列表最高 ~78vh（再多就在列表内滚动）');
+  assert.equal(/\.rpc \.list \{[^}]*max-height:\s*300px/.test(style.textContent), false, '不该再封顶 300px');
   const faceImgs = byClass(tree2, 'face');
   assert.equal(faceImgs.length, 1, '预览区应有且仅有一张卡面');
   const faceSrc = String(faceImgs[0].props.src ?? '');
@@ -691,12 +725,26 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   // 没有随机表时，那张「RP 表格 / 随机表（0）」卡片不该出现（用户要求去掉）
   assert.equal(text.includes('RP 表格'), false, '没有表时不应渲染「RP 表格 / 随机表（0）」');
 
-  // 每条都要能就地改「常驻」、能打开详情编辑、能新建
+  // 每条都要能就地改「常驻」、能打开编辑（单行列表 + 共享大浮窗）、能删除、能新建
   const boxes = findAll(panel2, (n) => n.type === 'input' && n.props.type === 'checkbox');
   assert.ok(boxes.length >= 2, '每个条目应有「常驻」复选框');
   assert.ok(textOf(panel2).includes('＋ 新建条目'), '面板应有新建条目入口');
-  const editBtns = findAll(panel2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '详情 / 编辑');
-  assert.equal(editBtns.length, 2, '每个条目应有「详情 / 编辑」按钮（空壳条目默认不列）');
+  const editBtns = findAll(panel2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '编辑');
+  // ≥2：两条非空世界书条目各一个；DM 设定那一行也有一个「编辑」（共用同一只大浮窗）
+  assert.ok(editBtns.length >= 2, '每个条目应有「编辑」按钮（空壳条目默认不列）');
+  // 单行列表：删掉的是 title/meta 之外不再铺开正文（正文进浮窗）
+  const delBtns = findAll(panel2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '×');
+  assert.ok(delBtns.length >= 2, '每个条目应能删除');
+
+  // 诊断只显示一种：**条目与人物卡重名**（key 之间重复不显示 —— 用户拍板「无所谓」）
+  assert.ok(text.includes('与人物卡重名的条目'), '要提示与人物卡重名的条目');
+  assert.ok(text.includes('长安'), '提示里要带上重名的条目/人物');
+  assert.equal(text.includes('重复 key'), false, '不该再显示「重复 key」（条目之间 key 重复无所谓）');
+  {
+    const badges = findAll(panel2, (n) => String(n.props?.className ?? '').split(/\s+/).includes('badge'));
+    assert.ok(badges.some((b) => textOf(b) === '与人物同名'), '重名条目上要有「与人物同名」徽标');
+    assert.equal(badges.some((b) => textOf(b) === '重复 key'), false, '不该再有「重复 key」徽标');
+  }
 
   // 「整理设定」按钮：宿主给措辞（含世界书路径与条目清单），界面填进输入框、**不自动发送**
   {
@@ -730,8 +778,13 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   await showBtn.props.onClick();
   await tick(30);
 
-  // 点「编辑」→ 取回完整正文 → 展示表单（标题/触发词/常驻/order/概率/正文）
-  await editBtns[0].props.onClick();
+  // 点世界书列表里那条的「编辑」→ 取回完整正文 → 在**共享大浮窗**里展示表单
+  // （DM 设定那一行也有「编辑」，所以必须从 loreitem 里取，不能按全局顺序取第一个）
+  const firstLoreItem = byClass(panel2, 'loreitem')[0];
+  assert.ok(firstLoreItem, '世界书列表里应有条目行');
+  const loreEditBtn = findAll(firstLoreItem, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '编辑')[0];
+  assert.ok(loreEditBtn, '条目行里应有「编辑」按钮');
+  await loreEditBtn.props.onClick();
   await tick(60);
   const withForm = render({
     sessionId: SID,
@@ -740,30 +793,33 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     inputActions,
   }, tab.component);
   const formText = textOf(withForm);
-  assert.ok(formText.includes('触发词（逗号分隔）'), '详情里应有触发词输入');
-  assert.ok(formText.includes('常驻（不看触发词）'), '详情里应有常驻开关');
-  assert.ok(formText.includes('order'), '详情里应有 order');
-  assert.ok(formText.includes('概率'), '详情里应有概率');
+  assert.ok(formText.includes('触发词（逗号分隔）'), '编辑器里应有触发词输入');
+  assert.ok(formText.includes('常驻（不看触发词）'), '编辑器里应有常驻开关');
+  assert.ok(formText.includes('order'), '编辑器里应有 order');
+  assert.ok(formText.includes('概率'), '编辑器里应有概率');
+  // 大浮窗走 portal：节点类型必须是 Portal（列表里不再就地铺开表单）
+  assert.equal(findAll(withForm, (n) => n.type === 'Portal').length, 1, '编辑器应 portal 到页面根级');
   // 完整正文在正文输入框里（textarea 的 value 是 prop，textOf 看不到，得直接断言 value）
   const bodyArea = findAll(withForm, (n) => n.type === 'textarea' && String(n.props.className ?? '').includes('lorebody'));
-  assert.equal(bodyArea.length, 1, '详情里应有正文输入框');
-  assert.equal(bodyArea[0].props.value, '天宝年间的长安城，坊市分明。', '详情里应带出完整正文（不是 160 字预览）');
-  assert.ok(formText.includes('触发词：长安'), '详情里应显示触发词');
+  assert.equal(bodyArea.length, 1, '编辑器里应有正文输入框');
+  assert.equal(bodyArea[0].props.value, '天宝年间的长安城，坊市分明。', '编辑器里应带出完整正文（不是 160 字预览）');
+  assert.ok(formText.includes('标题（也是默认触发词）'), '编辑器里应有标题输入');
 
-  // ⚠️ 回归：展开之后按钮要能**收起**（第一版这里永远调 beginLore → 只能展开、收不起来）
-  const collapseBtn = findAll(withForm, (n) => typeof n.props?.onClick === 'function'
-    && textOf(n) === '收起' && String(n.props.className ?? '').includes('tiny'));
-  assert.equal(collapseBtn.length, 1, '展开后该条按钮应变成「收起」');
-  collapseBtn[0].props.onClick();
-  const collapsed = render({
+  // ⚠️ 回归：关闭要能真的关掉（而且必须走未保存确认，不能静默丢改动）
+  const closeBtn = findAll(withForm, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '关闭')[0];
+  assert.ok(closeBtn, '编辑器应有「关闭」');
+  closeBtn.props.onClick();
+  const closed = render({
     sessionId: SID,
     useSessions: (sel) => sel(store),
     useInput: (sel) => sel({ draft: '' }),
     inputActions,
   }, tab.component);
-  assert.equal(findAll(collapsed, (n) => n.type === 'textarea' && String(n.props.className ?? '').includes('lorebody')).length, 0,
-    '点「收起」后详情表单应消失');
-  assert.ok(formText.includes('删除条目'), '详情里应有删除');
+  assert.equal(findAll(closed, (n) => n.type === 'Portal').length, 0, '点「关闭」后编辑器应消失');
+  assert.equal(findAll(closed, (n) => n.type === 'textarea' && String(n.props.className ?? '').includes('lorebody')).length, 0,
+    '关闭后正文输入框应消失');
+  // 列表始终是**单行**：正文与触发词不该出现在列表本身（只有浮窗里才有）
+  assert.equal(textOf(panel2).includes('天宝年间的长安城，坊市分明。'), false, '列表里不该铺开正文');
   assert.ok(text.includes('世界设定'), '卡片标题应是「世界设定」');
   assert.equal(text.includes('世界 / 战役设定'), false, '不该再出现旧标题');
   // 诊断行：把「界面看到的」和「宿主说的」摆在一起。导入入口两度消失都栽在这两个值不一致上，
@@ -771,7 +827,8 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.ok(text.includes('入口判据'), '面板里应有入口判据诊断行');
   assert.ok(text.includes('宿主：预设'), '诊断行要显示宿主侧的预设');
   // 「看不全」那次的教训：右侧栏很窄，正文框必须给足高度，列表也要按视口给高度
-  assert.ok(/\.rpt \.loreform textarea\.lorebody \{[^}]*min-height:\s*2\d\dpx/.test(style.textContent),
+  // （只要求 ≥3 位数的 px，具体值随版式调整；430 与 200 都算合格）
+  assert.ok(/\.rpt \.loreform textarea\.lorebody \{[^}]*min-height:\s*\d{3,}px/.test(style.textContent),
     '正文输入框要有足够高度（≥200px）');
   assert.ok(/\.rpt \.lorelist \{[^}]*max-height:\s*min\(/.test(style.textContent),
     '条目列表要按视口给高度，不能压成固定 260px');
@@ -785,6 +842,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   await tick(60);
   const lorePost = calls.filter((c) => c.url === '/rp-tools/lore' && c.method === 'POST').pop();
   assert.ok(lorePost, '改常驻应向 /rp-tools/lore 发 POST');
+  if (process.env.RP_DEBUG) console.log('DEBUG lore POSTs:', JSON.stringify(calls.filter((c) => c.url === '/rp-tools/lore' && c.method === 'POST').map((c) => c.body.action)));
   assert.equal(lorePost.body.action, 'update', '编辑已有条目应走 update');
   assert.equal(lorePost.body.title, '长安城', 'update 应带上原名（改名时用它定位）');
   assert.equal(lorePost.body.entry.constant, true, '勾选状态应写进 constant');
@@ -799,32 +857,53 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     inputActions,
   });
   const openForm = async () => {
-    // 必须用**新渲染出来的**那棵树点「详情 / 编辑」：旧树上的那个 onClick 闭包里的 loreEdit
-    // 还是「已展开」的状态，会走「收起」分支（桩的闭包语义与真实 React 一致）。
+    // 必须用**新渲染出来的**那棵树点「编辑」：旧树上的 onClick 闭包住的是改之前的状态
+    // （桩的闭包语义与真实 React 一致）。DM 设定那一行也有「编辑」，所以从 loreitem 里取。
     const tree = render(props2(), tab.component);
-    const btn = findAll(tree, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '详情 / 编辑')[0];
-    assert.ok(btn, '列表里应有「详情 / 编辑」');
+    const item = byClass(tree, 'loreitem')[0];
+    assert.ok(item, '世界书列表里应有条目行');
+    const btn = findAll(item, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '编辑')[0];
+    assert.ok(btn, '列表里应有「编辑」');
     await btn.props.onClick();
     await tick(60);
     return render(props2(), tab.component);
   };
   const formTree = await openForm();
   const constLabel = findAll(formTree, (n) => textOf(n).trim() === '常驻（不看触发词）')[0];
-  assert.ok(constLabel, '详情表单里应有「常驻（不看触发词）」这一行');
+  assert.ok(constLabel, '编辑器里应有「常驻（不看触发词）」这一行');
   const constBox = findAll(constLabel, (n) => n.type === 'input' && n.props.type === 'checkbox')[0];
   assert.ok(constBox, '那行里应有复选框');
   constBox.props.onChange({ target: { checked: true } });
   const formTree2 = render(props2(), tab.component);
-  // 面板顶部还有一个「保存」（保存会话配置），按 class 区分出表单里那个
+  // 面板顶部还有一个「保存」（保存会话配置），按 class 区分出编辑器里那个
   const saveBtn = findAll(formTree2, (n) => typeof n.props?.onClick === 'function'
-    && textOf(n) === '保存' && String(n.props.className ?? '').includes('tiny'));
-  assert.equal(saveBtn.length, 1, '详情里应有保存按钮');
+    && textOf(n) === '保存' && String(n.props.className ?? '').includes('lore-save'));
+  assert.equal(saveBtn.length, 1, '编辑器里应有保存按钮');
   await saveBtn[0].props.onClick();
   await tick(60);
   const formPost = calls.filter((c) => c.url === '/rp-tools/lore' && c.method === 'POST').pop();
   assert.ok(formPost, '表单保存应向 /rp-tools/lore 发 POST');
   assert.equal(formPost.body.title, '长安城', '表单保存也要带原名');
   assert.equal(formPost.body.entry.constant, true, '表单里的勾选状态也要写进 constant');
+
+  // ── 初始收尾**不再做成面板按钮**（用户拍板）──────────────────────────────
+  // 「属性中文化」「重命名无名条目」这两件事统一写进 cards/<slug>.launch.md，
+  // 由 DM 开局时自己收拾（它能一次调用 rp_lore 的 localize / rename_unnamed）。
+  // 面板上留按钮 = 同一件事两个入口，而规则能判的那几件之外本来也得 DM 看着办。
+  {
+    const tree = render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    const t = textOf(tree);
+    assert.equal(t.includes('属性中文化'), false, '不该再有「属性中文化」按钮（改由开局引导文件交代 DM）');
+    assert.equal(t.includes('重命名无名条目'), false, '不该再有「重命名无名条目」按钮（同上）');
+    // 但世界书卡片自己的入口还在（新建 / 刷新 / 整理设定）
+    assert.ok(t.includes('＋ 新建条目') && t.includes('刷新') && t.includes('整理设定'),
+      '世界书卡片的基础入口应保留');
+  }
 
   // ★ 面板里**不再**有故事书导入（用户明确要求去掉）：导入入口只剩工作区那一行的 chip。
   {
@@ -884,7 +963,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
       useInput: (sel) => sel({ draft: '' }),
       inputActions,
     }, tab.component);
-    for (let i = 0; i < 14 && byClass(withFace, 'charface').length === 0; i++) {
+    for (let i = 0; i < 14 && byClass(withFace, 'charavatar').length === 0; i++) {
       await tick(30);
       withFace = render({
         sessionId: SID,
@@ -896,9 +975,158 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     const box = byClass(withFace, 'charbox')[0];
     assert.equal(box.props['data-hasface'], 'true', '有立绘的角色行要标 data-hasface');
     const kids = (box.children ?? []).map((n) => String(n?.props?.className ?? ''));
-    assert.ok(kids.indexOf('charface') >= 0 && kids.indexOf('charbody') > kids.indexOf('charface'),
-      `DOM 顺序应是 charface → charbody（实际 ${JSON.stringify(kids)}）`);
-    assert.ok(/\.rpt \.charbox\[data-hasface='true'\]/.test(style.textContent), '样式里要有「有图两列」的规则');
+    assert.ok(kids.indexOf('charavatar') === 0 && kids.indexOf('charbody') === 1,
+      `DOM 顺序应是 charavatar → charbody（实际 ${JSON.stringify(kids)}）`);
+    assert.ok(/\.rpt \.charbox\[data-hasface='true'\]/.test(style.textContent), '样式里要有「有头像」的规则');
+
+    // 单行列表（用户重新设计）：**小头像 + 名称 + 简介 + 标记 + 编辑 / 立绘 / 删除**。
+    // 完整 8 字段**不在列表里**（5 个角色就把面板撑满），点「编辑」后在大浮窗里改。
+    const rowText = textOf(box);
+    assert.ok(rowText.includes('阿岚'), '单行里要有角色名');
+    assert.ok(rowText.includes('白衣长剑'), '单行里要有简介（缺 brief 时回退外观）');
+    assert.ok(/1\/6 已填/.test(rowText), '单行里要报「已填几项」');
+    assert.equal(findAll(box, (n) => n.type === 'textarea').length, 0, '列表里不该铺开字段文本框');
+    // 头像固定 36px、不发大图、不提供「收起」（「收起」会把立绘从会话配置里删掉，点完反而看不到）
+    assert.ok(/\.rpt \.charavatar \{[^}]*width:\s*36px/.test(style.textContent), '头像应是 36px 的小方块');
+    assert.ok(/\.rpt \.charavatar img \{[^}]*object-fit:\s*cover/.test(style.textContent), '头像图要铺满裁切');
+    assert.equal(textOf(box).includes('大图'), false, '列表里不该再有「大图」');
+    assert.equal(textOf(box).includes('收起'), false, '列表里不该再有「收起」（它会删掉立绘）');
+    assert.equal(findAll(withFace, (n) => textOf(n) === '收起').length, 0, '整个面板都不该再有「收起」');
+    // 有立绘的行里那张图就是头像
+    const avatarImg = findAll(withFace, (n) => n.type === 'img' && String(n.props.src ?? '').includes('/rp-tools/media?'));
+    assert.ok(avatarImg.length >= 1, '有立绘的角色行要显示头像图');
+    // 没有立绘时给占位（名字首字），行高不变
+    {
+      const savedPortraits = sessionStub.portraits;
+      sessionStub.portraits = {};
+      resetHooks();
+      let noFace = render({
+        sessionId: SID,
+        useSessions: (sel) => sel(store),
+        useInput: (sel) => sel({ draft: '' }),
+        inputActions,
+      }, tab.component);
+      for (let i = 0; i < 14 && byClass(noFace, 'charavatar').length === 0; i++) {
+        await tick(30);
+        noFace = render({
+          sessionId: SID,
+          useSessions: (sel) => sel(store),
+          useInput: (sel) => sel({ draft: '' }),
+          inputActions,
+        }, tab.component);
+      }
+      assert.ok(byClass(noFace, 'charavatar-ph')[0], '没有立绘时要有占位头像（名字首字）');
+      assert.equal(byClass(noFace, 'charbox')[0]?.props['data-hasface'], 'false', '没有立绘时 data-hasface=false');
+      assert.equal(byClass(noFace, 'charavatar').length, 1, '占位头像也占同一个位置（行高不变）');
+      sessionStub.portraits = savedPortraits;
+      resetHooks();
+    }
+    // resetHooks 之后旧树上的 onClick 闭包已经失效 —— 重新挂载 + 重新渲染，再从**新树**取按钮
+    let reface = render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    for (let i = 0; i < 14 && byClass(reface, 'charavatar').length === 0; i++) {
+      await tick(30);
+      reface = render({
+        sessionId: SID,
+        useSessions: (sel) => sel(store),
+        useInput: (sel) => sel({ draft: '' }),
+        inputActions,
+      }, tab.component);
+    }
+    const box2 = byClass(reface, 'charbox')[0];
+    // 角色**只能由 DM 添加**（用户要求）：不再有「＋ 添加角色」按钮，换成一行说明
+    assert.equal(textOf(reface).includes('＋ 添加角色') && textOf(reface).includes('+ 添加角色'), false,
+      '不该再有手加角色的按钮');
+    assert.ok(textOf(reface).includes('角色由 DM 用 `rp_character` 添加'), '要说明角色由 DM 添加');
+    const charEditBtn = findAll(box2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '编辑')[0];
+    assert.ok(charEditBtn, '角色行要有「编辑」');
+    await charEditBtn.props.onClick();
+    await tick(30);
+    const charModal = render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    assert.equal(findAll(charModal, (n) => n.type === 'Portal').length, 1, '角色编辑器要 portal 到页面根级');
+    const charForm = byClass(charModal, 'chareditform')[0];
+    assert.ok(charForm, '角色编辑器要有 chareditform');
+    const fieldLabels = ['名称', '外貌', '性格', '说话方式', '行为习惯', '人物关系', '开场白', '对话范例'];
+    for (const f of fieldLabels) {
+      assert.ok(textOf(charForm).includes(f), `角色编辑器要有「${f}」字段`);
+    }
+    // 布局（用户要求）：立绘在**左列**、尽量铺满那一列；字段在右列
+    assert.ok(/\.rpt \.chareditform \{[^}]*grid-template-columns:\s*minmax\(280px,\s*46%\)/.test(style.textContent),
+      '编辑器要两列（左 46% 立绘 / 右表单）');
+    assert.ok(/\.rpt \.chareditform \.facepreview img \{[^}]*max-height:\s*calc\(85vh/.test(style.textContent),
+      '立绘要受列高约束、尽量用满左侧空间（max-height）');
+    assert.ok(/\.rpt \.chareditform \.facepreview img \{[^}]*max-width:\s*100%/.test(style.textContent),
+      '立绘也不能撑破列宽');
+    assert.ok(/\.rpt \.chareditform \.charfields \{[^}]*grid-template-columns/.test(style.textContent),
+      '右列字段要有 label + 控件的两栏栅格');
+    const formKids = (charForm.children ?? []).map((n) => String(n?.props?.className ?? ''));
+    assert.ok(formKids.indexOf('facepreview') === 0 && formKids.indexOf('charfields') === 1,
+      `立绘列必须在左、字段列在右（实际 ${JSON.stringify(formKids)}）`);
+    assert.ok(byClass(charForm, 'facepreview').length === 1, '左列要有立绘');
+    const nameInput = findAll(charForm, (n) => n.type === 'input' && n.props.value === '阿岚')[0];
+    assert.ok(nameInput, '名称框要带出当前角色名');
+    assert.ok(byClass(charForm, 'facepreview').length === 1, '大浮窗里要能看到这个角色的立绘');
+    // 改名 → 应用 → 落到会话草稿（保存后才落盘）
+    nameInput.props.onChange({ target: { value: '阿岚·改' } });
+    const applied = render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    
+    const applyBtn = findAll(applied, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '应用')[0];
+    assert.ok(applyBtn, '角色编辑器要有「应用」');
+    await applyBtn.props.onClick();
+    await tick(30);
+    const afterApply = render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    assert.equal(findAll(afterApply, (n) => n.type === 'Portal').length, 0, '应用后编辑器应关闭');
+    
+    assert.ok(textOf(afterApply).includes('阿岚·改'), '应用后列表里应显示新名字');
+  }
+
+  // ★ 当前状态卡片：**会变的东西都在这里**（能力/技能、持有/装备也属于会变的）
+  {
+    sessionStub.state = {
+      scene: '雨夜客栈',
+      party: [{ character: '祁俊', status: '警戒', abilities: '短枪枪法·乱星', inventory: '腰刀', conditions: '左臂擦伤', goal: '找到地图' }],
+    };
+    resetHooks();
+    let withState = render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    for (let i = 0; i < 14 && !textOf(withState).includes('雨夜客栈'); i++) {
+      await tick(30);
+      withState = render({
+        sessionId: SID,
+        useSessions: (sel) => sel(store),
+        useInput: (sel) => sel({ draft: '' }),
+        inputActions,
+      }, tab.component);
+    }
+    const stText = textOf(withState);
+    assert.ok(stText.includes('能力：短枪枪法·乱星'), '队伍行要显示**能力/技能**（动态值，与人物卡分开）');
+    assert.ok(stText.includes('持有：腰刀'), '队伍行要显示持有/装备');
+    assert.ok(/\.rpt \.partylines/.test(style.textContent), '队伍行要有自己的样式');
+    sessionStub.state = {};
+    resetHooks();
   }
 
   // ★ 封面：导入卡的 PNG 摆在「世界设定」旁边（用户要求），不再挂在角色名下
@@ -972,13 +1200,23 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     const dmText = textOf(withDm);
     const dmCard = byClass(withDm, 'card').find((c) => textOf(c).includes('DM 设定'));
     assert.ok(dmCard, '面板里应有「DM 设定」卡片');
-    const dmArea = findAll(dmCard, (n) => n.type === 'textarea' && String(n.props.className ?? '').includes('dmtext'))[0];
-    assert.ok(dmArea, 'DM 设定要有自己的文本框（dmtext）');
-    assert.equal(dmArea.props.value, '叙述用第二人称，场景描写整段斜体。', '文本框要显示会话里的 DM 设定正文');
+    // 默认**只占一行**（§6）：已配置/未配置 + 字数 + 编辑；正文在大浮窗里改
+    assert.ok(textOf(dmCard).includes('已配置'), 'DM 设定行要显示「已配置」');
+    assert.ok(/\d+ 字/.test(textOf(dmCard)), 'DM 设定行要显示字数');
+    assert.equal(
+      findAll(dmCard, (n) => n.type === 'textarea' && String(n.props.className ?? '').includes('dmtext')).length, 0,
+      'DM 设定默认不该就地铺开文本框');
+    const dmEditBtn = findAll(dmCard, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '编辑')[0];
+    assert.ok(dmEditBtn, 'DM 设定行要有「编辑」');
     // 迁移提示：老数据把 DM 卡当角色存过，搬过来之后要告诉用户
     assert.ok(dmText.includes('从角色卡挪到这里'), '要把「从角色卡挪到 DM 设定」这件事说出来');
     assert.ok(dmText.includes('lust Adventure'), '提示里带上被挪的那条名字');
-    const dmBoxes = findAll(byClass(dmCard, 'dmimgs')[0], (n) => n.type === 'input' && n.props.type === 'checkbox');
+    // 三个生图开关现在在**面板最上面**的「本会话生图」里（§6：会话生图配置合并到顶部，底部不再重复）
+    const imgCard = byClass(withDm, 'card').find((c) => textOf(c).includes('本会话生图'));
+    assert.ok(imgCard, '面板最上面应有「本会话生图」卡片');
+    assert.equal(byClass(withDm, 'card').indexOf(imgCard), 0, '「本会话生图」应是第一块');
+    assert.equal(textOf(withDm).includes('生图配置（本会话）'), false, '底部那块重复的生图配置卡片应已删除');
+    const dmBoxes = findAll(imgCard, (n) => n.type === 'input' && n.props.type === 'checkbox');
     assert.equal(dmBoxes.length, 3, '生图要有三个开关：总开关 / 首次出场 / 重要场景');
     assert.equal(dmBoxes[0].props.checked, true, '总开关跟随会话配置');
     assert.equal(dmBoxes[2].props.checked, false, '重要场景跟随会话配置（这里是关）');
@@ -990,10 +1228,23 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
       useInput: (sel) => sel({ draft: '' }),
       inputActions,
     }, tab.component);
-    const dmCard2 = byClass(withDm2, 'card').find((c) => textOf(c).includes('DM 设定'));
-    const dmBoxes2 = findAll(byClass(dmCard2, 'dmimgs')[0], (n) => n.type === 'input' && n.props.type === 'checkbox');
+    const imgCard2 = byClass(withDm2, 'card').find((c) => textOf(c).includes('本会话生图'));
+    const dmBoxes2 = findAll(imgCard2, (n) => n.type === 'input' && n.props.type === 'checkbox');
     assert.equal(dmBoxes2[1].props.disabled, true, '总开关关掉后，细分开关应置灰');
     assert.ok(/\.rpt textarea\.dmtext \{[^}]*min-height/.test(style.textContent), 'dmtext 要有自己的高度规则');
+    // 点「编辑」→ 共享大浮窗里出现文本框，且带出会话里的 DM 正文
+    await dmEditBtn.props.onClick();
+    await tick(30);
+    const dmModal = render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    const dmArea = findAll(dmModal, (n) => n.type === 'textarea' && String(n.props.className ?? '').includes('dmtext'))[0];
+    assert.ok(dmArea, 'DM 设定编辑器里要有文本框（dmtext）');
+    assert.equal(dmArea.props.value, '叙述用第二人称，场景描写整段斜体。', '文本框要显示会话里的 DM 设定正文');
+    assert.equal(findAll(dmModal, (n) => n.type === 'Portal').length, 1, 'DM 编辑器也要 portal 到页面根级');
     sessionStub.dm = { prompt: '', migrated: [], images: { enabled: true, firstAppearance: true, keyScenes: true } };
     resetHooks();
   }
@@ -1038,7 +1289,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     };
     resetHooks();
     let reopened = asPanel();
-    for (let i = 0; i < 14 && !textOf(reopened).includes('立绘：阿岚'); i++) {
+    for (let i = 0; i < 14 && !findAll(reopened, (n) => n.type === 'img' && String(n.props.src ?? '').includes('/rp-tools/media?')).length; i++) {
       await tick(30);
       reopened = asPanel();
     }
@@ -1047,6 +1298,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     assert.ok(portraitImg, `重新打开面板应显示会话配置里那张立绘（实际 imgs=${JSON.stringify(imgs.map((n) => n.props.src))}）`);
     assert.ok(String(portraitImg.props.src).includes('file=rp-portrait-1.png'), '立绘图 URL 要用记下的三要素拼');
     assert.ok(String(portraitImg.props.src).includes('subfolder=rp'), 'subfolder 也要带上');
+    assert.ok(/\.rpt \.charavatar \{[^}]*width:\s*36px/.test(style.textContent), '那张图是**小头像**（36px）');
 
     // 出图 → 必须把三要素 POST 回宿主（否则下次打开又没了）
     const portraitBtn = findAll(reopened, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '立绘');
@@ -1059,18 +1311,26 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     assert.equal(portraitPosts[0].name, '阿岚', '要记在角色名下');
     assert.equal(portraitPosts[0].style, '二次元', '风格一起记下来');
 
-    // 点「收起」→ 会话配置那份也要清（否则下次打开又装回来）
-    let hidden = afterGen;
-    for (let i = 0; i < 14 && !findAll(hidden, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '收起').length; i++) {
+    // 列表里**不再有「大图 / 收起」**：那个「收起」其实会把立绘从会话配置里删掉，
+    // 点完就真的看不到了（用户实测）。删立绘挪到编辑浮窗里 —— 那里摆着大图，删之前看得见。
+    assert.equal(findAll(afterGen, (n) => textOf(n) === '收起').length, 0, '列表里不该再有「收起」');
+    const charRow = byClass(afterGen, 'charbox')[0];
+    const rowEdit = findAll(charRow, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '编辑')[0];
+    assert.ok(rowEdit, '角色行要有「编辑」');
+    await rowEdit.props.onClick();
+    await tick(30);
+    let withModal2 = asPanel();
+    for (let i = 0; i < 14 && !findAll(withModal2, (n) => textOf(n) === '删掉立绘').length; i++) {
       await tick(30);
-      hidden = asPanel();
+      withModal2 = asPanel();
     }
-    const hideBtn = findAll(hidden, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '收起');
-    assert.ok(hideBtn.length >= 1, '出图后应有「收起」按钮');
-    hideBtn[hideBtn.length - 1].props.onClick();
+    assert.ok(findAll(withModal2, (n) => textOf(n) === '看大图').length >= 1, '编辑浮窗里应有「看大图」');
+    const clearBtn = findAll(withModal2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '删掉立绘')[0];
+    assert.ok(clearBtn, '编辑浮窗里应有「删掉立绘」');
+    clearBtn.props.onClick();
     for (let i = 0; i < 14 && !portraitPosts.some((p) => p.action === 'clear'); i++) await tick(30);
     const clearPost = portraitPosts.find((p) => p.action === 'clear');
-    assert.ok(clearPost, '「收起」要同时清掉会话配置里那份立绘');
+    assert.ok(clearPost, '「删掉立绘」要同时清掉会话配置里那份');
     assert.equal(clearPost.name, '阿岚', '清除要指名道姓（按角色名）');
 
     // 还原，免得影响后面的用例
@@ -1288,13 +1548,14 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
       .flatMap((r) => findAll(r, (n) => n.type === 'input' && n.props.type === 'number'))
       .map((n) => Number(n.props.value));
     assert.ok(vals.length === 6 && vals.every((v) => v >= 256), `尺寸不能出现 0（实际 ${JSON.stringify(vals)}）`);
-    assert.deepEqual(vals.slice(0, 2), [1024, 576], '缺配置时场景用内置默认值');
-    assert.deepEqual(vals.slice(2, 4), [640, 896], '缺配置时立绘用内置默认值');
+    // 内置默认值要与宿主 DEFAULT_IMAGE_SIZES 一致（1.12.8 起调小，出图快 ~1/3）
+    assert.deepEqual(vals.slice(0, 2), [768, 432], '缺配置时场景用内置默认值');
+    assert.deepEqual(vals.slice(2, 4), [512, 768], '缺配置时立绘用内置默认值');
     const save2 = findAll(legacy, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '保存');
     await save2[0].props.onClick();
     await tick(60);
     const post2 = calls.filter((c) => c.url === '/rp-tools/config' && c.method === 'POST').pop();
-    assert.deepEqual(post2?.body?.imageSizes?.scene, [1024, 576], '保存要把默认尺寸交回去（旧宿主不会补）');
+    assert.deepEqual(post2?.body?.imageSizes?.scene, [768, 432], '保存要把默认尺寸交回去（旧宿主不会补）');
     stateStub.imageSizes = keep;
     resetHooks();
   }

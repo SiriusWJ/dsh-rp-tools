@@ -246,46 +246,87 @@ window.__ModuleLoader__.load({
 .rpt .tool { padding: 9px 0; border-top: 1px solid color-mix(in oklab, currentColor 9%, transparent); }
 .rpt .tool:first-child { border-top: none; }
 .rpt .scroll { max-height: 320px; overflow: auto; }
-/* 世界书条目列表：每条一行标题 + 触发词 + 正文预览。
-   列表要**高**（右侧栏本来就窄，再压到 260px 就真看不全了），预览给 6 行。 */
+/* 世界书与角色卡的默认态都是单行摘要；完整字段统一放到 body portal 大编辑器。 */
 .rpt .lorelist { max-height: min(62vh, 640px); overflow: auto; }
 .rpt .loreitem { padding: 6px 0; border-top: 1px solid color-mix(in oklab, currentColor 9%, transparent); }
 .rpt .loreitem:first-child { border-top: none; }
-.rpt .loreitem .loretitle { font-weight: 600; }
-.rpt .loreitem .loreprev { font-size: 12px; opacity: .78; white-space: pre-wrap; word-break: break-word; }
-/* 只有宿主那边截断的超大条目才收成 6 行（正常条目整条读完） */
-.rpt .loreitem .loreprev.clamp { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
-/* 条目详情 / 编辑表单：**标签在上、控件在下**（右侧栏窄，两列网格会把正文框挤成一条） */
-.rpt .loreconst { display: inline-flex; align-items: center; gap: 4px; }
+.rpt .loreline { display: grid; grid-template-columns: minmax(110px, 1.2fr) minmax(90px, .8fr) auto auto auto; gap: 7px; align-items: center; }
+.rpt .loretitle, .rpt .charsum-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rpt .loresummary, .rpt .charsum-brief { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rpt .loreconst { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .rpt .lorelegacy { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 8px;
   background: color-mix(in oklab, #f59e0b 14%, transparent); }
-.rpt .loreform { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 4px; padding: 10px;
-  border-radius: 8px; background: color-mix(in oklab, currentColor 6%, transparent); }
-.rpt .loreform label { font-size: 12px; opacity: .75; margin-top: 4px; }
-.rpt .loreform .row { flex-wrap: wrap; }
-.rpt .loreform textarea.lorebody { min-height: 220px; resize: vertical; font-size: 12.5px; line-height: 1.55; }
-.rpt .charline { display: grid; grid-template-columns: 118px minmax(0,1fr) auto auto; gap: 6px; align-items: center; }
-/* 一个角色的整块（一行输入 + 可选立绘）：立绘落在这块里面，紧挨该角色 */
-.rpt .charbox { padding: 8px 0; border-top: 1px solid color-mix(in oklab, currentColor 9%, transparent); }
+.rpt .loreform, .rpt .chareditform, .rpt .dmeditform { display: flex; flex-direction: column; gap: 7px; }
+.rpt .loreform label, .rpt .chareditform label, .rpt .dmeditform label { font-size: 12px; opacity: .78; }
+.rpt .loreform textarea.lorebody { min-height: 430px; resize: vertical; font-size: 12.5px; line-height: 1.6; }
+.rpt .dmeditform textarea { min-height: 380px; resize: vertical; font-size: 12.5px; line-height: 1.6; }
+.rpt .chareditform textarea { resize: vertical; font-size: 12.5px; line-height: 1.6; }
+.rpt .charlist { display: flex; flex-direction: column; }
+/* 角色行（用户重新设计）：**一行 = 小头像 + 名称 + 简介 + 标记 + 操作**。
+   早先是「有图就两列、图 150×200」，那一行会被撑成三倍高（截图里的「桐人」就是），
+   而且带了「大图 / 收起」两个按钮 —— 「收起」会把立绘从会话配置里删掉，点完反而看不到了。
+   现在头像固定 36px、列表里不提供删除立绘（挪到编辑浮窗里，那里摆着大图、删之前看得见）。 */
+.rpt .charbox { display: flex; gap: 9px; align-items: center; padding: 7px 0;
+  border-top: 1px solid color-mix(in oklab, currentColor 9%, transparent); }
 .rpt .charbox:first-child { border-top: none; }
-/* 角色设定细节：折叠区 + 两列（标签 / 输入）网格 */
-.rpt .chargrow { margin-top: 6px; }
-.rpt .chargrow summary { cursor: pointer; font-size: 12px; padding: 2px 0; }
-.rpt .chargrid { display: grid; grid-template-columns: 68px minmax(0,1fr); gap: 6px 8px; align-items: start; margin-top: 6px; }
-.rpt .chargrid .dim { padding-top: 5px; }
-.rpt .partylines { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; padding: 3px 0; font-size: 12px; }
-.rpt .chargrid textarea { min-height: 44px; }
-.rpt .portrait { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; align-items: flex-start; }
-.rpt .portrait img { max-width: 200px; border-radius: 8px; }
-/* 人物行：**有立绘就两列**（图在左、字在右），没有就单列。
-   竖着把大图塞在文字下面会把面板拉得很长，扫列表时也不好看。 */
-.rpt .charbox { display: block; }
-.rpt .charbox[data-hasface='true'] { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 10px; align-items: start; }
-.rpt .charface { display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
-.rpt .charface img { width: 104px; height: 140px; object-fit: cover; border-radius: 8px;
+.rpt .charavatar { flex: none; width: 36px; height: 36px; border-radius: 9px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in oklab, currentColor 8%, transparent);
   border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent)); }
-.rpt .charface .row { gap: 8px; align-items: center; }
-.rpt .charbody { display: flex; flex-direction: column; min-width: 0; }
+.rpt .charbox[data-hasface='true'] .charavatar { border-color: color-mix(in oklab, currentColor 24%, transparent); }
+.rpt .charavatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.rpt .charavatar .charavatar-ph { font-size: 15px; opacity: .5; line-height: 1; }
+.rpt .charbody { flex: 1 1 auto; min-width: 0; }
+.rpt .charline { display: grid; grid-template-columns: minmax(88px, .72fr) minmax(120px, 1.35fr) auto auto; gap: 7px; align-items: center; }
+.rpt .charstatus { display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; }
+.rpt .chargrid { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 8px 10px; align-items: start; }
+.rpt .chargrid .dim { padding-top: 5px; }
+.rpt .chargrid textarea { min-height: 72px; }
+.rpt .partylines { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; padding: 3px 0; font-size: 12px; }
+/* 大编辑器：立绘在**左列**、尽量铺满那一列；表单在右列。
+   用户实测反馈「立绘要大，最好利用完左侧空间」—— 之前左列封顶 300px、图 280×400，
+   下面空着大半列。现在左列按比例给到 46%，图同时受 max-width 与 max-height 约束
+   （两个都卡才能既不撑破又不变形：宽高都 auto，只被上限裁）。 */
+.rpt .chareditform { display: grid; grid-template-columns: minmax(280px, 46%) minmax(0, 1fr); gap: 18px; align-items: start; }
+.rpt .chareditform .facepreview { position: sticky; top: 0; display: flex; flex-direction: column; gap: 8px; }
+.rpt .chareditform .facepreview img { display: block; width: auto; height: auto; max-width: 100%;
+  max-height: calc(85vh - 240px); margin: 0 auto; border-radius: 12px;
+  border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent)); }
+.rpt .chareditform .charfields { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px 10px; align-items: start; }
+.rpt .chareditform .charfields > label { padding-top: 6px; }
+@media (max-width: 860px) {
+  .rpt .chareditform { grid-template-columns: minmax(0, 1fr); }
+  .rpt .chareditform .facepreview { position: static; }
+  .rpt .chareditform .facepreview img { max-height: 60vh; }
+  .rpt .chareditform .charfields { grid-template-columns: minmax(0, 1fr); }
+  .rpt .chareditform .charfields > label { padding-top: 0; }
+}
+.rpt .sessionimages { gap: 8px; }
+.rpt .sessionimages .imagecontrols { display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; }
+.rpt .sessionimages label { display: inline-flex; gap: 5px; align-items: center; white-space: nowrap; }
+.rpt .sessionimages select { width: auto; min-width: 150px; max-width: 260px; }
+.rpt .portraitsummary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rpt .dmsummary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.rpt .dupwarn { color: var(--dsw-alias-state-warning-primary, #f59e0b); }
+/* 共享编辑浮窗在 .rpt 树之外，因此遮罩自身用独立类，内容根仍带 .rpt 以复用控件样式。 */
+.rpt-modal-layer { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center;
+  padding: 18px; box-sizing: border-box; background: rgba(0,0,0,.58); }
+.rpt-modal-layer .rpt-modal { width: min(1100px, 85vw); height: min(860px, 85vh); max-width: calc(100vw - 36px);
+  max-height: calc(100vh - 36px); display: flex; flex-direction: column; overflow: hidden; border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-1, #1b1c1f); color: var(--dsw-alias-label-primary, inherit);
+  border: .5px solid var(--dsw-alias-border-l4, color-mix(in oklab, currentColor 20%, transparent));
+  box-shadow: 0 24px 80px rgba(0,0,0,.55); }
+.rpt-modal-layer .rpt-modal-head, .rpt-modal-layer .rpt-modal-foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+  background: var(--dsw-alias-bg-layer-1, #1b1c1f); }
+.rpt-modal-layer .rpt-modal-head { border-bottom: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent)); }
+.rpt-modal-layer .rpt-modal-foot { border-top: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent)); }
+.rpt-modal-layer .rpt-modal-body { flex: 1 1 auto; overflow: auto; padding: 16px; }
+@media (max-width: 760px) {
+  .rpt .loreline, .rpt .charline { grid-template-columns: minmax(90px, 1fr) minmax(90px, 1.2fr) auto; }
+  .rpt .loreline .rowactions, .rpt .charline .rowactions { grid-column: 1 / -1; justify-self: end; }
+  .rpt-modal-layer { padding: 8px; }
+  .rpt-modal-layer .rpt-modal { width: calc(100vw - 16px); height: calc(100vh - 16px); max-width: none; max-height: none; }
+}
 /* 世界设定 + 卡封面：有封面就两列（封面在左 116×150、设定在右）
    右侧输入框**拉伸到与封面同高**（用户要求：「世界那个介绍文本框拉大，对齐图片」）：
    grid 用 stretch，列内 textarea flex:1，封面列多高它就多高。 */
@@ -372,7 +413,9 @@ window.__ModuleLoader__.load({
   border: 1px solid color-mix(in oklab, currentColor 14%, transparent);
   background: var(--dsw-alias-bg-layer-2, color-mix(in oklab, currentColor 4%, transparent));
 }
-.rpc .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 12px; align-items: start; }
+/* 导入面板两列：**左列表与右侧预览同高**（用户反馈「左侧列表长一点」—— 原来封顶 300px，
+   5 张卡时只有一百多像素，旁边预览却有七百多，右边一大片空、左边挤成一条）。 */
+.rpc .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 12px; align-items: stretch; }
 @media (max-width: 720px) { .rpc .split { grid-template-columns: minmax(0, 1fr); } }
 .rpc input[type=text], .rpc input[type=search], .rpc select, .rpc textarea {
   box-sizing: border-box; width: 100%; padding: 5px 8px; border-radius: 6px; font: inherit;
@@ -386,7 +429,9 @@ window.__ModuleLoader__.load({
 .rpc button:hover:not(:disabled) { background: color-mix(in oklab, currentColor 12%, transparent); }
 .rpc button:disabled { opacity: .5; cursor: default; }
 .rpc button.primary { background: #4D6BFE; border-color: #4D6BFE; color: #fff; }
-.rpc .list { max-height: 300px; overflow: auto; border: 1px solid color-mix(in oklab, currentColor 11%, transparent); border-radius: 8px; }
+/* 卡列表：撑满左列（与右侧预览等高），至少 320px、最高 ~78vh —— 卡片多时在列表内滚动 */
+.rpc .list { height: 100%; min-height: 320px; max-height: min(78vh, 820px); overflow: auto;
+  border: 1px solid color-mix(in oklab, currentColor 11%, transparent); border-radius: 8px; }
 .rpc .item { display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; cursor: pointer;
   border-top: 1px solid color-mix(in oklab, currentColor 8%, transparent); }
 .rpc .item:first-child { border-top: none; }
@@ -440,6 +485,72 @@ window.__ModuleLoader__.load({
         if (!el) return;
         try { el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* 旧浏览器忽略 */ }
       }, [preview]);
+    }
+
+    /** 把宿主可选的重复-key诊断压成一行；字段缺失时安静返回空串。 */
+    function diagnosticText(value) {
+      if (!value) return '';
+      if (typeof value === 'string' || typeof value === 'number') return String(value);
+      if (Array.isArray(value)) return value.map((item) => {
+        if (typeof item === 'string' || typeof item === 'number') return String(item);
+        if (!item || typeof item !== 'object') return '';
+        return String(item.key ?? item.name ?? item.title ?? item.message ?? '');
+      }).filter(Boolean).join('、');
+      if (typeof value === 'object') return Object.entries(value).map(([key, item]) => {
+        const detail = diagnosticText(item);
+        return detail ? `${key}: ${detail}` : key;
+      }).join('；');
+      return '';
+    }
+
+    function namedDiagnostic(source, name) {
+      if (!source) return '';
+      if (Array.isArray(source)) {
+        const matched = source.filter((item) => !item || typeof item !== 'object'
+          || [item.name, item.title, item.character].some((v) => String(v ?? '') === String(name ?? '')));
+        return diagnosticText(matched);
+      }
+      if (typeof source === 'object' && name && Object.prototype.hasOwnProperty.call(source, name)) {
+        return diagnosticText(source[name]);
+      }
+      return diagnosticText(source);
+    }
+
+    /**
+     * 角色、世界书、DM 共用的一只大编辑器。浏览器里始终 portal 到 document.body；
+     * 极简宿主拿不到 react-dom/body 时才退回原位。关闭/Escape 都走同一个未保存确认。
+     */
+    function SharedPortalModal({ title, dirty, onClose, footer, children }) {
+      const closeRef = React.useRef(onClose);
+      closeRef.current = onClose;
+      const openerRef = React.useRef(null);
+      React.useEffect(() => {
+        openerRef.current = typeof document !== 'undefined' ? document.activeElement : null;
+        const onKeyDown = (event) => {
+          if (event?.key === 'Escape') closeRef.current?.();
+        };
+        if (typeof document?.addEventListener === 'function') document.addEventListener('keydown', onKeyDown);
+        return () => {
+          if (typeof document?.removeEventListener === 'function') document.removeEventListener('keydown', onKeyDown);
+          try { openerRef.current?.focus?.(); } catch { /* 焦点恢复失败不影响关闭 */ }
+        };
+      }, []);
+      const content = h('div', {
+        className: 'rpt rpt-modal-layer', role: 'presentation',
+        onMouseDown: (event) => { if (event.target === event.currentTarget) closeRef.current?.(); },
+      }, h('section', { className: 'rpt-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title }, [
+        h('div', { key: 'head', className: 'rpt-modal-head' }, [
+          h('h3', { key: 'title' }, title),
+          dirty ? h('span', { key: 'dirty', className: 'badge warn' }, '未应用') : null,
+          h('span', { key: 'sep', className: 'sep' }),
+          h('button', { key: 'close', className: 'tiny', onClick: () => closeRef.current?.(), title: '关闭（Esc）' }, '关闭'),
+        ]),
+        h('div', { key: 'body', className: 'rpt-modal-body' }, children),
+        h('div', { key: 'foot', className: 'rpt-modal-foot' }, footer),
+      ]));
+      return ReactDOM?.createPortal && typeof document !== 'undefined' && document.body
+        ? ReactDOM.createPortal(content, document.body)
+        : content;
     }
 
     function RpSettings() {
@@ -506,8 +617,10 @@ window.__ModuleLoader__.load({
         setMsg({ kind: 'ok', text: `已移除风格 ${key} —— 记得点「保存」落盘` });
       }
 
-      // 三档图像尺寸的内置默认值：宿主还没重启 / 配置里缺这一项时也**不显示 0**
-      const IMAGE_SIZE_DEFAULTS = { scene: [1024, 576], portrait: [640, 896], item: [768, 768] };
+      // 三档图像尺寸的内置默认值：宿主还没重启 / 配置里缺这一项时也**不显示 0**。
+      // 与宿主 `DEFAULT_IMAGE_SIZES` 保持一致（1.12.8 起调小：出图时间基本正比于像素，
+      // 聊天里用不到 1024 宽）。
+      const IMAGE_SIZE_DEFAULTS = { scene: [768, 432], portrait: [512, 768], item: [512, 512] };
       /**
        * 解析出当前的三个尺寸（缺就用内置默认值）。
        *
@@ -841,8 +954,12 @@ window.__ModuleLoader__.load({
       const [rolls, setRolls] = React.useState([]);
       // 世界书条目（面板上要能看见导入进来的条目）
       const [lore, setLore] = React.useState(null);
-      /** 正在编辑的世界书条目草稿：{ title(原值), keysText, constant, order, probability, body, isNew } */
+      /** 正在共享大浮窗里编辑的世界书条目。 */
       const [loreEdit, setLoreEdit] = React.useState(null);
+      const [loreEditDirty, setLoreEditDirty] = React.useState(false);
+      /** 角色与 DM 也复用同一只 portal 编辑器；列表里只留单行摘要。 */
+      const [charEdit, setCharEdit] = React.useState(null);
+      const [dmEdit, setDmEdit] = React.useState(null);
       const [loreQuery, setLoreQuery] = React.useState('');
       /** 是否把「空条目」（正文只有模板残留，永不注入）也列出来 —— 默认藏起来 */
       const [showEmptyLore, setShowEmptyLore] = React.useState(false);
@@ -1058,7 +1175,80 @@ window.__ModuleLoader__.load({
           .some((v) => String(v ?? '').toLowerCase().includes(q)));
       }
 
-      function patchLoreEdit(p) { setLoreEdit((d) => (d ? { ...d, ...p } : d)); }
+      function confirmEditorClose(dirty, close) {
+        if (dirty && !window.confirm('有尚未应用的修改，确定关闭编辑器吗？')) return;
+        close();
+      }
+
+      function patchLoreEdit(p) {
+        setLoreEditDirty(true);
+        setLoreEdit((d) => (d ? { ...d, ...p } : d));
+      }
+
+      function beginDmEdit() {
+        setDmEdit({
+          prompt: String(draft.dm?.prompt ?? ''),
+          source: String(draft.dm?.source ?? draft.dm?.promptSource ?? draft.dm?.origin ?? ''),
+          dirty: false,
+        });
+      }
+
+      function patchDmEdit(prompt) {
+        // 同上：浮窗里改 DM 正文也要算「动过字段」，否则软刷新会把它冲掉
+        dirtyRef.current = true;
+        setDmEdit((d) => (d ? { ...d, prompt, dirty: true } : d));
+      }
+
+      function applyDmEdit() {
+        if (!dmEdit) return;
+        patchDm({ prompt: dmEdit.prompt });
+        setDmEdit(null);
+        setMsg({ kind: 'ok', text: 'DM 设定已应用到会话草稿；点面板顶部「保存」后持久化。' });
+      }
+
+      function beginCharacter(character, index, isNew) {
+        const name = String(character?.name ?? '');
+        const list = Array.isArray(draft.characterIndex) ? draft.characterIndex : [];
+        const idx = list.find((entry) => String(entry?.name ?? '') === name) ?? { name, brief: '', always: false };
+        setCharEdit({
+          index,
+          isNew: isNew === true,
+          originalName: name,
+          character: JSON.parse(JSON.stringify(character ?? { name: '', appearance: '' })),
+          indexEntry: { ...idx },
+          dirty: false,
+        });
+      }
+
+      function patchCharacterEdit(field, value) {
+        // 大浮窗里的编辑也算「用户动过字段」：不置 dirtyRef 的话，宿主广播的那次软刷新
+        // 会把整份 draft 铺回宿主版本，用户刚改的字还没点「应用」就没了（冒烟测试抓到过）。
+        dirtyRef.current = true;
+        setCharEdit((edit) => (edit ? { ...edit, dirty: true, character: { ...edit.character, [field]: value } } : edit));
+      }
+
+      function patchCharacterIndex(field, value) {
+        dirtyRef.current = true;
+        setCharEdit((edit) => (edit ? { ...edit, dirty: true, indexEntry: { ...edit.indexEntry, [field]: value } } : edit));
+      }
+
+      function applyCharacterEdit() {
+        if (!charEdit) return;
+        const character = { ...charEdit.character };
+        const name = String(character.name ?? '').trim();
+        const nextCharacters = charEdit.isNew
+          ? [...(draft.characters ?? []), character]
+          : (draft.characters ?? []).map((item, index) => (index === charEdit.index ? character : item));
+        const previous = Array.isArray(draft.characterIndex) ? draft.characterIndex : [];
+        const remaining = previous.filter((entry) => {
+          const entryName = String(entry?.name ?? '');
+          return entryName !== String(charEdit.originalName ?? '') && entryName !== name;
+        });
+        const indexEntry = { ...charEdit.indexEntry, name };
+        patch({ characters: nextCharacters, characterIndex: name ? [...remaining, indexEntry] : remaining });
+        setCharEdit(null);
+        setMsg({ kind: 'ok', text: `角色「${name || '未命名'}」已应用到会话草稿；点面板顶部「保存」后持久化。` });
+      }
 
       /**
        * 打开某一条的详情/编辑器。列表里只有 160 字预览，所以正文要**单独取一次**
@@ -1068,6 +1258,7 @@ window.__ModuleLoader__.load({
       async function beginLore(entry) {
         if (!entry) {
           setLoreEdit({ title: '', keysText: '', constant: false, order: 0, probability: 100, body: '', isNew: true });
+          setLoreEditDirty(false);
           setMsg({ kind: 'ok', text: '新建条目：填好标题与正文后点「保存」写入世界书。' });
           return;
         }
@@ -1089,7 +1280,9 @@ window.__ModuleLoader__.load({
             probability: e.probability ?? 100,
             body: e.body ?? '',
             isNew: false,
+            nameConflict: e.nameConflict ?? entry.nameConflict,
           });
+          setLoreEditDirty(false);
           setMsg({ kind: 'ok', text: `正在编辑「${e.title}」（${String(e.body ?? '').length} 字）` });
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
@@ -1116,6 +1309,7 @@ window.__ModuleLoader__.load({
           });
           if (!res?.ok) throw new Error(res?.error ?? '保存失败');
           applyLoreResponse(res);
+          setLoreEditDirty(false);
           setLoreEdit(null);
           setMsg({ kind: 'ok', text: `已写入世界书：${res.title}（下一轮装配即生效）` });
         } catch (error) {
@@ -1163,25 +1357,10 @@ window.__ModuleLoader__.load({
         } finally { setBusy(''); }
       }
 
-      /** 整本书「属性中文化」（老世界书里的 name:/gender: 之类一键换成中文）。 */
-      async function localizeLoreAll() {
-        if (!window.confirm('把整本世界书里 YAML 风格的英文属性键换成中文？（name→名称、gender: Female→性别：女 …）\n只会改这类属性行，正文与触发词不动。')) return;
-        setBusy('lore-lz');
-        try {
-          const res = await API.loreSave({ sessionId, action: 'localize' });
-          if (!res?.ok) throw new Error(res?.error ?? '处理失败');
-          applyLoreResponse(res);
-          setLoreEdit(null);
-          setMsg({
-            kind: 'ok',
-            text: res.changed
-              ? `已把 ${res.changed} 条、共 ${res.lines} 行属性标签中文化`
-              : '没有需要中文化的属性行（这本世界书里没有 name:/gender: 这种英文键）',
-          });
-        } catch (error) {
-          setMsg({ kind: 'err', text: String(error?.message ?? error) });
-        } finally { setBusy(''); }
-      }
+      // 注：曾经有两个按钮「属性中文化」「重命名无名条目」。按用户拍板，**初始要做的事全部
+      // 放进 `cards/<slug>.launch.md`**，由 DM 在开局时自己收拾（它能一次调用
+      // `rp_lore(action:"localize")` / `rp_lore(action:"rename_unnamed")` 做完），
+      // 面板上不再重复这一层按钮 —— 规则能判的那几件之外的事本来也得 DM 看着办。
 
       async function deleteLoreEntry(title) {
         if (!window.confirm(`删除世界书条目「${title}」？（只删这一条，文件里其它内容不动）`)) return;
@@ -1190,6 +1369,7 @@ window.__ModuleLoader__.load({
           const res = await API.loreSave({ sessionId, action: 'delete', title });
           if (!res?.ok) throw new Error(res?.error ?? '删除失败');
           applyLoreResponse(res);
+          setLoreEditDirty(false);
           setLoreEdit(null);
           setMsg({ kind: 'ok', text: `已删除条目「${title}」` });
         } catch (error) {
@@ -1211,6 +1391,12 @@ window.__ModuleLoader__.load({
           entries: res.entries ?? [],
           truncated: res.truncated,
           note: res.note,
+          // 「条目名与人物卡重名」的诊断（key 重复不做诊断：用户拍板，那只是噪音）
+          characterOverlap: res.characterOverlap ?? res.diagnostics?.characterOverlap,
+          empty: res.empty,
+          emptyChars: res.emptyChars,
+          constantChars: res.constantChars,
+          kinds: res.kinds,
         });
       }
 
@@ -1283,12 +1469,25 @@ window.__ModuleLoader__.load({
           }
           setMsg({
             kind: saved ? 'ok' : 'warn',
-            text: `「${name}」立绘完成（${label}，${(res.elapsedMs / 1000).toFixed(1)}s）—— 图在该角色的卡片下方`
-              + (saved ? '，已记进本会话' : '，但**没能记进会话**（下次打开会消失）'),
+            text: `「${name}」立绘完成（${label}，${(res.elapsedMs / 1000).toFixed(1)}s）—— 已作为这个角色的头像显示`
+              + (saved ? '，并记进本会话' : '，但**没能记进会话**（下次打开会消失）'),
           });
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }
+      }
+
+      /** 同时清掉界面和会话配置里的立绘记录。 */
+      function clearPortrait(name) {
+        const key = String(name ?? '').trim();
+        if (!key) return;
+        setPortraits((current) => { const next = { ...current }; delete next[key]; return next; });
+        API.portraitSave({ sessionId, name: key, action: 'clear' })
+          .then((res) => {
+            if (!res?.ok) return;
+            setDraft((current) => (current ? { ...current, portraits: res.portraits ?? {} } : current));
+          })
+          .catch(() => { /* 清不掉只会导致下次仍显示，不打断编辑 */ });
       }
 
       if (!draft || !state) {
@@ -1305,6 +1504,20 @@ window.__ModuleLoader__.load({
       const tables = draft.tables ?? [];
       // 当前状态（场景/时间/地点/在场/线索 + 队伍 + 旗标）。老会话可能没有，给空对象兜底。
       const st = draft.state ?? {};
+      const portraitNames = Object.keys(portraits).filter((name) => portraits[name]?.url);
+      const imageEnabled = draft.dm?.images?.enabled !== false;
+      const dmPrompt = String(draft.dm?.prompt ?? '');
+      const dmSource = String(draft.dm?.source ?? draft.dm?.promptSource ?? draft.dm?.origin ?? '会话配置');
+      const characterDiagnostics = draft.duplicateCharacterKeys ?? draft.diagnostics?.duplicateCharacterKeys;
+      // 只诊断一种：**世界书条目名 == 人物卡名**（键一律不管 —— 用户口径）。
+      const loreDiagnostics = lore?.characterOverlap ?? lore?.diagnostics?.characterOverlap;
+      // 编辑器里的同名提示：条目级说明由宿主计算，这里只负责显示
+      const nameConflictWarn = diagnosticText(loreEdit?.nameConflict);
+      // 大浮窗里的立绘：按**原名**取（改名过程中也还能看到那张图）
+      const charEditPortraitUrl = charEdit
+        ? String(portraits[String(charEdit.originalName ?? '')]?.url
+          || portraits[String(charEdit.character?.name ?? '')]?.url || '')
+        : '';
 
       return h('div', { className: embed ? 'rpt embed' : 'rpt ovl' }, [
         h('div', { key: 'head', className: 'ovlhead' }, [
@@ -1315,57 +1528,79 @@ window.__ModuleLoader__.load({
           h('button', { key: 'sv', className: 'primary', onClick: save, disabled: Boolean(busy) }, busy === 'save' ? '保存中…' : '保存'),
           embed ? null : h('button', { key: 'x', onClick: onClose }, '关闭'),
         ]),
+        // 固定在 RP 标题下第一块：会话生图所有控制集中于此，面板底部不再重复。
+        h('div', { key: 'session-images', className: 'card sessionimages' }, [
+          h('div', { key: 'h', className: 'row' }, [
+            h('h4', { key: 't' }, '本会话生图'),
+            h('span', { key: 'sep', className: 'sep' }),
+            h('span', { key: 'portraits', className: 'dim portraitsummary', title: portraitNames.join('、') },
+              portraitNames.length ? `已有立绘 ${portraitNames.length}：${portraitNames.join('、')}` : '暂无已生成立绘'),
+          ]),
+          h('div', { key: 'controls', className: 'imagecontrols' }, [
+            h('label', { key: 'en', className: 'dim' }, [
+              h('input', {
+                key: 'i', type: 'checkbox', checked: imageEnabled,
+                onChange: (event) => patchDm({ images: { ...(draft.dm?.images ?? {}), enabled: event.target.checked } }),
+              }),
+              '自动配图',
+            ]),
+            h('label', { key: 'fa', className: 'dim' }, [
+              h('input', {
+                key: 'i', type: 'checkbox', disabled: !imageEnabled,
+                checked: draft.dm?.images?.firstAppearance !== false,
+                onChange: (event) => patchDm({ images: { ...(draft.dm?.images ?? {}), firstAppearance: event.target.checked } }),
+              }),
+              '首次出场',
+            ]),
+            h('label', { key: 'ks', className: 'dim' }, [
+              h('input', {
+                key: 'i', type: 'checkbox', disabled: !imageEnabled,
+                checked: draft.dm?.images?.keyScenes !== false,
+                onChange: (event) => patchDm({ images: { ...(draft.dm?.images ?? {}), keyScenes: event.target.checked } }),
+              }),
+              '重要场景',
+            ]),
+            h('label', { key: 'style', className: 'dim' }, [
+              '默认风格',
+              h('select', {
+                key: 's', value: draft.defaultStyle ?? '',
+                onChange: (event) => patch({ defaultStyle: event.target.value }),
+              }, [
+                h('option', { key: '', value: '' }, `跟随全局：${styles?.config?.defaultStyle ?? '?'}`),
+                ...Object.keys(styles?.config?.styles ?? {}).map((key) => h('option', { key, value: key }, `${styles.config.styles[key].label} (${key})`)),
+              ]),
+            ]),
+            h('button', {
+              key: 'preview', className: 'tiny', disabled: Boolean(busy),
+              onClick: () => runPreview(draft.defaultStyle || undefined, '一位旅人站在岔路口，远处有灯火'),
+            }, busy === 'preview' ? '出图中…' : '试出 / 预览'),
+            h('span', { key: 'advanced', className: 'dim', title: '提示词前缀、风格备注与战役名由 DM 的 rp_session 工具维护' }, '高级配置由 DM 工具维护'),
+          ]),
+          preview ? h('div', { key: 'prev', className: 'imagepreview', ref: previewRef }, [
+            h('div', { key: 'l', className: 'row' }, [
+              h('span', { key: 't', className: 'dim' }, `预览：${preview.style ?? ''}（${(preview.elapsedMs / 1000).toFixed(1)}s）`),
+              h('span', { key: 'sep', className: 'sep' }),
+              preview.url ? h('a', { key: 'o', className: 'dim', href: preview.url, target: '_blank', rel: 'noreferrer' }, '新标签打开大图') : null,
+            ]),
+            preview.url ? h('img', { key: 'i', className: 'pv', src: preview.url, alt: 'preview' }) : null,
+          ]) : null,
+        ]),
         msg ? h('div', { key: 'msg', className: 'msg' }, msg.text) : null,
         // 诊断行：导入入口的可见性历史上就看这两侧的值，出问题时一眼能看出是哪边不对
         h('div', { key: 'diag', className: 'dim' }, `入口判据 — 界面：预设「${clientPreset || '空'}」/${clientBlank === false ? '已开局' : clientBlank === true ? '未开局' : '未知'}；宿主：预设「${gate?.preset || '未知'}」/${gate ? (gate.started ? '已开局' : '未开局') : '未答'}`),
 
-        // ── DM 设定（本会话）─────────────────────────────────────────────────
-        // DM（旁白）卡不是角色卡：它的内容是「这个 DM 怎么带团」，早先会被导成一条名叫 DM 的角色。
-        // 这里既是它的正规存放处，也放生图开关（用户要求：是否生图在面板配置、会话隔离）。
-        h('div', { key: 'dm', className: 'card' }, [
-          h('div', { key: 'h', className: 'row' }, [
+        // ── DM 设定（默认只占一行；长文本在共享 portal 编辑器里改）──────────────
+        h('div', { key: 'dm', className: 'card dmcard' }, [
+          h('div', { key: 'summary', className: 'dmsummary' }, [
             h('h4', { key: 't' }, 'DM 设定'),
-            h('span', { key: 'sep', className: 'sep' }),
-            h('span', { key: 'd', className: 'dim' }, '按会话隔离：这里写的规则只在本会话生效'),
+            h('span', { key: 's', className: 'dim' },
+              `${dmPrompt.trim() ? '已配置' : '未配置'} · ${dmPrompt.length} 字 · 来源：${dmSource}`),
+            h('button', { key: 'edit', className: 'tiny', onClick: beginDmEdit }, '编辑'),
           ]),
           (draft.dm?.migrated ?? []).length
-            ? h('div', { key: 'mig', className: 'dim' },
-              `⚠ 已把 ${(draft.dm.migrated ?? []).join('、')} 从角色卡挪到这里 —— 那张卡是 DM（旁白）卡，不是角色。确认无误后点「保存」落盘。`)
+            ? h('div', { key: 'mig', className: 'dim dupwarn' },
+              `⚠ 已把 ${(draft.dm.migrated ?? []).join('、')} 从角色卡挪到这里 —— 确认后在编辑器应用，再点顶部「保存」。`)
             : null,
-          h('textarea', {
-            key: 'p', className: 'dmtext', value: draft.dm?.prompt ?? '',
-            placeholder: '这个 DM 自己的规则与文风（导入 DM 卡会自动填进来）：叙述人称、描写密度、判定口吻、内容尺度、每轮结尾怎么收……',
-            onChange: (e) => patchDm({ prompt: e.target.value }),
-          }),
-          h('div', { key: 'imgs', className: 'row dmimgs' }, [
-            h('span', { key: 'l', className: 'dim' }, '生图：'),
-            h('label', { key: 'en', className: 'dim' }, [
-              h('input', {
-                key: 'i', type: 'checkbox', checked: draft.dm?.images?.enabled !== false,
-                onChange: (e) => patchDm({ images: { ...(draft.dm?.images ?? {}), enabled: e.target.checked } }),
-              }),
-              ' 自动配图',
-            ]),
-            h('label', { key: 'fa', className: 'dim' }, [
-              h('input', {
-                key: 'i', type: 'checkbox', disabled: draft.dm?.images?.enabled === false,
-                checked: draft.dm?.images?.firstAppearance !== false,
-                onChange: (e) => patchDm({ images: { ...(draft.dm?.images ?? {}), firstAppearance: e.target.checked } }),
-              }),
-              ' 角色首次出场',
-            ]),
-            h('label', { key: 'ks', className: 'dim' }, [
-              h('input', {
-                key: 'i', type: 'checkbox', disabled: draft.dm?.images?.enabled === false,
-                checked: draft.dm?.images?.keyScenes !== false,
-                onChange: (e) => patchDm({ images: { ...(draft.dm?.images ?? {}), keyScenes: e.target.checked } }),
-              }),
-              ' 重要场景',
-            ]),
-          ]),
-          h('div', { key: 'note', className: 'dim' },
-            '生图用的是本地 ComfyUI（本地没开就自然不出图，DM 不会卡住）。已有立绘的角色不会重复生成 —— '
-            + 'DM 拿得到现成的图片地址，直接展示。改完点右上角「保存」。'),
         ]),
 
         // 世界设定 + **卡封面**：导入卡的 PNG 就摆在这里（用户要求：
@@ -1436,12 +1671,6 @@ window.__ModuleLoader__.load({
               key: 'n', className: 'tiny', disabled: Boolean(busy),
               onClick: () => beginLore(null),
             }, '＋ 新建条目'),
-            // 老世界书（导入功能之前写的）里可能全是 name:/gender: Female 这种英文键，一键中文化
-            h('button', {
-              key: 'lz', className: 'tiny', disabled: Boolean(busy),
-              title: '把整本书里 YAML 风格的英文属性键换成中文（name→名称、gender: Female→性别：女 …）',
-              onClick: () => void localizeLoreAll(),
-            }, busy === 'lore-lz' ? '处理中…' : '属性中文化'),
             h('button', { key: 'r', className: 'tiny', onClick: () => void loadLore(), disabled: busy === 'lore' },
               busy === 'lore' ? '读取中…' : '刷新'),
             // 让 DM 把设定收一次尾（导入是规则解码，「当前进度/前情提要/物品清单」那类会过期的
@@ -1484,6 +1713,14 @@ window.__ModuleLoader__.load({
               `每轮都会注入：常驻 ${lore.constant} 条 ≈ ${lore.constantChars ?? 0} 字/轮（写进系统提示的常驻段）`
               + (lore.kinds ? `（设定 ${lore.kinds['设定'] ?? 0}｜规则 ${lore.kinds['规则'] ?? 0}｜状态 ${lore.kinds['状态'] ?? 0}｜历史 ${lore.kinds['历史'] ?? 0}）` : ''))
             : null,
+          // 导入来的常驻与超预算的常驻**不进系统提示**：它们按触发词进 runtime（命中才注入）。
+          // 必须说清楚「它们没丢」，否则用户会以为导入的设定不见了。
+          lore && lore.exists && (lore.demoted ?? []).length
+            ? h('div', { key: 'demoted', className: 'dim' },
+              `另有 ${lore.demoted.length} 条标了 constant 的条目**按需注入**（不占系统提示，命中触发词才进）`
+              + `${lore.importedEntries ? `：其中 ${lore.importedEntries} 条来自导入的卡` : ''}`
+              + `—— 需要时用 rp_lore 按标题读`)
+            : null,
           // 空条目：不注入上下文，但还在文件里 —— 默认藏起来，给一行提示 + 展开开关
           lore && lore.exists && lore.empty
             ? h('div', { key: 'empty', className: 'row loreempty dim' }, [
@@ -1502,110 +1739,47 @@ window.__ModuleLoader__.load({
               onChange: (e) => setLoreQuery(e.target.value),
             })
             : null,
+          // 只提示「条目名 == 人物卡名」这一种：key 重复无所谓、也不显示（用户拍板）。
+          diagnosticText(loreDiagnostics)
+            ? h('div', { key: 'dupes', className: 'msg dupwarn' },
+              `⚠ 与人物卡重名的条目：${diagnosticText(loreDiagnostics)}—— 这几条的正文已由人物卡承载，世界书不会再重复注入`)
+            : null,
           lore && lore.exists
-            ? h('div', { key: 'list', className: 'scroll lorelist' }, visibleLoreEntries().map((e, i) => h('div', {
-              key: `e${i}`, className: 'loreitem', 'data-empty': e.empty ? 'true' : 'false',
-            }, [
-              h('div', { key: 'h', className: 'row' }, [
-                h('span', { key: 't', className: 'loretitle' }, e.title),
-                // 类别标签：状态/历史 是**运行期快照**（导入时从卡里带进来的「当前进度」「前情」），
-                // 当常驻设定用会一直占上下文而且是过时信息 —— 着色 + 提示，让人一眼看出来。
-                e.kind && e.kind !== '设定'
-                  ? h('span', {
-                    key: 'k', className: `badge kind kind-${e.kind}`,
-                    title: e.kind === '历史'
-                      ? '这条看起来是历史/前情记录（会随时间过期）。当常驻设定注入会一直占上下文，也会让模型按旧状态写。'
-                      : e.kind === '状态'
-                        ? '这条看起来是运行期状态（进度/好感/物品）。用状态表记更合适，写进世界书当常驻会过期。'
-                        : '这条看起来是玩法/输出规则类条目。',
-                  }, e.kind)
-                  : null,
-                e.empty ? h('span', { key: 'em', className: 'badge warn', title: '正文只有 markdown 脚手架/占位词：不会注入上下文。留着没用，建议删掉。' }, '空') : null,
-                e.constant ? h('span', { key: 'c', className: 'badge ok' }, '常驻') : null,
-                e.constant && (e.kind === '历史' || e.kind === '状态')
-                  ? h('span', {
-                    key: 'cw', className: 'badge warn',
-                    title: '常驻的「状态/历史」条目每轮都会注入，但它们的内容会过期 —— 建议改成按关键词触发（或直接删掉，状态用状态表维护）。',
-                  }, '常驻存疑')
-                  : null,
-                e.order ? h('span', { key: 'o', className: 'badge' }, `order ${e.order}`) : null,
-                e.probability !== undefined && e.probability < 100 ? h('span', { key: 'p', className: 'badge warn' }, `${e.probability}%`) : null,
-                h('span', { key: 'n', className: 'dim' }, `${e.chars} 字`),
-              // 折叠态**只有这一行**：名称 / 常驻 / order / 字数 + 右侧的常驻开关与「详情 / 编辑」。
-              // 触发词与正文都收进详情里 —— 一屏能扫完十几条，比每条摊开几千字有用得多。
-              (Array.isArray(e.keys) && e.keys.length) || e.constant
-                ? null
-                : h('span', {
-                  key: 'warn', className: 'badge warn',
-                  title: '既没有触发词也不是常驻 → 这条永远不会被注入，建议补触发词或勾上「常驻」',
-                }, '⚠ 永不触发'),
-              h('span', { key: 's', className: 'sep' }),
-              // 常驻开关**就地可改**（用户明确要的），改完立刻写回文件
-              h('label', { key: 'cc', className: 'dim loreconst', title: '常驻：不看触发词，每轮都注入' }, [
-                h('input', {
-                  key: 'c', type: 'checkbox', checked: e.constant === true, disabled: Boolean(busy),
-                  onChange: (ev) => void toggleLoreConstant(e, ev.target.checked),
-                }),
-                '常驻',
-              ]),
-              h('button', {
-                key: 'ed', className: 'tiny', disabled: Boolean(busy),
-                // 已经展开的那条再点一次就是**收起**（第一版这里永远调 beginLore，于是只能展开、收不起来）
-                onClick: () => {
-                  if (loreEdit && loreEdit.title === e.title) setLoreEdit(null);
-                  else void beginLore(e);
-                },
-              }, loreEdit && loreEdit.title === e.title ? '收起' : '详情 / 编辑'),
-            ]),
-            // 详情 / 编辑：就地展开在这一条下面（正文全文都在表单里，可读也可改）
-            loreEdit && loreEdit.title === e.title
-              ? h('div', { key: 'form', className: 'loreform' }, [
-                h('div', { key: 'meta', className: 'dim' },
-                  `触发词：${(Array.isArray(e.keys) && e.keys.length) ? e.keys.join('、') : '（无）'}`),
-                h('label', { key: 'l1', className: 'dim' }, '标题'),
-                h('input', { key: 'f1', type: 'text', value: loreEdit.title, onChange: (ev) => patchLoreEdit({ title: ev.target.value }) }),
-                h('label', { key: 'l2', className: 'dim' }, '触发词（逗号分隔）'),
-                h('input', {
-                  key: 'f2', type: 'text', value: loreEdit.keysText, placeholder: '命中这些词时注入；留空则必须勾「常驻」',
-                    onChange: (ev) => patchLoreEdit({ keysText: ev.target.value }),
+            ? h('div', { key: 'list', className: 'scroll lorelist' }, visibleLoreEntries().map((entry, index) => {
+              const conflict = diagnosticText(entry.nameConflict)
+                || namedDiagnostic(loreDiagnostics, entry.title);
+              const keys = Array.isArray(entry.keys) ? entry.keys : [];
+              return h('div', {
+                key: `e${index}`, className: 'loreitem', 'data-empty': entry.empty ? 'true' : 'false',
+              }, h('div', { className: 'loreline' }, [
+                h('span', { key: 't', className: 'loretitle', title: entry.title }, entry.title),
+                h('span', { key: 'meta', className: 'dim loresummary', title: keys.join('、') },
+                  `${entry.kind || '设定'} · ${entry.constant ? 'constant' : (keys.length ? `keys ${keys.join('、')}` : '无 keys')} · order ${entry.order ?? 0}`),
+                h('span', { key: 'status', className: 'row charstatus' }, [
+                  entry.empty ? h('span', { key: 'empty', className: 'badge warn' }, '空') : null,
+                  // 来源：导入来的条目按触发词走 runtime，不因原卡的 constant 占系统提示
+                  entry.source === 'card'
+                    ? h('span', { key: 'src', className: 'badge', title: '从 PNG 卡导入的条目：按触发词注入，不写进系统提示' }, '导入') : null,
+                  entry.constant && (entry.kind === '历史' || entry.kind === '状态')
+                    ? h('span', { key: 'stale', className: 'badge warn', title: '状态/历史常驻会持续注入过期内容' }, '常驻存疑') : null,
+                  !entry.constant && !keys.length
+                    ? h('span', { key: 'never', className: 'badge warn', title: '既没有 keys 也不是 constant，不会被注入' }, '永不触发') : null,
+                  conflict ? h('span', { key: 'dup', className: 'badge warn', title: conflict }, '与人物同名') : null,
+                  h('span', { key: 'chars', className: 'dim' }, `${entry.chars} 字`),
+                ]),
+                h('label', { key: 'constant', className: 'dim loreconst', title: '常驻：每轮都注入' }, [
+                  h('input', {
+                    key: 'c', type: 'checkbox', checked: entry.constant === true, disabled: Boolean(busy),
+                    onChange: (event) => void toggleLoreConstant(entry, event.target.checked),
                   }),
-                  h('div', { key: 'f5', className: 'row' }, [
-                    h('label', { key: 'c1', className: 'dim' }, [
-                      h('input', { key: 'c2', type: 'checkbox', checked: loreEdit.constant, onChange: (ev) => patchLoreEdit({ constant: ev.target.checked }) }),
-                      ' 常驻（不看触发词）',
-                    ]),
-                    h('label', { key: 'o1', className: 'dim' }, [
-                      'order ',
-                      h('input', {
-                        key: 'o2', type: 'number', value: loreEdit.order, style: { width: 64 },
-                        onChange: (ev) => patchLoreEdit({ order: ev.target.value }),
-                      }),
-                    ]),
-                    h('label', { key: 'p1', className: 'dim' }, [
-                      '概率 ',
-                      h('input', {
-                        key: 'p2', type: 'number', min: 0, max: 100, value: loreEdit.probability, style: { width: 64 },
-                        onChange: (ev) => patchLoreEdit({ probability: ev.target.value }),
-                      }),
-                    ]),
-                  ]),
-                  h('label', { key: 'l3', className: 'dim' }, `正文（${String(loreEdit.body ?? '').length} 字）`),
-                  h('textarea', {
-                    key: 'f3', className: 'lorebody', value: loreEdit.body,
-                    placeholder: '写进提示词的正文', onChange: (ev) => patchLoreEdit({ body: ev.target.value }),
-                  }),
-                  h('div', { key: 'f4', className: 'row' }, [
-                    h('button', { key: 'sv', className: 'primary tiny', disabled: Boolean(busy), onClick: () => void saveLoreEdit() },
-                      busy === 'lore-save' ? '保存中…' : '保存'),
-                    h('button', { key: 'ca', className: 'tiny', onClick: () => setLoreEdit(null) }, '取消'),
-                    h('span', { key: 'sep', className: 'sep' }),
-                    h('button', { key: 'rm', className: 'tiny', disabled: Boolean(busy), onClick: () => void deleteLoreEntry(loreEdit.title) }, '删除条目'),
-                  ]),
-                  h('div', { key: 'w', className: 'dim' },
-                    '改动只重写这一条；文件里其它条目与你手写的注释都不会被动。保存后下一轮装配即生效。'),
-                ])
-                : null,
-            ])))
+                  '常驻',
+                ]),
+                h('span', { key: 'actions', className: 'row rowactions' }, [
+                  h('button', { key: 'edit', className: 'tiny', disabled: Boolean(busy), onClick: () => void beginLore(entry) }, '编辑'),
+                  h('button', { key: 'delete', className: 'iconbtn', disabled: Boolean(busy), title: `删除 ${entry.title}`, onClick: () => void deleteLoreEntry(entry.title) }, '×'),
+                ]),
+              ]));
+            }))
             : null,
           lore && lore.exists
             ? h('div', { key: 'note', className: 'dim' },
@@ -1620,142 +1794,75 @@ window.__ModuleLoader__.load({
             // 那样立绘就会串到别的角色身上。
             const pkey = String(c.name ?? '').trim();
             const portrait = pkey ? portraits[pkey] : undefined;
-            const setField = (field, value) => {
-              const n = [...chars];
-              n[i] = { ...n[i], [field]: value };
-              patch({ characters: n });
-            };
             // 角色索引：常驻的紧凑名单（brief / always）。缺条目时按名字现建一条。
             const idx = Array.isArray(draft.characterIndex) ? draft.characterIndex : [];
             const idxEntry = idx.find((e) => String(e?.name ?? '') === String(c.name ?? '')) ?? null;
-            const patchIndex = (field, value) => {
-              const name = String(c.name ?? '').trim();
-              if (!name) { setMsg({ kind: 'err', text: '先给角色起个名字，才能设置它的索引' }); return; }
-              const rest = idx.filter((e) => String(e?.name ?? '') !== name);
-              patch({ characterIndex: [...rest, { ...(idxEntry ?? { name, brief: '', always: false }), name, [field]: value }] });
-            };
-            // 进阶字段（设定层）：平时折叠，避免 5 个角色就把面板撑得很长
+            // 进阶字段（设定层）：列表里不展开，只报「填了几项」——完整字段在大浮窗里改
             const filled = ['personality', 'speech', 'behavior', 'first_mes', 'mes_example', 'relations']
               .filter((f) => String(c[f] ?? '').trim());
-            // 立绘：**只有生成出来的**才挂在角色行上（有图就两列，图在左）。
-            // 卡面不再是角色的立绘 —— 它现在是「世界设定」旁边那张封面。
+            // 立绘：**只有生成出来的**才挂在角色行上（当小头像用）。
+            // 卡面不是角色的立绘 —— 它现在是「世界设定」旁边那张封面。
+            //
+            // 版面（用户重新设计的要求）：**一行 = 小头像 + 名称 + 简介 + 标记 + 操作**。
+            // 早先「有图就两列、图在左 150×200」会把那一行撑成三倍高（截图里「桐人」就是），
+            // 而且旁边的「大图 / 收起」里的「收起」其实会**把立绘从会话配置里删掉** ——
+            // 点完就真的看不到了。现在：头像固定 36px、不提供「收起」，
+            // 删立绘挪到编辑浮窗里（那里本来就摆着大图，删之前看得见）。
             const shownUrl = portrait?.url || '';
-            const faceLabel = portrait?.url
-              ? `立绘${portrait.style ? ` · ${portrait.style}` : ''}${portrait.elapsedMs ? `（${(portrait.elapsedMs / 1000).toFixed(1)}s）` : ''}`
+            const faceLabel = shownUrl
+              ? `立绘${portrait?.style ? ` · ${portrait.style}` : ''}`
               : '';
-            const face = shownUrl
-              ? h('div', { key: 'face', className: 'charface' }, [
-                h('img', { key: 'i', src: shownUrl, alt: `${pkey} 立绘`, loading: 'lazy' }),
-                h('div', { key: 'l', className: 'dim' }, faceLabel),
-                h('div', { key: 'a', className: 'row' }, [
-                  h('a', { key: 'o', className: 'dim', href: shownUrl, target: '_blank', rel: 'noreferrer' }, '大图'),
-                  h('button', {
-                    key: 'x', className: 'tiny',
-                    onClick: () => {
-                      setPortraits((p) => { const n = { ...p }; delete n[pkey]; return n; });
-                      // 只收起显示是不够的：会话配置里那份还得清，否则下次打开又装回来
-                      API.portraitSave({ sessionId, name: pkey, action: 'clear' })
-                        .then((res) => {
-                          if (!res?.ok) return;
-                          setDraft((d) => (d ? { ...d, portraits: res.portraits ?? {} } : d));
-                        })
-                        .catch(() => { /* 清不掉也只是下次还看得到，不打断 */ });
-                    },
-                  }, '收起'),
-                ]),
-              ])
-              : null;
-            return h('div', { key: `c${i}`, className: 'charbox', 'data-hasface': face ? 'true' : 'false' }, [
+            const face = h('div', {
+              key: 'face', className: 'charavatar', title: faceLabel || '还没有立绘（点「立绘」生成）',
+            }, shownUrl
+              ? h('img', { key: 'i', src: shownUrl, alt: `${pkey} 立绘`, loading: 'lazy' })
+              : h('span', { key: 'ph', className: 'charavatar-ph' }, (pkey || '?').slice(0, 1)));
+            return h('div', { key: `c${i}`, className: 'charbox', 'data-hasface': shownUrl ? 'true' : 'false' }, [
               face,
               h('div', { key: 'body', className: 'charbody' }, [
+                // 默认**只占一行**（§6）：头像 / 名称 / 索引简介 / 标记 / 编辑 / 立绘 / 删除。
+                // 完整 8 字段搬进共享大浮窗 —— 5 个角色就把面板撑满的版面问题就是这么来的。
                 h('div', { key: 'line', className: 'charline' }, [
-                h('input', {
-                  key: 'n', type: 'text', value: c.name ?? '', placeholder: '角色名',
-                  onChange: (e) => setField('name', e.target.value),
-                }),
-                h('input', {
-                  key: 'a', type: 'text', value: c.appearance ?? '', placeholder: '外观描述（生图时自动补进提示词）',
-                  onChange: (e) => setField('appearance', e.target.value),
-                }),
-                h('button', {
-                  key: 'p', className: 'tiny',
-                  // 出图期间禁用：避免同时再发一张（每次 ~18 秒，且都排同一个 ComfyUI 队列）
-                  disabled: Boolean(busy),
-                  onClick: () => runPortrait(c),
-                }, busy === `portrait:${pkey}` ? '出图中…' : '立绘'),
-                h('button', {
-                  key: 'd', className: 'tiny',
-                  onClick: () => {
-                    if (pkey) {
-                      setPortraits((p) => { const n = { ...p }; delete n[pkey]; return n; });
-                      // 会话配置里那份也要清（否则重开面板又被装回来）
-                      API.portraitSave({ sessionId, name: pkey, action: 'clear' })
-                        .then((res) => {
-                          if (!res?.ok) return;
-                          setDraft((d) => (d ? { ...d, portraits: res.portraits ?? {} } : d));
-                        })
-                        .catch(() => { /* 清不掉也只是下次还看得到，不打断 */ });
-                    }
-                    patch({ characters: chars.filter((_, j) => j !== i) });
-                  },
-                }, '删'),
-              ]),
-              // 常驻展开：勾上则这个角色的完整卡片每轮都注入（主角用），否则只在出场时展开
-              h('label', { key: 'always', className: 'dim', style: { display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, fontSize: 12 } }, [
-                h('input', {
-                  key: 'cb', type: 'checkbox', checked: idxEntry?.always === true,
-                  onChange: (e) => patchIndex('always', e.target.checked),
-                }),
-                '常驻展开完整设定（主角用；不勾则只在它出场的那几轮注入，省 token）',
-              ]),
-              // 设定层字段：折叠起来，填过的会在标题里列出来
-              h('details', { key: 'adv', className: 'chargrow' }, [
-                h('summary', { key: 's', className: 'dim' },
-                  `设定细节${filled.length ? `（已填 ${filled.length} 项：${filled.join('、')}）` : '（性格 / 口癖 / 开场白… 填了扮演更稳）'}`),
-                h('div', { key: 'b', className: 'chargrid' }, [
-                  h('span', { key: 'i1', className: 'dim' }, '索引简介'),
-                  h('input', {
-                    key: 'i2', type: 'text',
-                    value: idxEntry?.brief ?? '',
-                    placeholder: '常驻显示的一句话（默认取外观首句）——详细卡片在角色出场时才注入',
-                    onChange: (e) => patchIndex('brief', e.target.value),
-                  }),
-                  h('span', { key: 'p1', className: 'dim' }, '性格'),
-                  h('textarea', {
-                    key: 'p2', value: c.personality ?? '', placeholder: '表层 → 深层 → 矛盾点，以及对待玩家的基本态度',
-                    onChange: (e) => setField('personality', e.target.value),
-                  }),
-                  h('span', { key: 's1', className: 'dim' }, '口癖/语气'),
-                  h('textarea', {
-                    key: 's2', value: c.speech ?? '', placeholder: '可观察的量化特征，如「句子短、爱用反问、管玩家叫小子」',
-                    onChange: (e) => setField('speech', e.target.value),
-                  }),
-                  h('span', { key: 'b1', className: 'dim' }, '行为习惯'),
-                  h('textarea', {
-                    key: 'b2', value: c.behavior ?? '', placeholder: '紧张时做什么、面对威胁的第一反应……',
-                    onChange: (e) => setField('behavior', e.target.value),
-                  }),
-                  h('span', { key: 'r1', className: 'dim' }, '人物关系'),
-                  h('textarea', {
-                    key: 'r2', value: c.relations ?? '', placeholder: '与其他角色的关系，如「祁俊的师父，亦师亦母」',
-                    onChange: (e) => setField('relations', e.target.value),
-                  }),
-                  h('span', { key: 'f1', className: 'dim' }, '开场白'),
-                  h('textarea', {
-                    key: 'f2', value: c.first_mes ?? '', placeholder: '该角色初次登场的原文 —— 最有效的文风锚点（注入时取前 300 字）',
-                    onChange: (e) => setField('first_mes', e.target.value),
-                  }),
-                  h('span', { key: 'm1', className: 'dim' }, '对话范例'),
-                  h('textarea', {
-                    key: 'm2', value: c.mes_example ?? '', placeholder: '2~4 轮，格式「角色名：台词」',
-                    onChange: (e) => setField('mes_example', e.target.value),
-                  }),
+                  h('span', { key: 'n', className: 'charsum-name', title: pkey || '（未命名）' },
+                    pkey || '（未命名）'),
+                  h('span', { key: 'b', className: 'dim charsum-brief', title: idxEntry?.brief || String(c.appearance ?? '') },
+                    idxEntry?.brief || String(c.appearance ?? '') || '（无简介）'),
+                  h('span', { key: 'tags', className: 'row charstatus' }, [
+                    filled.length
+                      ? h('span', { key: 'f', className: 'badge', title: `已填：${filled.join('、')}` }, `${filled.length}/6 已填`)
+                      : h('span', { key: 'f', className: 'badge warn', title: '只有名字，扮演会不稳' }, '空壳'),
+                    idxEntry?.always === true
+                      ? h('span', { key: 'a', className: 'badge', title: '完整设定每轮都注入（主角用）' }, '常驻展开') : null,
+                  ]),
+                  h('span', { key: 'actions', className: 'row rowactions' }, [
+                    h('button', {
+                      key: 'edit', className: 'tiny', disabled: Boolean(busy),
+                      onClick: () => beginCharacter(c, i, false),
+                    }, '编辑'),
+                    h('button', {
+                      key: 'p', className: 'tiny',
+                      // 出图期间禁用：避免同时再发一张（每次 ~18 秒，且都排同一个 ComfyUI 队列）
+                      disabled: Boolean(busy),
+                      onClick: () => runPortrait(c),
+                    }, busy === `portrait:${pkey}` ? '出图中…' : '立绘'),
+                    h('button', {
+                      key: 'd', className: 'iconbtn', title: `删除 ${pkey || '这个角色'}`,
+                      onClick: () => {
+                        // 删角色时顺手清掉它的立绘（否则会话配置里会留一条孤儿记录）
+                        if (pkey) clearPortrait(pkey);
+                        patch({ characters: chars.filter((_, j) => j !== i) });
+                      },
+                    }, '×'),
+                  ]),
                 ]),
               ]),
-            ]),
             ]);
           }),
-          h('button', { key: 'add', className: 'tiny', onClick: () => patch({ characters: [...chars, { name: '', appearance: '' }] }) }, '+ 添加角色'),        ]),
+          // 角色**不再从这里手加**（用户要求：只通过 DM 添加）—— 面板手加出来的空壳角色
+          // 既没有设定也没立绘，还要 DM 再补一遍；统一让 DM 用 rp_character 建，
+          // 导入卡时也会自动写入。这里只留一行说明。
+          h('div', { key: 'addhint', className: 'dim' },
+            '角色由 DM 用 `rp_character` 添加/修改（导入角色卡时自动写入）；这里只能编辑、配立绘或删除。'),        ]),
 
         // 随机表：**没有表时整张卡片不渲染**（一张「RP 表格 / 随机表（0）」摆在面板里
         // 只是噪音）；真建了表才出现，掷表入口也随之回来。
@@ -1806,12 +1913,15 @@ window.__ModuleLoader__.load({
             h('span', { key: 'c1' }, '线索'),
             h('input', { key: 'c2', type: 'text', value: st.clues ?? '', onChange: (e) => patchState('clues', e.target.value) }),
           ]),
-          // 队伍成员：状态 / 持有 / 伤病 / 目标，一行一个人
+          // 队伍成员：状态 / 能力技能 / 持有装备 / 伤病 / 目标，一行一个人。
+          // 「能力」与「持有」都是**动态值**（学到新的、换装备、用掉道具就变），
+          // 所以它们在这里而不在人物卡上。
           h('div', { key: 'party' }, [
             h('div', { key: 'l', className: 'dim' }, `队伍状态（${(st.party ?? []).length} 人）—— 由 DM 用 rp_state 维护，这里可以直接改`),
             ...(st.party ?? []).map((row, i) => h('div', { key: `p${i}`, className: 'partylines' }, [
               h('span', { key: 'n' }, row.character || '（未具名）'),
               h('span', { key: 's', className: 'dim' }, row.status ? `状态：${row.status}` : ''),
+              row.abilities ? h('span', { key: 'ab', className: 'dim' }, `能力：${row.abilities}`) : null,
               row.conditions ? h('span', { key: 'c', className: 'badge warn' }, row.conditions) : null,
               row.inventory ? h('span', { key: 'i', className: 'dim mono' }, `持有：${row.inventory}`) : null,
               row.goal ? h('span', { key: 'g', className: 'dim' }, `目标：${row.goal}`) : null,
@@ -1824,36 +1934,206 @@ window.__ModuleLoader__.load({
           ]) : null,
         ]),
 
-        h('div', { key: 'style', className: 'card' }, [
-          h('h4', { key: 't' }, '生图配置（本会话）'),
-          h('div', { key: 'kv', className: 'kv' }, [
-            h('span', { key: 's1' }, '会话默认风格'),
-            h('select', {
-              key: 's2', value: draft.defaultStyle ?? '',
-              onChange: (e) => patch({ defaultStyle: e.target.value }),
-            }, [
-              h('option', { key: '', value: '' }, `（跟随全局：${styles?.config?.defaultStyle ?? '?'}）`),
-              ...Object.keys(styles?.config?.styles ?? {}).map((k) => h('option', { key: k, value: k }, `${styles.config.styles[k].label} (${k})`)),
+        // 「生图配置（本会话）」这块**已经合并到面板最上面的「本会话生图」**：
+        // 默认风格、试出/预览、自动配图开关都在那里。这里不再重复一份 ——
+        // 两份同一个 draft 字段时，用户在下面改了、上面那份看起来没动，很容易以为没生效。
+        h('div', { key: 'style-note', className: 'dim' },
+          `提示词前缀 / 风格备注 / 战役名由 DM 用 rp_session 工具维护${draft.campaign?.name ? `（当前战役：${draft.campaign.name}）` : ''}`),
+
+        // ── 共享大浮窗（§6）：世界书 / 角色卡 / DM 设定三处编辑都走它 ──────────
+        // 列表里只留单行摘要，完整字段、正文与立绘都在这里改；portal 到 document.body，
+        // 所以右侧栏再窄也不会把表单挤变形。
+        dmEdit ? h(SharedPortalModal, {
+          key: 'dm-edit',
+          title: 'DM 设定',
+          dirty: dmEdit.dirty === true,
+          onClose: () => confirmEditorClose(dmEdit.dirty === true, () => setDmEdit(null)),
+          footer: [
+            h('span', { key: 'h', className: 'dim' }, `改完点「应用」，再点面板顶部「保存」落盘　·　${dmEdit.prompt.length} 字`),
+            h('span', { key: 's', className: 'sep' }),
+            h('button', { key: 'ok', className: 'primary', onClick: applyDmEdit }, '应用'),
+            h('button', { key: 'x', className: 'tiny', onClick: () => confirmEditorClose(dmEdit.dirty === true, () => setDmEdit(null)) }, '关闭'),
+          ],
+        }, [
+          h('div', { key: 'f', className: 'dmeditform' }, [
+            h('label', { key: 'l' }, 'DM 自己的规则（写进系统提示的【本会话设定】，每轮都在）'),
+            h('div', { key: 'd', className: 'dim' },
+              '这里放的是「这个 DM 怎么带团」：扮演哪些角色、叙述人称、裁决风格、禁忌。不是某个角色的设定 —— 角色请放人物卡。'),
+            h('textarea', {
+              key: 't', className: 'dmtext', value: dmEdit.prompt,
+              placeholder: '例如：扮演除玩家以外的所有角色；第二人称叙述；不替玩家做决定；判定用 rp_random…',
+              onChange: (e) => patchDmEdit(e.target.value),
+            }),
+          ]),
+        ]) : null,
+
+        loreEdit ? h(SharedPortalModal, {
+          key: 'lore-edit',
+          title: loreEdit.isNew ? '新建世界书条目' : `编辑条目：${loreEdit.title}`,
+          dirty: loreEditDirty,
+          onClose: () => confirmEditorClose(loreEditDirty, () => { setLoreEdit(null); setLoreEditDirty(false); }),
+          footer: [
+            h('span', { key: 'h', className: 'dim' }, `正文 ${String(loreEdit.body ?? '').length} 字　·　保存后写入本会话世界书`),
+            h('span', { key: 's', className: 'sep' }),
+            loreEdit.isNew ? null : h('button', {
+              key: 'del', className: 'tiny', disabled: Boolean(busy),
+              onClick: () => {
+                if (!window.confirm(`删除条目「${loreEdit.title}」？`)) return;
+                setLoreEdit(null);
+                void deleteLoreEntry(loreEdit.title);
+              },
+            }, '删除条目'),
+            h('button', {
+              key: 'ok', className: 'primary lore-save', disabled: Boolean(busy),
+              onClick: () => void saveLoreEdit(),
+            }, busy === 'lore-save' ? '保存中…' : '保存'),
+            h('button', {
+              key: 'x', className: 'tiny',
+              onClick: () => confirmEditorClose(loreEditDirty, () => { setLoreEdit(null); setLoreEditDirty(false); }),
+            }, '关闭'),
+          ],
+        }, [
+          h('div', { key: 'f', className: 'loreform' }, [
+            nameConflictWarn
+              ? h('div', { key: 'dup', className: 'msg dupwarn' }, `⚠ ${nameConflictWarn}`)
+              : null,
+            h('label', { key: 't1' }, '标题（也是默认触发词）'),
+            h('input', {
+              key: 't2', type: 'text', value: loreEdit.title, placeholder: '如：广寒宫 / 当前进度',
+              onChange: (e) => patchLoreEdit({ title: e.target.value }),
+            }),
+            h('label', { key: 'k1' }, '触发词（逗号分隔）—— 留空就用标题当触发词'),
+            h('input', {
+              key: 'k2', type: 'text', value: loreEdit.keysText, placeholder: '广寒宫, 祝婉宁',
+              onChange: (e) => patchLoreEdit({ keysText: e.target.value }),
+            }),
+            h('div', { key: 'k3', className: 'row' }, [
+              h('label', { key: 'c1', className: 'dim' }, [
+                h('input', {
+                  key: 'c2', type: 'checkbox', checked: loreEdit.constant === true,
+                  onChange: (e) => patchLoreEdit({ constant: e.target.checked }),
+                }),
+                '常驻（不看触发词）',
+              ]),
+              h('label', { key: 'o1', className: 'dim' }, [
+                'order ',
+                h('input', {
+                  key: 'o2', type: 'number', value: String(loreEdit.order ?? 0), style: { width: '72px' },
+                  onChange: (e) => patchLoreEdit({ order: e.target.value }),
+                }),
+              ]),
+              h('label', { key: 'p1', className: 'dim' }, [
+                '触发概率 ',
+                h('input', {
+                  key: 'p2', type: 'number', min: '0', max: '100', value: String(loreEdit.probability ?? 100), style: { width: '72px' },
+                  onChange: (e) => patchLoreEdit({ probability: e.target.value }),
+                }),
+              ]),
+            ]),
+            h('label', { key: 'b1' }, '正文'),
+            h('textarea', {
+              key: 'b2', className: 'lorebody', value: loreEdit.body ?? '',
+              placeholder: '这条被触发时注入的内容。状态/历史类信息建议改用 rp_state，别写成常驻。',
+              onChange: (e) => patchLoreEdit({ body: e.target.value }),
+            }),
+          ]),
+        ]) : null,
+
+        charEdit ? h(SharedPortalModal, {
+          key: 'char-edit',
+          title: charEdit.isNew ? '新建角色' : `编辑角色：${charEdit.originalName || charEdit.character?.name || '（未命名）'}`,
+          dirty: charEdit.dirty === true,
+          onClose: () => confirmEditorClose(charEdit.dirty === true, () => setCharEdit(null)),
+          footer: [
+            h('span', { key: 'h', className: 'dim' }, '改完点「应用」，再点面板顶部「保存」落盘'),
+            h('span', { key: 's', className: 'sep' }),
+            h('button', { key: 'ok', className: 'primary', onClick: applyCharacterEdit }, '应用'),
+            h('button', { key: 'x', className: 'tiny', onClick: () => confirmEditorClose(charEdit.dirty === true, () => setCharEdit(null)) }, '关闭'),
+          ],
+        }, [
+          h('div', { key: 'f', className: 'chareditform' }, [
+            // 左列：立绘（尽量大、随列宽，窄屏落到上方）。**删除立绘放在这里** ——
+            // 列表里那个「收起」以前会直接把会话配置里的立绘删掉，点完就真看不到了；
+            // 挪到这张大图旁边，删之前至少看得见。
+            h('div', { key: 'face', className: 'facepreview' }, [
+              charEditPortraitUrl
+                ? h('img', { key: 'i', src: charEditPortraitUrl, alt: '立绘' })
+                : h('div', { key: 'none', className: 'dim faceempty' }, '还没有立绘 —— 关掉这里，在角色行点「立绘」生成一张'),
+              h('div', { key: 'c', className: 'dim' }, charEditPortraitUrl
+                ? `这张立绘属于「${String(charEdit.originalName || charEdit.character?.name || '（未命名）')}」；要换姿势/风格，回列表点「立绘」重新生成。`
+                : '立绘按角色名保存；改名后旧立绘不会自动跟过来。'),
+              charEditPortraitUrl
+                ? h('div', { key: 'a', className: 'row' }, [
+                  h('a', {
+                    key: 'o', className: 'tiny', href: charEditPortraitUrl, target: '_blank', rel: 'noreferrer',
+                  }, '看大图'),
+                  h('button', {
+                    key: 'x', className: 'tiny', disabled: Boolean(busy),
+                    title: '把这个角色的立绘从会话配置里删掉（不可撤销，可以重新生成）',
+                    onClick: () => void clearPortrait(String(charEdit.originalName || charEdit.character?.name || '')),
+                  }, '删掉立绘'),
+                ])
+                : null,
+            ]),
+            // 右列：字段（label + 控件两列对齐）
+            h('div', { key: 'fields', className: 'charfields' }, [
+              h('label', { key: 'n1' }, '名称'),
+              h('input', {
+                key: 'n2', type: 'text', value: charEdit.character?.name ?? '', placeholder: '角色名',
+                onChange: (e) => patchCharacterEdit('name', e.target.value),
+              }),
+              h('label', { key: 'a1' }, '外貌（生图时自动补进提示词）'),
+              h('textarea', {
+                key: 'a2', value: charEdit.character?.appearance ?? '', placeholder: '可观察的外形特征：发色、服饰、体态、标志物',
+                onChange: (e) => patchCharacterEdit('appearance', e.target.value),
+              }),
+              h('label', { key: 'p1' }, '性格'),
+              h('textarea', {
+                key: 'p2', value: charEdit.character?.personality ?? '', placeholder: '表层 → 深层 → 矛盾点，以及对待玩家的基本态度',
+                onChange: (e) => patchCharacterEdit('personality', e.target.value),
+              }),
+              h('label', { key: 's1' }, '说话方式'),
+              h('textarea', {
+                key: 's2', value: charEdit.character?.speech ?? '', placeholder: '可观察的量化特征，如「句子短、爱用反问、管玩家叫小子」',
+                onChange: (e) => patchCharacterEdit('speech', e.target.value),
+              }),
+              h('label', { key: 'b1' }, '行为习惯'),
+              h('textarea', {
+                key: 'b2', value: charEdit.character?.behavior ?? '', placeholder: '紧张时做什么、面对威胁的第一反应……',
+                onChange: (e) => patchCharacterEdit('behavior', e.target.value),
+              }),
+              h('label', { key: 'r1' }, '人物关系'),
+              h('textarea', {
+                key: 'r2', value: charEdit.character?.relations ?? '', placeholder: '与其他角色的关系，如「祁俊的师父，亦师亦母」',
+                onChange: (e) => patchCharacterEdit('relations', e.target.value),
+              }),
+              h('label', { key: 'f1' }, '开场白 / 文风范本'),
+              h('textarea', {
+                key: 'f2', value: charEdit.character?.first_mes ?? '', placeholder: '该角色初次登场的原文 —— 最有效的文风锚点（注入时取前 300 字）',
+                onChange: (e) => patchCharacterEdit('first_mes', e.target.value),
+              }),
+              h('label', { key: 'm1' }, '对话范例'),
+              h('textarea', {
+                key: 'm2', value: charEdit.character?.mes_example ?? '', placeholder: '2~4 轮，格式「角色名：台词」',
+                onChange: (e) => patchCharacterEdit('mes_example', e.target.value),
+              }),
+              h('label', { key: 'i1' }, '索引简介'),
+              h('input', {
+                key: 'i2', type: 'text', value: charEdit.indexEntry?.brief ?? '',
+                placeholder: '常驻显示的一句话（默认取外观首句）',
+                onChange: (e) => patchCharacterIndex('brief', e.target.value),
+              }),
+              h('label', { key: 'w1' }, '常驻展开'),
+              h('label', { key: 'w2', className: 'dim charalways' }, [
+                h('input', {
+                  key: 'w3', type: 'checkbox', checked: charEdit.indexEntry?.always === true,
+                  onChange: (e) => patchCharacterIndex('always', e.target.checked),
+                }),
+                '完整设定每轮都注入（主角用；不勾则只在它出场的那几轮）',
+              ]),
             ]),
           ]),
-          h('div', { key: 'act', className: 'row' }, [
-            h('button', { key: 't', disabled: Boolean(busy), onClick: () => runPreview(draft.defaultStyle || undefined, '一位旅人站在岔路口，远处有灯火') },
-              busy === 'preview' ? '出图中…' : '用本会话配置试出一张'),
-          ]),
-          // 预览结果就在按钮下方（点完图就在眼前，不用去别处找）
-          preview ? h('div', { key: 'prev', className: 'card', ref: previewRef }, [
-            h('div', { key: 'l', className: 'row' }, [
-              h('span', { key: 't', className: 'dim' }, `预览：${preview.style ?? ''}（${(preview.elapsedMs / 1000).toFixed(1)}s）`),
-              h('span', { key: 'sep', className: 'sep' }),
-              preview.url ? h('a', { key: 'o', className: 'dim', href: preview.url, target: '_blank', rel: 'noreferrer' }, '新标签打开大图') : null,
-            ]),
-            preview.url ? h('img', { key: 'i', className: 'pv', src: preview.url, alt: 'preview' }) : null,
-          ]) : null,
-          // 提示词前缀 / 风格备注 / 战役名仍在会话数据里（DM 用 rp_session 工具设置），
-          // 这里不再放输入框：保存时原样回写，不会因为界面精简而被清掉。
-          h('div', { key: 'more', className: 'dim' },
-            `提示词前缀 / 风格备注 / 战役名由 DM 用 rp_session 工具维护${draft.campaign?.name ? `（当前战役：${draft.campaign.name}）` : ''}`),
-        ]),
+        ]) : null,
       ]);
     }
 
