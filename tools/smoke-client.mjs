@@ -178,6 +178,8 @@ globalThis.fetch = async (url, options = {}) => {
         { name: 'year', count: 4, auto: true },
         { name: 'place', count: 2, auto: false },
       ],
+      // 占位符统计：预览里要在旁边解释每一类怎么被处理（char 展开 / 时间自动 / 其余已删）
+      placeholders: { total: 3, counts: { '{{char}}': 2, '{{user}}': 1 } },
       summary: [], warnings: [],
     });
   }
@@ -514,6 +516,10 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.equal(findAll(tree2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '×').length, 0,
     '导入表单不能删宏（名字要和卡对得上）');
   assert.ok(previewText.includes('默认宏列表'), '要说明值来自设置页的默认宏列表');
+  // 占位符统计旁边要有「每一类怎么处理」的说明（用户问过「char 是什么、为什么不用填」）
+  assert.ok(previewText.includes('{{char}}') && previewText.includes('展开成卡名'), '要说明 {{char}} 已展开成卡名');
+  assert.ok(previewText.includes('随机') || previewText.includes('{{random:…}}'), '要说明带参数的占位符会被抽掉');
+  assert.ok(previewText.includes('已删除'), '要说明不合法的占位符被删掉');
   // 自动宏（这里是 {{year}}）：标「自动」+ 说明留空即自动，不要求手填
   assert.ok(previewText.includes('{{year}}'), '卡里扫到的自动宏也要列出来');
   assert.ok(previewText.includes('自动'), '自动宏要标出「自动」');

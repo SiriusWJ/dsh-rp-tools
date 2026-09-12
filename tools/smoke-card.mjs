@@ -271,7 +271,30 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card } = await import(
   check('自动宏：扫宏名时标出来（界面据此显示「自动」）', discoverMacros('{{time}} {{place}}').find((m) => m.name === 'time')?.auto, true);
   check('自动宏：自动的排在前面', discoverMacros('{{place}} 和 {{date}}')[0].name, 'date');
   check('占位符：导出模式把自动宏也展开成值', /^\d{4}-\d{2}-\d{2}$/.test(resolvePlaceholders('{{date}}', { keepMacros: false }).text), true);
-  check('占位符：带参数的写法去括号留文字', resolvePlaceholders('{{random:1,10}}').text, 'random:1,10');
+  // 带参数的占位符：能认的（random / roll）当场算出来，其余**直接删掉**
+  // （以前是「去括号留文字」，于是世界书里会残留 `random:1,10` 这种脏字串）
+  {
+    const one = resolvePlaceholders('{{random:1,10}}').text;
+    check('占位符：{{random:a,b}} 抽一个（在选项里）', Number(one) >= 1 && Number(one) <= 10, true);
+    check('占位符：random 是**确定性**的（同一张卡重导结果一致）',
+      resolvePlaceholders('{{random:甲,乙,丙}}', { seed: 'cards/x.png' }).text,
+      resolvePlaceholders('{{random:甲,乙,丙}}', { seed: 'cards/x.png' }).text);
+    check('占位符：不同种子可以抽到不同结果（不是永远取第一个）',
+      new Set(['a', 'b', 'c', 'd', 'e', 'f'].map((s) => resolvePlaceholders('{{random:甲,乙,丙,丁,戊,己}}', { seed: s }).text)).size > 1,
+      true);
+    check('占位符：{{random:甲|乙}} 竖线也当分隔符', ['甲', '乙'].includes(resolvePlaceholders('{{random:甲|乙}}', { seed: 'k' }).text), true);
+    const roll = Number(resolvePlaceholders('{{roll:2d6}}').text);
+    check('占位符：{{roll:2d6}} 落在 2..12', roll >= 2 && roll <= 12, true);
+    const mod = Number(resolvePlaceholders('{{roll:1d6+10}}').text);
+    check('占位符：{{roll:1d6+10}} 带上加值', mod >= 11 && mod <= 16, true);
+    check('占位符：{{roll:d20}} 默认一颗骰', Number(resolvePlaceholders('{{roll:d20}}').text) >= 1, true);
+    check('占位符：认不出的参数照样删掉（不留脏文字）', resolvePlaceholders('前{{roll:abc}}后').text, '前后');
+    check('占位符：不合法名字**整段删除**（不再留 random:1,10）', resolvePlaceholders('前{{怪名字}}后').text, '前后');
+    check('占位符：统计里分开记 random / roll / 已删', (() => {
+      const c = resolvePlaceholders('{{random:甲,乙}} {{roll:1d6}} {{怪名字}}').counts;
+      return Boolean(c['{{random:…}}'] && c['{{roll:…}}'] && c['其它 {{…}}（已删）']);
+    })(), true);
+  }
   check('占位符：没有占位符时原样返回', resolvePlaceholders('普通文本').text, '普通文本');
   check('占位符：空输入不炸', resolvePlaceholders('').text, '');
   check('占位符：统计文案可读', describePlaceholders({ '{{user}}': 2, '{{char}}': 0 }), '已展开占位符：{{user}}×2');

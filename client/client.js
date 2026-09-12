@@ -2211,11 +2211,16 @@ window.__ModuleLoader__.load({
           + `｜开场白来源：${preview.character?.greetingSource === 'alternate_greetings'
             ? `备用开场白（共 ${preview.character?.greetingAlternatives} 条）`
             : preview.character?.greetingSource === 'first_mes' ? 'first_mes' : '无'}`),
-        // 卡里常见的 {{user}} / {{char}} / <USER>：导入时就会展开成玩家称呼与卡名，
-        // 这里先摊给用户看（免得「导入后我卡里的 {{user}} 怎么没了」）
+        // 卡里常见的占位符：这里摊开给用户看，并解释每一类**怎么被处理**（免得
+        // 「我卡里的 {{user}} 怎么没了」「{{char}} 是什么」这类疑问）
         preview.placeholders?.total
-          ? h('div', { key: 'ph', className: 'dim' },
-            `占位符：${Object.entries(preview.placeholders.counts ?? {}).map(([k, n]) => `${k}×${n}`).join('、')} → 导入时展开为玩家称呼与卡名`)
+          ? h('div', { key: 'ph', className: 'dim' }, [
+            h('div', { key: 'c' }, `占位符：${Object.entries(preview.placeholders.counts ?? {}).map(([k, n]) => `${k}×${n}`).join('、')}`),
+            h('div', { key: 'l', className: 'phlegend' },
+              '{{char}} / <CHAR> 已展开成卡名；<USER> 已展开成玩家称呼；'
+              + '{{user}} 与其它合法宏就是下面那些表单行（值可改）；时间/日期类每轮自动；'
+              + '{{random:…}} / {{roll:…}} 导入时抽一次；名字不合法的占位符已删除。'),
+          ])
           : null,
         // 英文属性键（name:/gender: Female）会在导入时中文化
         preview.attributes?.count
