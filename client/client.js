@@ -165,10 +165,12 @@ window.__ModuleLoader__.load({
 .rpc .dim { opacity: .62; font-size: 12px; }
 .rpc .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
 .rpc .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-/* chip 的规格**照抄宿主那一行里的官方 chip**（DM 预设座位 / 工作区 chip）：
-   无边框、透明底、16px 圆角、min-height 28px、13px/500 字、hover 与展开态都用 interactive-bg-hover。
-   自己另写一套（细边框 + 小圆角 + 12px 字）就会跟旁边的 Story / DM 两枚明显不搭 —— 踩过两次。 */
-.rpc .chip {
+/* ⚠️ 这枚 chip 会被 portal 送进「工作区 / DM 主持人」那一行 —— 那时它**不在 .rpc 里面**，
+   所以样式**不能用带 .rpc 前缀的后代选择器**（第一版就是这么写的：portal 之后一条规则都不命中，
+   于是浏览器给出 <button> 的默认灰底方角，用户一眼就看出「风格不对」）。
+   chip 的规格**照抄宿主那一行里的官方 chip**（DM 预设座位 / 工作区 chip）：
+   无边框、透明底、16px 圆角、min-height 28px、13px/500 字、hover 与展开态都用 interactive-bg-hover。 */
+.rpc-chip {
   box-sizing: border-box; display: inline-flex; align-items: center; gap: 4px; align-self: flex-start;
   min-width: 0; max-width: min(100%, 240px); min-height: 28px; padding: 0 8px;
   border: none; border-radius: 16px; background: 0 0;
@@ -176,12 +178,12 @@ window.__ModuleLoader__.load({
   font-family: inherit; font-size: 13px; font-weight: 500; line-height: 20px;
   cursor: pointer; white-space: nowrap;
 }
-.rpc .chip:hover:not(:disabled), .rpc .chip[aria-expanded='true'] {
+.rpc-chip:hover:not(:disabled), .rpc-chip[aria-expanded='true'] {
   background: var(--dsw-alias-interactive-bg-hover, color-mix(in oklab, currentColor 10%, transparent));
 }
 /* 与旁边两枚 chip 一样的小箭头（颜色用 caption 级，与官方 chevron 对齐） */
-.rpc .chip .chev { flex: none; color: var(--dsw-alias-label-caption, currentColor); font-size: 9px; line-height: 1; }
-.rpc .chip .t { overflow: hidden; text-overflow: ellipsis; }
+.rpc-chip .chev { flex: none; color: var(--dsw-alias-label-caption, currentColor); font-size: 9px; line-height: 1; }
+.rpc-chip .t { overflow: hidden; text-overflow: ellipsis; }
 /* 定位用的空占位（chip 被 portal 送进那一行时，这里不能占空间） */
 .rpc .rpc-holder { display: none; }
 .rpc .panel {
@@ -1377,7 +1379,9 @@ window.__ModuleLoader__.load({
 
       const isRow = slot?.kind === 'portal';
       const chip = h('button', {
-        key: 'chip', type: 'button', className: 'chip',
+        key: 'chip', type: 'button',
+        // 样式类不带 .rpc 前缀：这枚 chip 会被 portal 到那一行里，那时它不在 .rpc 内部
+        className: 'rpc-chip',
         'data-open': open ? 'true' : 'false',
         'data-row': slot ? 'true' : 'false',
         'aria-expanded': open,

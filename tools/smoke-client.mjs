@@ -207,8 +207,11 @@ assert.ok(style.textContent.includes('.rpc'), '样式表里应含故事书导入
 assert.ok(style.textContent.includes('.rpc .split'), '样式表里应含导入面板的 .split 两列布局');
 assert.ok(/@media[^{]*\{\s*\.rpc \.split/.test(style.textContent), '.split 应有窄视口的单列降级');
 // chip 必须与旁边 Story / DM 两枚官方 chip 同一套规格：无边框、16px 圆角、透明底、hover 用主题 token。
-// （曾经自己写细边框 + 小圆角 + 12px 字，用户一眼就看出「风格不对」。）
-const chipCss = /\.rpc \.chip \{([^}]*)\}/.exec(style.textContent)?.[1] ?? '';
+// 而且规则**不能带 .rpc 前缀** —— chip 会被 portal 到那一行里，那时它不在 .rpc 内部，
+// 后代选择器一条都不命中，浏览器就给出默认的灰底方角按钮（用户截图里就是这个）。
+const chipCss = /\.rpc-chip \{([^}]*)\}/.exec(style.textContent)?.[1] ?? '';
+assert.ok(chipCss, '应有独立的 .rpc-chip 规则（不带 .rpc 前缀，portal 后仍命中）');
+assert.ok(!/\.rpc \.chip[\s:{]/.test(style.textContent), 'chip 样式不能写成 .rpc .chip 规则（portal 之后不命中）');
 assert.ok(/border:\s*none/.test(chipCss), 'chip 不该有边框（官方 chip 是透明底无边框）');
 assert.ok(/border-radius:\s*16px/.test(chipCss), 'chip 圆角应与官方 chip 一致（16px）');
 assert.ok(/font-weight:\s*500/.test(chipCss), 'chip 字重应与官方 chip 一致（500）');
@@ -316,7 +319,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
 
   // ① 折叠态：只有一枚 chip（而且被送进了「工作区 / DM 主持人」那一行）
   const tree = render(DM_PROPS());
-  const chips = byClass(tree, 'chip');
+  const chips = byClass(tree, 'rpc-chip');
   assert.equal(chips.length, 1, '折叠态应渲染一枚 chip');
   assert.ok(textOf(chips[0]).includes('导入故事书'), 'chip 文案应说明这是导入入口');
   assert.equal(byClass(tree, 'panel').length, 0, '折叠态不该渲染面板');
@@ -332,7 +335,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.equal(render(propsFor({ blank: false, preset: 'novelist' })), null, '非 DM 且已开局的会话应完全不渲染');
 
   // ③ 点开：面板铺开，并自动拉一次卡库
-  byClass(render(DM_PROPS()), 'chip')[0].props.onClick();
+  byClass(render(DM_PROPS()), 'rpc-chip')[0].props.onClick();
   let tree2 = render(DM_PROPS());
   assert.equal(byClass(tree2, 'panel').length, 1, '展开后应渲染面板');
   await tick(40);
@@ -372,12 +375,12 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   // ⑥ 开场指令一发出去会话就不再是空白 —— 此时面板必须留住（否则用户看不到导入结果）
   const after = render(propsFor({ blank: false, preset: 'dm' }));
   assert.equal(byClass(after, 'panel').length, 1, '导入进行中/刚导完时，即使会话已开局也要留住面板');
-  assert.equal(byClass(after, 'chip').length, 1, '这时入口也还在（收起它之后才会消失）');
+  assert.equal(byClass(after, 'rpc-chip').length, 1, '这时入口也还在（收起它之后才会消失）');
   assert.ok(textOf(after).includes('导入完成'), '面板应显示导入结果');
   assert.ok(textOf(after).includes('rp-worldbook.md'), '结果里应写出世界书文件名');
 
   // ⑦ 收起之后，入口就该彻底消失（会话已经不是新会话了）
-  byClass(after, 'chip')[0].props.onClick();
+  byClass(after, 'rpc-chip')[0].props.onClick();
   assert.equal(render(propsFor({ blank: false, preset: 'dm' })), null, '收起后入口应消失（已开局且非空白）');
 }
 
@@ -412,7 +415,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   const dock2 = regs2.find((r) => r.name === 'conversation.input.dock');
   rt.cells = [];
   const noDom = render(DM_PROPS(), dock2.c);   // 注意：渲染的是**第二个实例**的组件
-  const chips2 = byClass(noDom, 'chip');
+  const chips2 = byClass(noDom, 'rpc-chip');
   assert.equal(chips2.length, 1, '拿不到 react-dom 时 chip 仍要在（不能消失）');
   assert.equal(findAll(noDom, (n) => n.type === 'Portal').length, 0, '没有 react-dom 时不能走 portal');
   assert.equal(chips2[0].props['data-row'], 'true', '应仍按「在那一行里」的样式渲染');
