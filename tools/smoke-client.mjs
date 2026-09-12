@@ -111,11 +111,19 @@ globalThis.window = {
 
 // fetch 桩：按 URL 回应并记录调用，让导入流程能真的走完
 const calls = [];
+/**
+ * 宿主对「会话闸门」的回答（是不是 dm / 有没有开局）。
+ *
+ * 现实中这个答案跟着**活着的会话**走；测试里每个场景显式设定，因为要模拟的关键情形
+ * 正是「客户端投影坏了、宿主是对的」（切预设会把投影基线重放、清掉没有的键）。
+ */
+let gateReply = { ok: true, dm: true, started: false };
 globalThis.fetch = async (url, options = {}) => {
   const method = options.method ?? 'GET';
   calls.push({ url: String(url), method, body: options.body ? JSON.parse(options.body) : undefined });
   const target = String(url);
   const reply = (json) => ({ ok: true, status: 200, json: async () => json });
+  if (target.startsWith('/rp-tools/gate')) return reply(gateReply);
   if (target.startsWith('/rp-tools/cards')) {
     return reply({
       ok: true, root: 'D:\\Story\\cards', exists: true, indexSource: 'index', librarySize: 3269,
@@ -297,10 +305,10 @@ const inputActions = {
   removeAttachment: () => {},
   pruneAttachments: () => {},
 };
-function propsFor({ blank = true, preset = '', cwd = 'D:\\Story' } = {}) {
-  const store = { current: SID, byId: { [SID]: { blank, cwd, projectionValues: preset ? { agentPreset: preset } : {} } } };
+function propsFor({ blank = true, preset = '', cwd = 'D:\\Story', sid = SID } = {}) {
+  const store = { current: sid, byId: { [sid]: { blank, cwd, projectionValues: preset ? { agentPreset: preset } : {} } } };
   return {
-    sessionId: SID,
+    sessionId: sid,
     useSessions: (sel) => sel(store),
     useInput: (sel) => sel(draftBox),
     inputActions,
@@ -380,10 +388,29 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.equal(chips[0].props['data-row'], 'true', '送进那一行后应用矮一号的样式');
 
   // ② 只在不曾开局的 DM 新会话上出现
+  // 闸门答复要跟着场景走（现实中宿主就是活的会话本身，答案自然一致）
+  gateReply = { ok: true, dm: false, started: false };
   assert.equal(render(propsFor({ blank: true, preset: 'novelist' })), null, '未开局但不是 DM 预设的会话不该出现入口');
   assert.equal(render(propsFor({ blank: true, preset: '' })), null, '预设还没投影出来时先不出现（避免闪一下又消失）');
+  gateReply = { ok: true, dm: true, started: true };
   assert.equal(render(propsFor({ blank: false, preset: 'dm' })), null, '已经开局的 DM 会话不该出现入口');
+  gateReply = { ok: true, dm: false, started: true };
   assert.equal(render(propsFor({ blank: false, preset: 'novelist' })), null, '非 DM 且已开局的会话应完全不渲染');
+
+  // ②-b ★ 用户报的 bug：dm → 别的预设 → 切回 dm，入口就不见了。
+  // 根因是可见性只信客户端投影，而切预设会重建投影基线、把没有的键清掉。
+  {
+    gateReply = { ok: true, dm: true, started: false };     // 切回 dm 后宿主看到的事实
+    const before = render(DM_PROPS());
+    assert.equal(byClass(before, 'rpc-chip').length, 1, '切走之前入口在');
+    gateReply = { ok: true, dm: false, started: false };
+    assert.equal(render(propsFor({ blank: true, preset: 'novelist' })), null, '切到别的预设后入口应消失（不是 DM 了）');
+    gateReply = { ok: true, dm: true, started: false };
+    const back = render(DM_PROPS());
+    assert.ok(back !== null, '切回 dm 后入口必须回来');
+    assert.equal(byClass(back, 'rpc-chip').length, 1, '切回 dm 后应重新出现导入入口');
+  }
+  gateReply = { ok: true, dm: true, started: false };
 
   // ③ 点开：面板铺开，并自动拉一次卡库
   byClass(render(DM_PROPS()), 'rpc-chip')[0].props.onClick();
@@ -626,6 +653,43 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   const prevGet = calls.filter((c) => c.url.startsWith('/rp-tools/card?')).pop();
   assert.ok(prevGet && prevGet.url.includes(`sessionId=${SID}`), '预览要带 sessionId');
   assert.ok(prevGet.url.includes('workspace='), `预览要带上问回来的 cwd（实际：${prevGet.url}）`);
+}
+
+// ── 关键断言 ⑥：投影被清空时，靠宿主闸门把入口救回来 ─────────────────────────
+// 这是用户报的 bug 的**根因场景**：切预设会重建投影基线、清掉基线里没有的键，
+// 于是 `projectionValues.agentPreset` 读成空串 —— 只看投影的判定会让入口永久消失。
+// 宿主手里是活着的会话对象，所以它必须能推翻投影。
+{
+  const tab = slotRegs.find((r) => r.name === 'conversation.input.dock');
+  const waitFor = async (view, wanted) => {
+    let tree = render(view(), tab.component);
+    for (let i = 0; i < 14 && byClass(tree, 'rpc-chip').length !== wanted; i++) {
+      await tick(30);
+      tree = render(view(), tab.component);
+    }
+    return tree;
+  };
+
+  // ① 投影里预设被清空（切预设后的真实后果）→ 宿主说 dm + 未开局 → 入口要回来
+  rt.cells = [];
+  gateReply = { ok: true, dm: true, started: false };
+  const noPreset = () => propsFor({ blank: true, preset: '', sid: 'session-cleared-preset' });
+  assert.equal(byClass(await waitFor(noPreset, 1), 'rpc-chip').length, 1,
+    '投影里没有预设时，宿主说 dm 就该把入口显示出来');
+
+  // ② 摘要被当成「已开局」→ 宿主说还没开局 → 仍以宿主为准
+  rt.cells = [];
+  const startedBlank = () => propsFor({ blank: false, preset: 'dm', sid: 'session-blank-cleared' });
+  assert.equal(byClass(await waitFor(startedBlank, 1), 'rpc-chip').length, 1,
+    '摘要说已开局、宿主说没开局时，应以宿主为准');
+
+  // ③ 反向：宿主说真的开局了 → 必须藏起来（别把入口挂在已开局的会话上）
+  rt.cells = [];
+  gateReply = { ok: true, dm: true, started: true };
+  const reallyStarted = () => propsFor({ blank: true, preset: 'dm', sid: 'session-really-started' });
+  assert.equal(byClass(await waitFor(reallyStarted, 0), 'rpc-chip').length, 0,
+    '宿主说已开局 → 即使投影说没开局也要藏起来');
+  gateReply = { ok: true, dm: true, started: false };
 }
 
 console.log('客户端冒烟测试通过：');

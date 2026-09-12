@@ -78,13 +78,20 @@ const globalTools = [];
 // 插件的 liveSessionCwd 会来这里按 id 查 `session.header.cwd` —— 真机上这是补住
 // 「重启后内存 Map 里没有该会话」空档的一级兜底。
 const liveSessions = new Map();
+// 会话投影桩（`ctx.get('sessionProjections').stateOf(session, key)`）：闸门会用它拿
+// 「当前预设」与「有没有开局」；真机上这是宿主自己算的那份权威状态。
+const fakeProjections = { stateOf: (session, key) => (session?.proj ?? {})[key] };
 const hostCtx = {
   tools: { register: (t) => { tools.set(t.name, t); globalTools.push(t.name); } },
   on,
   effect: (fn) => { fn(); },
   webServer: { register: (r) => { routes.set(r.path, r); } },
   inject: (names, fn) => { fn(hostCtx); },
-  get: (name) => (name === 'sessions' ? { get: (id) => liveSessions.get(id) } : undefined),
+  get: (name) => {
+    if (name === 'sessions') return { get: (id) => liveSessions.get(id) };
+    if (name === 'sessionProjections') return fakeProjections;
+    return undefined;
+  },
 };
 mod.apply(hostCtx);
 
@@ -803,6 +810,61 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     check('workspace 解析链：兜底后也记住了', mod.__debug.resolveWorkspaceDir(stranger, ''), wsLive);
     // 还原后面用例依赖的显式卡库根
     await callPost('/rp-tools/config', { cards: { root: libRoot } });
+  }
+
+  // ── 会话闸门：界面据此决定「导入入口要不要出现」──────────────────────────
+  // ★ 真事故：入口的可见性原先只看客户端投影，而切预设会重建投影基线、清掉没有的键
+  //   （`projectionValues.agentPreset` 变空）→ 判定「不是 DM」→ 入口永久消失。
+  //   宿主手里是活着的会话对象 + 自己的投影状态，所以这条路由必须给出确定答案。
+  {
+    const wire = (session) => {
+      const id = crypto.randomUUID();
+      liveSessions.set(`session-${id}`, session);
+      return id;
+    };
+    const base = (extra = {}) => ({ header: { agentPreset: 'dm', cwd: TEST_HOME }, log: [], deriveMessages: () => [], ...extra });
+
+    const fresh = wire(base());
+    const g1 = await callGet('/rp-tools/gate', `?sessionId=${fresh}`);
+    check('gate：dm 新会话', g1.json.dm, true);
+    check('gate：dm 新会话未开局', g1.json.started, false);
+    check('gate：报名预设', g1.json.preset, 'dm');
+
+    // 投影优先于 header（切预设后 header 可能还是建会话时的值）
+    const switched = wire(base({ proj: { agentPreset: 'novelist' } }));
+    const g2 = await callGet('/rp-tools/gate', `?sessionId=${switched}`);
+    check('gate：切走后不是 dm（投影优先）', g2.json.dm, false);
+    check('gate：报出真实预设', g2.json.preset, 'novelist');
+
+    // 开过轮 → 已开局（入口该消失）
+    const ran = wire(base({ log: [{ type: 'turn/start' }] }));
+    const g3 = await callGet('/rp-tools/gate', `?sessionId=${ran}`);
+    check('gate：跑过一轮就是已开局', g3.json.started, true);
+
+    // 只有用户消息（日志窗口里 turn/start 被裁掉）也算已开局
+    const asked = wire(base({ log: [{ type: 'user/message', data: { source: { kind: 'user' } } }] }));
+    const g4 = await callGet('/rp-tools/gate', `?sessionId=${asked}`);
+    check('gate：有用户消息也算已开局', g4.json.started, true);
+
+    // sessionListMetadata 投影存在时以它为准（它就是宿主算 blank 的那份状态）
+    const meta = wire(base({ log: [{ type: 'turn/start' }], proj: { sessionListMetadata: { blank: true, lastPromptAt: null } } }));
+    const g5 = await callGet('/rp-tools/gate', `?sessionId=${meta}`);
+    check('gate：有投影时以投影为准', g5.json.started, false);
+
+    // 会话不在本进程里、插件也没登记过 → 不是 dm（界面据此不显示入口）
+    const unknown = crypto.randomUUID();
+    const g6 = await callGet('/rp-tools/gate', `?sessionId=${unknown}`);
+    check('gate：完全不认识 → 不是 dm', g6.json.dm, false);
+    check('gate：完全不认识 → 活的会话为假', g6.json.live, false);
+
+    // 插件登记过的 dm 会话（拿不到活的会话时的兜底）仍然算 dm
+    const marked = crypto.randomUUID();
+    await callPost('/rp-tools/dm-mark', { sessionId: marked, preset: 'dm' });
+    const g7 = await callGet('/rp-tools/gate', `?sessionId=${marked}`);
+    check('gate：dm 登记表兜底', g7.json.dm, true);
+
+    const noId = await callGet('/rp-tools/gate', '');
+    check('gate：缺 sessionId → 400', noId.status, 400);
   }
 
   const rel = 'cards/测试分类/烟测卡.card.png';

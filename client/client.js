@@ -62,6 +62,10 @@ window.__ModuleLoader__.load({
       cards: (params) => jget(`/rp-tools/cards?${qs(params)}`),
       card: (path, params) => jget(`/rp-tools/card?${qs({ path, ...(params ?? {}) })}`),
       cardImport: (body) => jpost('/rp-tools/card-import', body),
+      // 会话闸门：宿主回答「现在是不是 dm」「有没有真的开局」。
+      // 为什么不能只信客户端投影：切预设会重建投影基线、把基线里没有的键**清掉**，
+      // 于是 `projectionValues.agentPreset` 变空 → 判定「不是 DM」→ 入口永久消失。
+      gate: (sessionId) => jget(`/rp-tools/gate?${qs({ sessionId })}`),
       lore: (sessionId) => jget(`/rp-tools/lore?sessionId=${encodeURIComponent(sessionId)}`),
       loreEntry: (sessionId, title) => jget(`/rp-tools/lore?sessionId=${encodeURIComponent(sessionId)}&title=${encodeURIComponent(title)}`),
       loreSave: (body) => jpost('/rp-tools/lore', body),
@@ -1530,6 +1534,21 @@ window.__ModuleLoader__.load({
     let pendingImport = null;
 
     /**
+     * 会话闸门的答复缓存（宿主说：是不是 dm / 有没有开局）。
+     *
+     * ⚠️ 这里踩过一次：入口的可见性原先**只看客户端投影**（`projectionValues.agentPreset`
+     * 与摘要里的 `blank`）。切预设会重建投影基线、把基线里没有的键清掉 —— `agentPreset`
+     * 读成空串，判定「不是 DM」，入口**永久消失**（刷新页面才回来）。
+     * 宿主手里是活着的会话对象，所以问它一次就有确定答案。
+     * 按 `会话 id | blank | 预设` 做键：这些值一抖动就重新问一次（真开局后才会变），
+     * 平时不会重复打请求。
+     */
+    const gateCache = new Map();
+
+    /** 闸门缓存的键：会话 + 已知的投影值（这些值一变就重新问一次宿主）。 */
+    const gateKeyOf = (sessionId, blank, preset) => `${sessionId}|${blank === false ? 'started' : blank === true ? 'blank' : 'unknown'}|${preset}`;
+
+    /**
      * 找到「工作区 / DM 主持人」那一行，并决定入口怎么贴上去。
      *
      * 为什么要在 DOM 上找：那一行的两个座位都是 single 且被官方插件占满，没有第三个槽位。
@@ -1603,9 +1622,11 @@ window.__ModuleLoader__.load({
       // 一律选**原始值**（对象选择器会在每次 store 变更时产生新引用 → 无限重渲染）
       const currentId = typeof props?.useSessions === 'function' ? props.useSessions((s) => s?.current) : undefined;
       const sessionId = [props?.sessionId, currentId].find((v) => typeof v === 'string' && v !== '') || '';
-      const blank = typeof props?.useSessions === 'function'
-        ? props.useSessions((s) => (sessionId ? s?.byId?.[sessionId]?.blank === true : false))
-        : false;
+      // 摘要里的 blank：**只把明确的 false 当「已开局」**。之前写成 `=== true`，
+      // 于是摘要还没到（重挂载后那一瞬）就被当成「不是新会话」→ 入口闪一下就没。
+      const blankRaw = typeof props?.useSessions === 'function'
+        ? props.useSessions((s) => (sessionId ? s?.byId?.[sessionId]?.blank : undefined))
+        : undefined;
       const cwd = typeof props?.useSessions === 'function'
         ? props.useSessions((s) => {
           const v = sessionId ? s?.byId?.[sessionId]?.cwd : undefined;
@@ -1618,10 +1639,43 @@ window.__ModuleLoader__.load({
           return typeof v === 'string' ? v : '';
         })
         : '';
+      // 客户端的判据只当**快速路径**：投影可能被重建清空（见 gateCache 注释）。
+      const storeDm = agentPreset === 'dm';
+      const storeStarted = blankRaw === false;
+      const gateKey = gateKeyOf(sessionId, blankRaw, agentPreset);
+      // 闸门答复**带键存**：键一变（切预设 / 摘要刷新）旧答复立刻作废，
+      // 直到新答复回来为止都用投影快速路径 —— 否则会拿着上个会话状态的答案做决定。
+      const [gateState, setGateState] = React.useState(() => {
+        const cached = gateCache.get(gateKey);
+        return cached ? { key: gateKey, value: cached } : null;
+      });
+      const gateKeyRef = React.useRef('');
+      React.useEffect(() => {
+        if (!sessionId) return undefined;
+        gateKeyRef.current = gateKey;
+        const cached = gateCache.get(gateKey);
+        if (cached) { setGateState({ key: gateKey, value: cached }); return undefined; }
+        let alive = true;
+        API.gate(sessionId)
+          .then((res) => {
+            if (!res?.ok) return;
+            const value = { dm: res.dm === true, started: res.started === true };
+            gateCache.set(gateKey, value);
+            if (alive && gateKeyRef.current === gateKey) setGateState({ key: gateKey, value });
+          })
+          .catch(() => { /* 拿不到就继续用投影快速路径 */ });
+        return () => { alive = false; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [sessionId, blankRaw, agentPreset]);
+      const gate = gateState && gateState.key === gateKey ? gateState.value : null;
+      // 宿主说了算；宿主还没回话时用投影（投影说「没开局」就直接显示，说已开局也先问一问）
+      const dmNow = gate ? gate.dm : storeDm;
+      const startedNow = gate ? gate.started : storeStarted;
+      const unstarted = !startedNow;
       const draftText = typeof props?.useInput === 'function' ? props.useInput((s) => s?.draft ?? '') : '';
       // 最新值放一份在 ref 里：startSession 之后的那次导入要用**新会话**的 cwd
       const live = React.useRef({});
-      live.current = { sessionId, blank, cwd, agentPreset };
+      live.current = { sessionId, blank: unstarted, cwd, agentPreset, dm: dmNow };
       // 卡库/卡面请求要用同一个 cwd（propsRef 在异步回调里是唯一能取到最新值的地方）
       propsRef.current = { ...props, _cwd: cwd };
 
@@ -1686,15 +1740,15 @@ window.__ModuleLoader__.load({
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [open]);
 
-      // 新建会话后接手导入：等它成为当前会话、且是空白会话
+      // 新建会话后接手导入：等它成为当前会话、且还没开局
       React.useEffect(() => {
         const job = pendingImport;
         if (!job) return;
-        if (!sessionId || !blank) return;
+        if (!sessionId || !unstarted) return;
         pendingImport = null;
         void runImport(sessionId, job);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [pendingTick, sessionId, blank]);
+      }, [pendingTick, sessionId, unstarted]);
 
       // 开场指令：等编辑器真的同步了草稿再提交（setDraft 是离散更新，通常当帧就到位）
       React.useEffect(() => {
@@ -1763,8 +1817,10 @@ window.__ModuleLoader__.load({
 
       /** 把当前会话的预设切成 dm。切不动时返回说明而不是抛错 —— 导入本身仍然该继续。 */
       async function selectDmPreset(targetId) {
-        // 已经是 dm 就别再切：切换会重新组装一遍 agent 作用域并追加一条事件，没必要
-        if (live.current.agentPreset === 'dm') return { ok: true, preset: 'dm', note: '本来就在 dm 预设' };
+        // 已经是 dm 就别再切：切换会重新组装一遍 agent 作用域并追加一条事件，没必要。
+        // 判据用闸门解析过的 `dm`，不用 store 里的 `agentPreset` —— 后者会被切预设清空
+        // （那正是「切走再切回 dm 入口消失」的同一条根因），清空后会误判成「需要切一次」。
+        if (live.current.dm) return { ok: true, preset: 'dm', note: '本来就在 dm 预设' };
         let remote;
         try { remote = ctxRef.current?.get?.('remote'); } catch { remote = undefined; }
         const api = remote?.agentPresets;
@@ -1854,10 +1910,9 @@ window.__ModuleLoader__.load({
       // 入口只在「还没开局的 DM 新会话」上出现 —— 那正是要选卡开团的时刻。
       // 导入进行中/刚导完时例外：开场指令一发出去会话就不再是空白，
       // 这时把面板藏掉会让用户看不到结果（`keep` 一直维持到用户自己收起）。
-      const isDmNow = agentPreset === 'dm';
       const keepOpen = open && (busy === 'import' || result !== null);
       if (!sessionId) return null;
-      if (!(blank && isDmNow) && !keepOpen) return null;
+      if (!(unstarted && dmNow) && !keepOpen) return null;
 
       // 入口要待在「工作区 / DM 主持人」那一行上，而不是自己占一行。
       // 那一行的两个座位（`conversation.hero.workspace` / `conversation.hero.agentPreset`）
@@ -1968,8 +2023,8 @@ window.__ModuleLoader__.load({
         ]),
         h('div', { key: 'act', className: 'row' }, [
           h('button', { key: 'go', className: 'primary', disabled: Boolean(busy) || Boolean(pendingImport), onClick: startImport },
-            busy === 'import' ? '导入中…' : (pendingImport ? '等待新会话…' : (blank ? '导入并开始' : '新建会话并导入'))),
-          !blank && agentPreset !== 'dm'
+            busy === 'import' ? '导入中…' : (pendingImport ? '等待新会话…' : (unstarted ? '导入并开始' : '新建会话并导入'))),
+          !unstarted && !dmNow
             ? h('span', { key: 'w', className: 'dim' }, `当前会话预设是 ${agentPreset || '未知'}，导入会新建一个会话`)
             : null,
         ]),

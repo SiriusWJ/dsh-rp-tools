@@ -433,6 +433,8 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen |
 | 卡预览报 `读不到文件：ENOENT … stat '<AppData>\同人\X.png'` | 两层叠加：① 客户端 `API.card` 曾写成 `card: (path) => …`，把调用点传的 workspace **悄悄吞掉**，请求里只剩 `?path=`；② 宿主对「会话工作区」的记忆**只在进程内存**（`session/created` 时填），重启后恢复的会话查不到，而请求里也没有 sessionId 可查。于是根目录落空 → `resolve('')` = **进程工作目录**（DSH 从 `AppData\Local\DeepSeekHarness` 启动）→ 拼出一条谁都不认识的路径。修法：客户端所有读盘卡路由都带 `sessionId`（有 cwd 再带 `workspace`）；宿主 `resolveWorkspaceDir` 改**四级链**（内存 → `ctx.get('sessions').get(id).header.cwd` 现查 → 会话配置里落盘的 cwd → 请求参数），并且**没给 sessionId 的匿名请求不进 `default` 桶**（否则第一个匿名请求会把工作区种给它，后续全串）。教训：**凡是「宿主一定知道」的假设都要写下位兜底**，`resolve('')` 永远不等于「当前工作区」 |
 | 测试跑在旧副本上 → 假失败 | `tools/smoke-*.mjs` 从 **profile** 的 `node_modules/dsh-rp-tools` 解析被测模块，改完 `lib/` 必须先同步再跑；没同步时看到的是上一版的行为（本轮先跑了一次，报「提示没指向工作区」，其实代码已对）。 |
 | 用 PowerShell `.Replace` 改含反引号的 JS | 模板字符串里的反引号会被 PowerShell 当转义符，吃掉引号后直接语法报错（本轮踩了两次，一次把 `tools/smoke-dm.mjs` 弄坏到必须 `git checkout` 恢复）。**改代码只用 `edit` 工具**，PowerShell 只用来跑命令和查文件。 |
+| 切走 agent 预设再切回 dm，导入入口永久消失 | 入口可见性原先只看**客户端投影**（`byId[id].projectionValues.agentPreset` + 摘要里的 `blank`）。切预设会让会话作用域重新挂载、投影基线重放，而 `ProjectionValueStore.seed()` 对「基线里没有的键」是**删除**语义 —— `agentPreset` 于是读成空串，判定「不是 DM」，入口再也不出现（刷新页面才回来）。修法：加宿主路由 `/rp-tools/gate`（宿主手里是活着的会话对象 + 自己的投影状态，回答「现在是不是 dm」「有没有真的开局」），客户端把投影只当**快速路径**；宿主答复**带 key 缓存**，key（会话+blank+预设）一变旧答复立刻作废。**教训：别把「界面缓存里的投影值」当成会话事实** —— 凡是决定「要不要显示某个功能」的判断，都要有一条问宿主的权威路径 |
+| 摘要没到就当成「已开局」 | 同一条可见性逻辑里写过 `blank === true` 才算新会话，摘要缺席时读成 `false` → 重挂载后入口闪一下就没。**缺省要落在「功能可见」那一侧**，再让权威路径纠正；落在「功能消失」那侧用户根本找不回来，多显示一次则没有损失 |
 
 ---
 
