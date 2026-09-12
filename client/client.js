@@ -1328,6 +1328,9 @@ window.__ModuleLoader__.load({
           ];
           setMsg({ kind: preset.ok ? 'ok' : 'warn', text: bits.join(' · ') });
           if (opts.autoStart && res.opening) sendOpening(res.opening);
+          // 导入成功就把面板收起来：这一刻开团已经开始（开场指令发出去了），
+          // 面板继续占着屏幕中间只会挡着正文 —— 入口本身也会随会话「不再是新会话」而消失。
+          setOpen(false);
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }

@@ -372,16 +372,18 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.ok(!selectedPresets.some(([, p]) => p !== 'dm'), '只应切到 dm，不该切别的预设');
   assert.equal(startedSessions, 0, '空白 DM 会话上导入不该去新建会话');
 
-  // ⑥ 开场指令一发出去会话就不再是空白 —— 此时面板必须留住（否则用户看不到导入结果）
+  // ⑥ 导入成功后**面板要自己收起来**（不然开团都开始了，它还占着屏幕中间挡正文）；
+  //    会话这时已经不再是新会话，于是入口也一并消失。
   const after = render(propsFor({ blank: false, preset: 'dm' }));
-  assert.equal(byClass(after, 'panel').length, 1, '导入进行中/刚导完时，即使会话已开局也要留住面板');
-  assert.equal(byClass(after, 'rpc-chip').length, 1, '这时入口也还在（收起它之后才会消失）');
-  assert.ok(textOf(after).includes('导入完成'), '面板应显示导入结果');
-  assert.ok(textOf(after).includes('rp-worldbook.md'), '结果里应写出世界书文件名');
-
-  // ⑦ 收起之后，入口就该彻底消失（会话已经不是新会话了）
-  byClass(after, 'rpc-chip')[0].props.onClick();
-  assert.equal(render(propsFor({ blank: false, preset: 'dm' })), null, '收起后入口应消失（已开局且非空白）');
+  assert.equal(after, null, '导入成功后入口应消失（既已开局、又不是新会话）');
+  // 还在新会话状态下（会话尚未落盘为「已开始」）时，面板也应已收起
+  const stillBlank = render(DM_PROPS());
+  assert.equal(byClass(stillBlank, 'panel').length, 0, '导入成功后面板应自动收起');
+  assert.equal(byClass(stillBlank, 'rpc-chip').length, 1, '新会话上入口还在，用户想再导一张可以直接点开');
+  // 结果仍在（再点开能看到），不是把状态丢了
+  byClass(stillBlank, 'rpc-chip')[0].props.onClick();
+  const reopened = render(DM_PROPS());
+  assert.ok(textOf(reopened).includes('rp-worldbook.md'), '再点开仍能看到上一次的导入结果');
 }
 
 // ── 关键断言 ③：两种宿主差异都要能贴到那一行 ───────────────────────────────
