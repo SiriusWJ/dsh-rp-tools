@@ -670,6 +670,107 @@ if (rpTable) {
   }
 }
 
+// ── 随机核心：骰式解析与 count 契约 ────────────────────────────────────────
+// 真机测试报告（会话 afdca15e）在这里抓到三条，而**这一段此前零覆盖** ——
+// 现有断言里没有一条碰过 parseDice。所以 `2dd6` 被静默吃成「2 + 1d6」、
+// `count:21` 被静默截成 20 这种事一直没人发现。下面每条都是那次报告里的**具体输入**。
+{
+  const D = mod.__debug;
+  const tool = tools.get('rp_random');
+  const run = (args) => tool.execute(args);
+  /** 跑一次，返回错误信息（没抛就返回空串）—— 比到处写 try/catch 好读。 */
+  const errOf = async (args) => {
+    try { await run(args); return ''; } catch (error) { return String(error?.message ?? error); }
+  };
+
+  // ① 合法表达式照常
+  check('骰式：d20 省略颗数时算 1 颗', D.parseDice('d20').dice[0].count, 1);
+  check('骰式：2d6+3 的常数', D.parseDice('2d6+3').totalConst, 3);
+  check('骰式：3d8+1d4-2 有两组骰', D.parseDice('3d8+1d4-2').dice.length, 2);
+  check('骰式：3d8+1d4-2 的常数是 -2', D.parseDice('3d8+1d4-2').totalConst, -2);
+  check('骰式：负骰组带负号', D.parseDice('1d20-1d4').dice[1].sign, -1);
+  check('骰式：+2d6 的正号不影响结果', D.parseDice('+2d6').dice[0].count, 2);
+
+  // ② **非法表达式必须整串拒绝**（报告 BUG-03）。
+  //    旧实现是扫描式的：匹配不上的字符被跳过，于是 `2dd6` 变成「常数 2 + d6」照跑。
+  for (const bad of ['2dd6', '2d6++3', '2d6+', '2d6+3+', 'd', 'abc', '+', '-', '2d6x3']) {
+    check(`骰式：拒绝 "${bad}"`, await errOf({ dice: bad }),
+      `rp_random: dice expression "${bad}" is invalid — expected something like "2d6+3" or "d20"`);
+  }
+  check('骰式：拒绝 d0（面数下限）', (await errOf({ dice: 'd0' })).includes('invalid sides'), true);
+  check('骰式：拒绝 0d6（颗数下限）', (await errOf({ dice: '0d6' })).includes('invalid number of dice'), true);
+  check('骰式：拒绝 101d6（颗数上限）', (await errOf({ dice: '101d6' })).includes('invalid number of dice'), true);
+  // 报告漏掉的一条：`1d1000000000` 语法上「合法」，但掷出来是个十位数
+  check('骰式：拒绝 1d1000000000（面数上限）', (await errOf({ dice: '1d1000000000' })).includes('invalid sides'), true);
+  check('骰式：合法的不受影响（2d6+3 仍能跑）', (await run({ dice: '2d6+3', seed: 'ok' })).values.length, 1);
+
+  // ③ count 越界**报错**，不静默截断（报告 BUG-04）
+  check('count：缺省 = 1 个结果', (await run({ kind: 'integer' })).values.length, 1);
+  check('count：20 是上界且允许', (await run({ kind: 'integer', count: 20 })).values.length, 20);
+  check('count：21 报错（以前静默给 20）', await errOf({ kind: 'integer', count: 21 }), 'rp_random: count must be between 1 and 20 (got 21)');
+  check('count：0 报错（以前静默抬成 1）', await errOf({ kind: 'integer', count: 0 }), 'rp_random: count must be between 1 and 20 (got 0)');
+  check('count：负数报错', await errOf({ kind: 'integer', count: -3 }), 'rp_random: count must be between 1 and 20 (got -3)');
+  check('count：小数报错', (await errOf({ kind: 'integer', count: 2.5 })).includes('must be an integer'), true);
+  check('count：骰子模式同样受约束', (await errOf({ dice: '2d6', count: 99 })).includes('count must be between'), true);
+
+  // ④ 每一掷都要有**可核对的**明细（报告 BUG-05；根因不是「复杂骰式」，是 count>1 覆盖了 note）
+  const one = await run({ kind: 'dice', dice: '2d6+3', seed: 'detail-1' });
+  check('明细：单掷带逐颗明细', /^2d6\+3 → \d+（2d6\[\d+,\d+\] \+ 3）$/.test(one.note), true);
+  const m = /2d6\[(\d+),(\d+)\] \+ 3/.exec(one.note);
+  check('明细：总和 = 逐颗之和 + 常数（能对上账）', Number(one.values[0]), Number(m[1]) + Number(m[2]) + 3);
+  const many = await run({ kind: 'dice', dice: '2d6+3', count: 3, seed: 'detail-3' });
+  check('明细：多掷时**每一掷**都有明细', (many.note.match(/2d6\[/g) ?? []).length, 3);
+  check('明细：多掷时常数也出现在每一掷里', (many.note.match(/\+ 3）/g) ?? []).length, 3);
+  const cx = await run({ kind: 'dice', dice: '3d8+1d4-2', count: 2, seed: 'detail-cx' });
+  check('明细：复杂骰式多掷有明细', (cx.note.match(/3d8\[/g) ?? []).length, 2);
+  check('明细：负常数带负号', cx.note.includes('- 2'), true);
+  check('明细：第二组正骰带 + 号（否则两组看起来粘在一起）', /3d8\[[\d,]*\] \+ 1d4\[/.test(cx.note), true);
+  check('明细：负骰组带负号', (await run({ kind: 'dice', dice: '1d20-1d4', seed: 'detail-neg' })).note.includes('- 1d4['), true);
+
+  // ⑤ 随机表与面板掷表走**同一个** count 契约（否则两个入口行为不一致）
+  const tsid = crypto.randomUUID();
+  const tws = join(TEST_HOME, 'ws-dice-table');
+  mkdirSync(tws, { recursive: true });
+  D.setSessionCwd(tsid, tws);
+  const tctx = { agent: { id: tsid } };
+  const table = tools.get('rp_table');
+  await table.execute({ action: 'set', name: 'QA骰表', dice: '1d4', entries: ['A', 'B', 'C', 'D'] }, tctx);
+  check('随机表：count=3 掷三次', (await table.execute({ action: 'roll', name: 'QA骰表', count: 3, seed: 't' }, tctx)).lines.length, 3);
+  check('随机表：count=21 同样报错（不再静默截断）', (await (async () => {
+    try { await table.execute({ action: 'roll', name: 'QA骰表', count: 21 }, tctx); return ''; } catch (e) { return String(e.message); }
+  })()).includes('count must be between'), true);
+  check('随机表：掷表结果也带逐颗明细',
+    (await table.execute({ action: 'roll', name: 'QA骰表', seed: 't' }, tctx)).lines[0].includes('1d4['), true);
+  // HTTP 那条（面板「掷」按钮）也必须一致
+  check('随机表：HTTP 路由 count=21 也拒绝',
+    (await callPost('/rp-tools/roll', { sessionId: tsid, name: 'QA骰表', count: 21 })).status, 400);
+  check('随机表：HTTP 路由正常掷',
+    (await callPost('/rp-tools/roll', { sessionId: tsid, name: 'QA骰表', count: 2 })).json.lines.length, 2);
+}
+
+// ── 空白会话的常驻段必须**明说「没有」**（报告 BUG-01/02 的种子）─────────────
+// 报告把「persona 里的规矩」读成了「本会话已有的事实」。根因不是后端不一致，而是
+// 空会话的注入里**什么都不出现** —— 「没出现」很容易被读成「已经有了」。现在空就直说。
+{
+  const D = mod.__debug;
+  const sid = crypto.randomUUID();
+  const ws = join(TEST_HOME, 'ws-empty-standing');
+  mkdirSync(ws, { recursive: true });
+  D.setSessionCwd(sid, ws);
+  const loreFile = join(ws, 'rp-sessions', sid, 'rp-worldbook.md');
+  const text = D.buildStandingText({ ...D.loadSession(sid), sessionId: sid }, { loreFile });
+  check('空会话常驻段：明说还没有角色', text.includes('【人物】本会话还没有登记任何角色'), true);
+  check('空会话常驻段：明说资源库是空的', text.includes('资源库：本会话**还没有任何图**'), true);
+  check('空会话常驻段：明说世界书文件还不存在', text.includes('**这份文件还不存在**'), true);
+  check('空会话常驻段：给出建模板的办法', text.includes('rp_lore(action:"template")'), true);
+  // 文件存在之后必须换回「正常」措辞（否则每轮都像在报错）
+  mkdirSync(dirname(loreFile), { recursive: true });
+  writeFileSync(loreFile, '# 世界书\n\n## 世界总纲\nconstant\n\n测试。\n');
+  const text2 = D.buildStandingText({ ...D.loadSession(sid), sessionId: sid }, { loreFile });
+  check('世界书存在后：不再说「还不存在」', text2.includes('**这份文件还不存在**'), false);
+  check('世界书存在后：给出读写说明', text2.includes('用 read 读、用 write/edit 增改'), true);
+}
+
 // agent/created：宿主侧能否直接识别预设并自动登记
 const onCreated = (payload) => emit('agent/created', payload);
 if (onCreated) {
@@ -2464,6 +2565,17 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     check('预设：指向 rp_assets 复用同一张图', prefix.includes('调 `rp_assets`'), true);
     check('预设：说明 rp_assets 能按 kind/characters/tags/q 查',
       prefix.includes('按 `kind` / `characters` / `tags` / `q` 查'), true);
+    // 跨会话串档（真机日志里 `glob **/*.launch.md` 一次捞出 4 个别会话的 launch 文件）：
+    // persona 必须把「找 launch 文件」限制在本会话目录里
+    check('预设：launch 文件限定在本会话目录里找',
+      prefix.includes('launch 文件必须按【世界书】那一行给的路径同目录去找'), true);
+    check('预设：点明在根目录 glob 会捞到别的会话',
+      prefix.includes('会捞出**别的会话的** launch 文件'), true);
+    check('预设：点明读错 launch 不会报错',
+      prefix.includes('读了就会拿别人的世界观开团，而且不会报错'), true);
+    // 约定 ≠ 状态（报告 BUG-01/02 的种子）
+    check('预设：说明「常驻条目 / 已有可用图」是规则而不是已有状态',
+      prefix.includes('是**规则说明**；本会话真的有没有，看它下面列的东西'), true);
     // 围栏必须成对：奇数个三反引号会让模型把后文当代码块（persona 里踩过）
     const ticks = prefix.split('```').length - 1;
     check('预设：三反引号成对出现（不留未闭合围栏）', ticks % 2, 0);
