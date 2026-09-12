@@ -776,23 +776,55 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.ok(/\.rpt \.lorelist \{[^}]*max-height:\s*min\(/.test(style.textContent),
     '条目列表要按视口给高度，不能压成固定 260px');
 
-  // 改「常驻」→ 保存 → 应 PUT 回宿主（POST /rp-tools/lore，action=update）
-  const form = findAll(withForm, (n) => n.type === 'input' && n.props.type === 'text'
-    && n.props.value === '长安城');
-  assert.equal(form.length, 1, '详情里应能改标题');
-  const boxes2 = findAll(withForm, (n) => n.type === 'input' && n.props.type === 'checkbox');
-  boxes2[0].props.onChange({ target: { checked: true } });      // 勾上常驻
-  // 注意：面板顶部还有一个「保存」（保存会话配置），要按 class 区分出表单里的那个
-  const saveBtn = findAll(withForm, (n) => typeof n.props?.onClick === 'function'
+  // ① 列表里的「常驻」开关：点一下就直接 POST update（最常用的那条路）
+  // ⚠️ 必须按 class `loreconst` 精确定位：面板顶部现在还有「DM 设定」的三个生图开关，
+  //    直接取 findAll(...)[0] 会打到 DM 卡片上（测试就是这么被打中的）。
+  const listConstBox = findAll(byClass(withForm, 'loreconst')[0], (n) => n.type === 'input' && n.props.type === 'checkbox')[0];
+  assert.ok(listConstBox, '列表里应有「常驻」开关');
+  listConstBox.props.onChange({ target: { checked: true } });
+  await tick(60);
+  const lorePost = calls.filter((c) => c.url === '/rp-tools/lore' && c.method === 'POST').pop();
+  assert.ok(lorePost, '改常驻应向 /rp-tools/lore 发 POST');
+  assert.equal(lorePost.body.action, 'update', '编辑已有条目应走 update');
+  assert.equal(lorePost.body.title, '长安城', 'update 应带上原名（改名时用它定位）');
+  assert.equal(lorePost.body.entry.constant, true, '勾选状态应写进 constant');
+
+  // ② 详情表单里的「常驻（不看触发词）」+ 表单保存：这条走 saveLoreEdit（面板编辑器的正式路径）。
+  // 每次改完都要**重新渲染**再点按钮：真实 React 里 onClick 是新建的闭包，拿的是更新后的
+  // loreEdit；用旧树上的那个会闭包住改之前的值（桩的实现细节，但结论与真实 React 一致）。
+  const props2 = () => ({
+    sessionId: SID,
+    useSessions: (sel) => sel(store),
+    useInput: (sel) => sel({ draft: '' }),
+    inputActions,
+  });
+  const openForm = async () => {
+    // 必须用**新渲染出来的**那棵树点「详情 / 编辑」：旧树上的那个 onClick 闭包里的 loreEdit
+    // 还是「已展开」的状态，会走「收起」分支（桩的闭包语义与真实 React 一致）。
+    const tree = render(props2(), tab.component);
+    const btn = findAll(tree, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '详情 / 编辑')[0];
+    assert.ok(btn, '列表里应有「详情 / 编辑」');
+    await btn.props.onClick();
+    await tick(60);
+    return render(props2(), tab.component);
+  };
+  const formTree = await openForm();
+  const constLabel = findAll(formTree, (n) => textOf(n).trim() === '常驻（不看触发词）')[0];
+  assert.ok(constLabel, '详情表单里应有「常驻（不看触发词）」这一行');
+  const constBox = findAll(constLabel, (n) => n.type === 'input' && n.props.type === 'checkbox')[0];
+  assert.ok(constBox, '那行里应有复选框');
+  constBox.props.onChange({ target: { checked: true } });
+  const formTree2 = render(props2(), tab.component);
+  // 面板顶部还有一个「保存」（保存会话配置），按 class 区分出表单里那个
+  const saveBtn = findAll(formTree2, (n) => typeof n.props?.onClick === 'function'
     && textOf(n) === '保存' && String(n.props.className ?? '').includes('tiny'));
   assert.equal(saveBtn.length, 1, '详情里应有保存按钮');
   await saveBtn[0].props.onClick();
   await tick(60);
-  const lorePost = calls.filter((c) => c.url === '/rp-tools/lore' && c.method === 'POST').pop();
-  assert.ok(lorePost, '保存应向 /rp-tools/lore 发 POST');
-  assert.equal(lorePost.body.action, 'update', '编辑已有条目应走 update');
-  assert.equal(lorePost.body.title, '长安城', 'update 应带上原名（改名时用它定位）');
-  assert.equal(lorePost.body.entry.constant, true, '勾选状态应写进 constant');
+  const formPost = calls.filter((c) => c.url === '/rp-tools/lore' && c.method === 'POST').pop();
+  assert.ok(formPost, '表单保存应向 /rp-tools/lore 发 POST');
+  assert.equal(formPost.body.title, '长安城', '表单保存也要带原名');
+  assert.equal(formPost.body.entry.constant, true, '表单里的勾选状态也要写进 constant');
 
   // ★ 面板里**不再**有故事书导入（用户明确要求去掉）：导入入口只剩工作区那一行的 chip。
   {
@@ -913,6 +945,76 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     assert.ok(worldArea, '世界设定卡里的 textarea 要带 worldtext 类（样式靠它定位）');
     sessionStub.cover = null;
     resetHooks();
+  }
+
+  // ── DM 设定卡片（用户要求：「在 rp 配置面板添加 DM 设定面板」）────────────────
+  // DM（旁白）卡不是角色卡：它的正文要落在这里；生图开关也在这里（会话隔离）。
+  {
+    sessionStub.dm = {
+      prompt: '叙述用第二人称，场景描写整段斜体。',
+      migrated: ['lust Adventure'],
+      images: { enabled: true, firstAppearance: true, keyScenes: false },
+    };
+    resetHooks();
+    let withDm = render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    await tick(60);
+    withDm = render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    const dmText = textOf(withDm);
+    const dmCard = byClass(withDm, 'card').find((c) => textOf(c).includes('DM 设定'));
+    assert.ok(dmCard, '面板里应有「DM 设定」卡片');
+    const dmArea = findAll(dmCard, (n) => n.type === 'textarea' && String(n.props.className ?? '').includes('dmtext'))[0];
+    assert.ok(dmArea, 'DM 设定要有自己的文本框（dmtext）');
+    assert.equal(dmArea.props.value, '叙述用第二人称，场景描写整段斜体。', '文本框要显示会话里的 DM 设定正文');
+    // 迁移提示：老数据把 DM 卡当角色存过，搬过来之后要告诉用户
+    assert.ok(dmText.includes('从角色卡挪到这里'), '要把「从角色卡挪到 DM 设定」这件事说出来');
+    assert.ok(dmText.includes('lust Adventure'), '提示里带上被挪的那条名字');
+    const dmBoxes = findAll(byClass(dmCard, 'dmimgs')[0], (n) => n.type === 'input' && n.props.type === 'checkbox');
+    assert.equal(dmBoxes.length, 3, '生图要有三个开关：总开关 / 首次出场 / 重要场景');
+    assert.equal(dmBoxes[0].props.checked, true, '总开关跟随会话配置');
+    assert.equal(dmBoxes[2].props.checked, false, '重要场景跟随会话配置（这里是关）');
+    // 关掉总开关 → 两个细分开关应当置灰（避免「关了还显示可选」的误解）
+    dmBoxes[0].props.onChange({ target: { checked: false } });
+    const withDm2 = render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    const dmCard2 = byClass(withDm2, 'card').find((c) => textOf(c).includes('DM 设定'));
+    const dmBoxes2 = findAll(byClass(dmCard2, 'dmimgs')[0], (n) => n.type === 'input' && n.props.type === 'checkbox');
+    assert.equal(dmBoxes2[1].props.disabled, true, '总开关关掉后，细分开关应置灰');
+    assert.ok(/\.rpt textarea\.dmtext \{[^}]*min-height/.test(style.textContent), 'dmtext 要有自己的高度规则');
+    sessionStub.dm = { prompt: '', migrated: [], images: { enabled: true, firstAppearance: true, keyScenes: true } };
+    resetHooks();
+  }
+
+  // ── 自动刷新（用户报：「dm 填完后需要我手动刷新」）──────────────────────────
+  // DM 那一轮结束（running 由 true 落回 false）时，面板要自己把宿主的改动拉进来；
+  // 触发源是宿主官方那份 `useSessions().byId[id].running`（api-session/status 广播）。
+  //
+  // ⚠️ 这里断言的是**接线本身**，不是渲染结果：本测试的桩在「跨 render 的异步 setState」上
+  // 不可靠（软刷新那次写入会落在上一代 hook cell 里），验证渲染结果会得到一个假失败。
+  // 断源码至少能挡住「有人把这段订阅删掉」——删掉即红。
+  {
+    const src = readFileSync(join(here, '..', 'client', 'client.js'), 'utf8');
+    assert.ok(/wasRunning === true && running === false/.test(src),
+      '要在 DM 那一轮结束（running 下降沿）触发软刷新');
+    assert.ok(/const running = typeof props\?\.useSessions/.test(src),
+      '触发源要用宿主官方那份 useSessions().running，而不是自己猜');
+    assert.ok(/async function softReload/.test(src), '要有软刷新函数');
+    assert.ok(/if \(!dirtyRef\.current\)/.test(src),
+      '软刷新必须在「用户没改过」时才覆盖表单，否则会冲掉正在编辑的内容');
+    assert.ok(/lastWatchSig/.test(src), '同一状态重复触发要挡住（否则会自激循环刷）');
   }
 
   // ★ 立绘持久化（用户报的「角色卡生成的立绘下次打开就消失了」）：

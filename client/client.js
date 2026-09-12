@@ -293,6 +293,10 @@ window.__ModuleLoader__.load({
 .rpt .worldcol { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .rpt .worldcol textarea { flex: 1 1 auto; min-height: 150px; }
 .rpt textarea.worldtext { min-height: 150px; line-height: 1.6; }
+/* DM 设定：规则文本可以很长（导入 DM 卡会填进来），给足高度；生图开关一行排开 */
+.rpt textarea.dmtext { min-height: 130px; line-height: 1.6; }
+.rpt .dmimgs { gap: 14px; align-items: center; margin-top: 6px; }
+.rpt .dmimgs label { display: inline-flex; align-items: center; gap: 5px; }
 .rpt .cover { display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
 .rpt .cover img { width: 116px; height: 150px; object-fit: cover; border-radius: 8px;
   border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent)); }
@@ -850,10 +854,77 @@ window.__ModuleLoader__.load({
       const [globalUserLabel, setGlobalUserLabel] = React.useState('');
       // 每个角色自己的立绘：{ [角色名]: { url, style, elapsedMs } }
       const [portraits, setPortraits] = React.useState({});
+      /** 当前草稿的镜像（软刷新要拿它和宿主那份比，判断用户有没有动过表单）。 */
+      const draftRef = React.useRef(null);
+      /** 上次从宿主载入的草稿序列化 —— 与 draftRef 相同即「用户没改过」。 */
+      const hostDraftRef = React.useRef('');
+      /**
+       * 用户有没有**没保存的改动**。
+       * 软刷新（DM 那一轮结束）靠它决定要不要覆盖表单：动过就绝不动，免得冲掉人家正在写的东西。
+       */
+      const dirtyRef = React.useRef(false);
+      draftRef.current = draft;
       const previewRef = React.useRef(null);
       useScrollToPreview(preview, previewRef);
 
       React.useEffect(() => { injectStyles(); void reload(); }, [sessionId]);
+
+      // ── DM 用工具改完设定 → 面板自己刷新（用户报：「dm 填完后需要我手动刷新」）──────
+      // 触发源用宿主官方的那份状态：`useSessions` 里的 `running`（`api-session/status` 广播）
+      // 与 `updatedAt`（`api-session/activity` → 玩家发了消息）。DM 那一轮结束（running 由
+      // true 落回 false）时**软刷新**一次：只覆盖用户没动过的字段，绝不冲掉正在编辑的内容。
+      const running = typeof props?.useSessions === 'function'
+        ? props.useSessions((s) => (sessionId ? s?.byId?.[sessionId]?.running : undefined))
+        : undefined;
+      const updatedAt = typeof props?.useSessions === 'function'
+        ? props.useSessions((s) => (sessionId ? s?.byId?.[sessionId]?.updatedAt : undefined))
+        : undefined;
+      const prevRunning = React.useRef(running);
+      const prevUpdatedAt = React.useRef(updatedAt);
+      /** 上一次处理过的「运行状态 + 活动时间」签名 —— 同一签名不重复刷新（避免自激循环）。 */
+      const lastWatchSig = React.useRef('');
+      React.useEffect(() => {
+        const sig = `${String(running)}|${String(updatedAt)}`;
+        if (lastWatchSig.current === sig) return undefined;
+        const prev = lastWatchSig.current;
+        lastWatchSig.current = sig;
+        const wasRunning = prevRunning.current;
+        prevRunning.current = running;
+        prevUpdatedAt.current = updatedAt;
+        if (prev === '') { void softReload(); return undefined; }               // 首次拿到值
+        if (wasRunning === true && running === false) { void softReload(); return undefined; }   // 那一轮结束
+        if (updatedAt !== undefined) void softReload();                         // 玩家发了新消息
+        return undefined;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [running, updatedAt]);
+
+      /**
+       * 软刷新：把宿主那侧的改动（DM 用 rp_character / rp_state / rp_lore 写的、或别人发的消息）
+       * 拉进界面，但**用户正在编辑的表单不动**。
+       *
+       * 判据：草稿与「上次从宿主载入的那份」逐字节一致（= 用户没动过）→ 整份覆盖；
+       * 否则只更新只读部分（世界书列表 / 立绘 / 宿主原文），并提示一句「DM 刚改过」。
+       */
+      async function softReload() {
+        try {
+          const data = await API.session(sessionId);
+          if (!data?.ok) return;
+          setState(data);
+          setPortraits(portraitsFromSession(data.session?.portraits));
+          const hostDraft = JSON.parse(JSON.stringify(data.session));
+          // 用户**没动过任何字段**（dirtyRef）→ 整份铺上宿主的新版本；
+          // 动过就不覆盖表单，只更新只读部分（世界书列表 / 立绘 / 宿主原文）。
+          if (!dirtyRef.current) {
+            setDraft(hostDraft);
+            hostDraftRef.current = JSON.stringify(hostDraft);
+            setMsg({ kind: 'ok', text: 'DM 刚改过本会话的设定，已自动刷新。' });
+          }
+          try {
+            const l = await API.lore(sessionId);
+            setLore(l?.ok ? l : { exists: false, total: 0, entries: [], error: l?.error });
+          } catch { /* 世界书读不到就先不动 */ }
+        } catch { /* 软刷新失败不打扰用户 */ }
+      }
 
       // 界面侧的判据（与 dock 里的快速路径同源）：只用来和宿主答复对照着显示。
       // 必须用**原始值**选择器，否则每次 store 变更都产生新引用 → 无限重渲染。
@@ -875,7 +946,10 @@ window.__ModuleLoader__.load({
           setState(data);
           setStyles(global);
           setGlobalUserLabel(String(global?.config?.cards?.userLabel ?? ''));
-          setDraft(JSON.parse(JSON.stringify(data.session)));
+          const fresh = JSON.parse(JSON.stringify(data.session));
+          setDraft(fresh);
+          hostDraftRef.current = JSON.stringify(fresh);
+          dirtyRef.current = false;                  // 重新载入 = 回到宿主的版本，没有未保存改动
           // 立绘：会话配置里记着的生成图要**装回面板状态** —— 原先它只活在组件 state 里，
           // 关面板/刷新就没了（用户报的「下次打开就消失」）。
           setPortraits(portraitsFromSession(data.session?.portraits));
@@ -894,9 +968,16 @@ window.__ModuleLoader__.load({
         } finally { setBusy(''); }
       }
 
-      function patch(p) { setDraft((d) => (d ? { ...d, ...p } : d)); }
+      function patch(p) { dirtyRef.current = true; setDraft((d) => (d ? { ...d, ...p } : d)); }
+
+      /** 改 DM 设定（会话隔离的那几个字段：prompt + images）。 */
+      function patchDm(p) {
+        dirtyRef.current = true;
+        setDraft((d) => (d ? { ...d, dm: { ...(d.dm ?? {}), ...p, migrated: [] } } : d));
+      }
       // 状态：只提交改动过的字段（空串即清除），与宿主 applyStateUpdates 的语义一致
       function patchState(field, value) {
+        dirtyRef.current = true;
         setDraft((d) => (d ? { ...d, state: { ...(d.state ?? {}), [field]: value } } : d));
       }
 
@@ -915,10 +996,14 @@ window.__ModuleLoader__.load({
             state: draft.state ?? {},
             tables: draft.tables,
             macros: draft.macros ?? {},
+            dm: draft.dm ?? {},
           });
           if (!res?.ok) throw new Error(res?.error ?? '保存失败');
           setState((s) => ({ ...s, session: res.session }));
-          setDraft(JSON.parse(JSON.stringify(res.session)));
+          const savedDraft = JSON.parse(JSON.stringify(res.session));
+          setDraft(savedDraft);
+          hostDraftRef.current = JSON.stringify(savedDraft);
+          dirtyRef.current = false;
           setMsg({ kind: 'ok', text: '已保存（仅本会话）' });
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
@@ -1233,6 +1318,55 @@ window.__ModuleLoader__.load({
         msg ? h('div', { key: 'msg', className: 'msg' }, msg.text) : null,
         // 诊断行：导入入口的可见性历史上就看这两侧的值，出问题时一眼能看出是哪边不对
         h('div', { key: 'diag', className: 'dim' }, `入口判据 — 界面：预设「${clientPreset || '空'}」/${clientBlank === false ? '已开局' : clientBlank === true ? '未开局' : '未知'}；宿主：预设「${gate?.preset || '未知'}」/${gate ? (gate.started ? '已开局' : '未开局') : '未答'}`),
+
+        // ── DM 设定（本会话）─────────────────────────────────────────────────
+        // DM（旁白）卡不是角色卡：它的内容是「这个 DM 怎么带团」，早先会被导成一条名叫 DM 的角色。
+        // 这里既是它的正规存放处，也放生图开关（用户要求：是否生图在面板配置、会话隔离）。
+        h('div', { key: 'dm', className: 'card' }, [
+          h('div', { key: 'h', className: 'row' }, [
+            h('h4', { key: 't' }, 'DM 设定'),
+            h('span', { key: 'sep', className: 'sep' }),
+            h('span', { key: 'd', className: 'dim' }, '按会话隔离：这里写的规则只在本会话生效'),
+          ]),
+          (draft.dm?.migrated ?? []).length
+            ? h('div', { key: 'mig', className: 'dim' },
+              `⚠ 已把 ${(draft.dm.migrated ?? []).join('、')} 从角色卡挪到这里 —— 那张卡是 DM（旁白）卡，不是角色。确认无误后点「保存」落盘。`)
+            : null,
+          h('textarea', {
+            key: 'p', className: 'dmtext', value: draft.dm?.prompt ?? '',
+            placeholder: '这个 DM 自己的规则与文风（导入 DM 卡会自动填进来）：叙述人称、描写密度、判定口吻、内容尺度、每轮结尾怎么收……',
+            onChange: (e) => patchDm({ prompt: e.target.value }),
+          }),
+          h('div', { key: 'imgs', className: 'row dmimgs' }, [
+            h('span', { key: 'l', className: 'dim' }, '生图：'),
+            h('label', { key: 'en', className: 'dim' }, [
+              h('input', {
+                key: 'i', type: 'checkbox', checked: draft.dm?.images?.enabled !== false,
+                onChange: (e) => patchDm({ images: { ...(draft.dm?.images ?? {}), enabled: e.target.checked } }),
+              }),
+              ' 自动配图',
+            ]),
+            h('label', { key: 'fa', className: 'dim' }, [
+              h('input', {
+                key: 'i', type: 'checkbox', disabled: draft.dm?.images?.enabled === false,
+                checked: draft.dm?.images?.firstAppearance !== false,
+                onChange: (e) => patchDm({ images: { ...(draft.dm?.images ?? {}), firstAppearance: e.target.checked } }),
+              }),
+              ' 角色首次出场',
+            ]),
+            h('label', { key: 'ks', className: 'dim' }, [
+              h('input', {
+                key: 'i', type: 'checkbox', disabled: draft.dm?.images?.enabled === false,
+                checked: draft.dm?.images?.keyScenes !== false,
+                onChange: (e) => patchDm({ images: { ...(draft.dm?.images ?? {}), keyScenes: e.target.checked } }),
+              }),
+              ' 重要场景',
+            ]),
+          ]),
+          h('div', { key: 'note', className: 'dim' },
+            '生图用的是本地 ComfyUI（本地没开就自然不出图，DM 不会卡住）。已有立绘的角色不会重复生成 —— '
+            + 'DM 拿得到现成的图片地址，直接展示。改完点右上角「保存」。'),
+        ]),
 
         // 世界设定 + **卡封面**：导入卡的 PNG 就摆在这里（用户要求：
         // 「PNG 移到世界设定旁边，作为封面」）。封面是**卡的书封**，不是任何角色的立绘。
@@ -2242,8 +2376,10 @@ window.__ModuleLoader__.load({
             `世界书 +${res.lore.added} 条${res.lore.skipped ? `（跳过重名 ${res.lore.skipped} 条）` : ''}`,
             `全文 ${res.files.markdown}`,
             res.files.opening ? `开场白引导 ${res.files.opening}` : '',
-            // 故事书（卡里没有角色字段）不建人物，说清楚免得用户去面板里找不到
-            res.isCharacterCard === false ? '卡里没有角色描述/性格 → 没建角色卡（封面已放到世界设定旁）' : '',
+            // DM（旁白）卡：内容进了本会话的「DM 设定」，不建角色 —— 说清楚免得去角色卡里找
+            res.isDmCard === true ? '这是一张 DM（旁白）卡 → 已写进本会话「DM 设定」，没建角色卡'
+              // 故事书（卡里没有角色字段）不建人物，说清楚免得用户去面板里找不到
+              : res.isCharacterCard === false ? '卡里没有角色描述/性格 → 没建角色卡（封面已放到世界设定旁）' : '',
             preset.ok ? '预设已切到 dm' : (preset.note ?? '预设未切换'),
           ].filter(Boolean);
           setMsg({ kind: preset.ok ? 'ok' : 'warn', text: bits.join(' · ') });

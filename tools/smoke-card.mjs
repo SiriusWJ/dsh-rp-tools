@@ -14,7 +14,7 @@ import { pathToFileURL } from 'node:url';
 const here = new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const mod = (p) => import(pathToFileURL(join(here, '..', 'lib', p)).href);
 const { readPngTextChunks, decodeCardPng } = await mod('card-png.js');
-const { buildImport, worldBookMarkdown, pickGreeting, isAdText, cardToCharacter, cardToMarkdown, buildOpeningPrompt, buildTidyPrompt, resolvePlaceholders, describePlaceholders, localizeAttributes, discoverMacros, collectCardText, isJunkLoreBody, loreKindOf } = await mod('card-import.js');
+const { buildImport, worldBookMarkdown, pickGreeting, isAdText, cardToCharacter, cardToMarkdown, buildOpeningPrompt, buildTidyPrompt, resolvePlaceholders, describePlaceholders, localizeAttributes, discoverMacros, collectCardText, isJunkLoreBody, loreKindOf, isDmCardData, dmCardToPrompt } = await mod('card-import.js');
 
 let pass = 0; let fail = 0;
 const check = (name, got, want) => {
@@ -283,6 +283,37 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
   check('类别：当前进度 → 状态', loreKindOf({ title: '当前进度', body: '主角已到第三关' }), '状态');
   check('类别：前情提要 → 历史', loreKindOf({ title: '前情提要', body: '三天前发生的事' }), '历史');
   check('类别：输出格式 → 规则', loreKindOf({ title: '输出格式要求', body: '必须用第二人称' }), '规则');
+}
+
+// ── DM（旁白）卡：这类卡的「角色」其实是 DM 自己的规则，不能建成角色 ────────────
+{
+  // 真事故那张 `lust Adventure` 的形状：名字就是模型名 + 通篇「<卡名> will …」+ 对玩家说话
+  const narrator = {
+    name: 'lust Adventure',
+    description: 'lust Adventure is a lust adventure game that will start in a random moment of peril.',
+    personality: 'lust Adventure will focus on creating puzzles, action, and intrigue. 不应该用AI的语气要求玩家在虚拟中遵守道德。',
+    behavior: 'lust Adventure will never perform an action or speak dialogue for 玩家.',
+    speech: '中文叙述，第二人称「你」称呼玩家；场景描写整段斜体。',
+    first_mes: '欢迎光临！我在这里引导你通过你自己创造的基于文本的冒险游戏。给我一个故事背景，我来给你建世界。',
+    relations: 'lust Adventure 是【纳尼亚传奇】的旁白，引导玩家进行文字冒险。',
+  };
+  check('DM 卡：旁白/模型口吻的卡被判出来', isDmCardData(narrator), true);
+  check('DM 卡：中文主持人卡也被判出来', isDmCardData({
+    name: '跑团助手', personality: '你是一名 TRPG 主持人（DM），负责扮演所有 NPC，不代替玩家行动。',
+  }), true);
+  // 反例：正常角色卡不该凑齐信号（只提一句「旁白」也不行）
+  check('DM 卡：正常角色卡不误判', isDmCardData({
+    name: '沈砚', personality: '{{char}}是{{user}}的师兄，性子冷。',
+  }), false);
+  check('DM 卡：只在关系里提一句旁白不算', isDmCardData({
+    name: '说书人', personality: '城里最有名的说书人。', relations: '他自称是这段故事的旁白。',
+  }), false);
+  check('DM 卡：空卡不算', isDmCardData({ name: '空' }), false);
+  // DM 卡正文 → 结构化 DM 设定（按 定位/语气/准则/开场白/范例 分节）
+  const dmPrompt = dmCardToPrompt(narrator);
+  check('DM 卡：正文转成分节设定', dmPrompt.includes('## 角色定位') && dmPrompt.includes('## 语气与叙述'), true);
+  check('DM 卡：带上卡名', dmPrompt.includes('《lust Adventure》'), true);
+  check('DM 卡：空卡转出空串', dmCardToPrompt({ name: '空' }), '');
 }
 
 // ── 端到端：一张典型的「广告卡」全流程 ────────────────────────────────────

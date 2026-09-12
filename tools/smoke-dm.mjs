@@ -1193,6 +1193,87 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('导入：战役名补成卡名', sess.json.session?.campaign?.name, '烟测卡');
   check('导入：角色卡标为「有角色」', imported.json.isCharacterCard, true);
 
+  // ── DM（旁白）卡：不建角色，正文进「本会话 DM 设定」─────────────────────────
+  // 用户报的「角色卡第一条似乎写错了，这是 DM 预设吧」：那张卡的正文就是 DM 自己的规则。
+  {
+    const dmSid = crypto.randomUUID();
+    // 单独一个卡库 + 单独一个工作区：不动上面那套「只有一张卡」的断言
+    const dmLib = join(TEST_HOME, 'cards-dm');
+    mkdirSync(join(dmLib, 'cards', '测试分类'), { recursive: true });
+    writeFileSync(join(dmLib, 'cards', '测试分类', '旁白卡.png'), simpleCardPng('lust Adventure', {
+      description: 'lust Adventure is a lust adventure game that will start in a random moment of peril.',
+      personality: 'lust Adventure will focus on creating puzzles, action, and intrigue. 不应该用AI的语气要求玩家遵守道德。',
+      behavior: 'lust Adventure will never perform an action or speak dialogue for 玩家。',
+      speech: '中文叙述，第二人称「你」称呼玩家。',
+      first_mes: '欢迎光临！我在这里引导你通过你自己创造的基于文本的冒险游戏。给我一个故事背景，我来给你建世界。',
+      relations: 'lust Adventure 是【纳尼亚传奇】的旁白，引导玩家进行文字冒险。',
+    }));
+    const rootBefore = (await callGet('/rp-tools/state')).json.config?.cards?.root ?? '';
+    await callPost('/rp-tools/config', { cards: { root: dmLib, macros: (await callGet('/rp-tools/state')).json.config?.cards?.macros ?? {} } });
+    const wsDm = join(TEST_HOME, 'ws-dm');
+    mkdirSync(wsDm, { recursive: true });
+    mod.__debug.setSessionCwd(dmSid, wsDm);
+    const dmImport = await callPost('/rp-tools/card-import', {
+      sessionId: dmSid, workspace: wsDm, path: 'cards/测试分类/旁白卡.png',
+    });
+    check('DM 卡：导入成功', dmImport.json.ok, true);
+    check('DM 卡：标记为 DM 卡', dmImport.json.isDmCard, true);
+    check('DM 卡：不建角色卡', dmImport.json.isCharacterCard, false);
+    check('DM 卡：摘要说明进了 DM 设定', (dmImport.json.summary ?? []).some((s) => s.includes('DM 设定')), true);
+    const dmSess = await callGet('/rp-tools/session', `?sessionId=${dmSid}`);
+    check('DM 卡：角色表是空的', (dmSess.json.session?.characters ?? []).length, 0);
+    check('DM 卡：正文写进 dm.prompt', String(dmSess.json.session?.dm?.prompt).includes('lust Adventure'), true);
+    check('DM 卡：dm.prompt 带分节标题', String(dmSess.json.session?.dm?.prompt).includes('## 语气与叙述'), true);
+    check('DM 卡：战役名用卡名兜底', dmSess.json.session?.campaign?.name, 'lust Adventure');
+    await callPost('/rp-tools/config', { cards: { root: rootBefore, macros: (await callGet('/rp-tools/state')).json.config?.cards?.macros ?? {} } });
+
+    // 老数据迁移：把 DM 卡当成角色存下来的会话，读出来时应当自动挪到 dm.prompt
+    const legacy = {
+      sessionId: 'legacy-dm-card', characters: [
+        { name: 'lust Adventure', personality: 'lust Adventure will focus on creating puzzles. 不应该用AI的语气。' },
+        { name: '弥珥·索兰', personality: '安静、守规矩的候补圣女。' },
+      ],
+    };
+    mkdirSync(join(TEST_HOME, 'data', 'dsh-rp-tools', 'sessions'), { recursive: true });
+    writeFileSync(join(TEST_HOME, 'data', 'dsh-rp-tools', 'sessions', 'legacy-dm-card.json'), JSON.stringify(legacy));
+    const migrated = mod.__debug.loadSession('legacy-dm-card');
+    check('迁移：DM 卡不再占角色表', migrated.characters.map((c) => c.name).join(), '弥珥·索兰');
+    check('迁移：正文挪进了 dm.prompt', migrated.dm.prompt.includes('lust Adventure'), true);
+    check('迁移：记下迁移了哪条（界面要提示）', (migrated.dm.migrated ?? []).join(), 'lust Adventure');
+    check('迁移：正常角色不受影响', mod.__debug.isDmCardData({ name: '弥珥·索兰', personality: '安静、守规矩的候补圣女。' }), false);
+  }
+
+  // ── DM 设定（会话隔离）：生图开关 + 正文，读写与注入 ─────────────────────
+  {
+    const dmSid2 = crypto.randomUUID();
+    mod.__debug.setSessionCwd(dmSid2, ws);
+    const put = await callPost('/rp-tools/session', {
+      sessionId: dmSid2,
+      dm: { prompt: '本会话的 DM 规则：中立裁决，每轮结尾给 3 个选项。', images: { enabled: true, firstAppearance: true, keyScenes: false } },
+    });
+    check('DM 设定：保存成功', put.json.ok, true);
+    check('DM 设定：正文落盘', String(put.json.session?.dm?.prompt).includes('中立裁决'), true);
+    check('DM 设定：生图开关落盘', put.json.session?.dm?.images?.keyScenes, false);
+    const back = await callGet('/rp-tools/session', `?sessionId=${dmSid2}`);
+    check('DM 设定：读回来一致', String(back.json.session?.dm?.prompt).includes('中立裁决'), true);
+    // 注入：生图开关 + 已有立绘地址 + DM 正文都要进常驻段（DM 才知道要不要出图、用哪张图）
+    const sessObj = { ...back.json.session, portraits: { 弥珥: { card: 'x/弥珥.png' } } };
+    const standing = mod.__debug.buildStandingText(sessObj, {});
+    check('DM 设定：进了常驻段', standing.includes('【本会话设定】'), true);
+    check('DM 设定：正文进常驻段', standing.includes('中立裁决'), true);
+    check('DM 设定：生图开关进常驻段', standing.includes('生图：开'), true);
+    check('DM 设定：重要场景关掉时不列进频次', standing.includes('重要场景给 1 张'), false);
+    check('DM 设定：已有立绘给出可直接用的地址', standing.includes('/rp-tools/card-image?path=x%2F%E5%BC%A5%E7%8F%A5.png'), true);
+    check('DM 设定：明说不要重复生成', standing.includes('不要重复生成'), true);
+    // 关掉生图 → 常驻段必须明确写「关」，否则 DM 还是会去调工具
+    const offStanding = mod.__debug.buildStandingText({ ...sessObj, dm: { ...sessObj.dm, images: { enabled: false, firstAppearance: true, keyScenes: true } } }, {});
+    check('DM 设定：关掉生图时写明「关」', offStanding.includes('生图：**关**'), true);
+    // 没有任何世界观内容时，标题不该是「世界观已确立」
+    const bare = mod.__debug.buildStandingText({ sessionId: 'x', dm: { prompt: '', images: { enabled: true } } }, {});
+    check('只有 DM 设定时不谎称世界观已确立', bare.includes('本场跑团的世界观'), false);
+    check('只有 DM 设定时仍有「本会话设定」', bare.includes('## 本会话设定'), true);
+  }
+
   // ── 故事书：卡里没有角色字段 → **不建人物**（别把书名当人物）────────────────
   // 用户报的「标题不是角色卡」：`下班，然后成为魔法少女` 那种书名原先会进人物列表。
   {
