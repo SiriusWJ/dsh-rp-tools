@@ -5,7 +5,7 @@
 //    早期版本直接写 ~/.dsh/data/dsh-rp-tools/，测试记录会混进真实会话登记表，
 //    清理时极易误删真实会话 —— 别再改回去。
 import crypto from 'node:crypto';
-import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -481,8 +481,10 @@ if (rpTable) {
     const ws2 = join(TEST_HOME, 'ws-assets-concurrent');
     mkdirSync(ws2, { recursive: true });
     D.setSessionCwd(sid2, ws2);
+    // ⚠️ 必须用**各不相同的字节**：1.13.2 加了内容去重之后，喂同一张图会被合并成 1 条，
+    // 那样这条用例就不再检验「写队列丢不丢记录」了（会假绿）。同字节的并发去重另有用例。
     await Promise.all(Array.from({ length: 20 }, (_, i) => D.archiveAsset(sid2, {
-      bytes: png, kind: 'scene', ext: 'png', label: `并发 ${i}`,
+      bytes: Buffer.from(`PNG-${i}-`.repeat(40)), kind: 'scene', ext: 'png', label: `并发 ${i}`,
     })));
     check('资源库：20 个并发归档一条都不丢', D.loadAssets(sid2).assets.length, 20);
     check('资源库：20 条 id 互不相同', new Set(D.loadAssets(sid2).assets.map((a) => a.id)).size, 20);
@@ -769,6 +771,163 @@ if (rpTable) {
   const text2 = D.buildStandingText({ ...D.loadSession(sid), sessionId: sid }, { loreFile });
   check('世界书存在后：不再说「还不存在」', text2.includes('**这份文件还不存在**'), false);
   check('世界书存在后：给出读写说明', text2.includes('用 read 读、用 write/edit 增改'), true);
+}
+
+// ── 复测报告（RETEST-01/02/03）+ launch 文件入常驻段 + 资源库去重 ─────────────
+// 这一批全部来自第二次真机复测（会话 afdca15e，报告 RP_PLUGIN_TEST_REPORT_RETEST.md）：
+// 三条新问题，外加一条复核里提出、复测未覆盖的结构性修法（launch 路径进常驻段）。
+{
+  const D = mod.__debug;
+  const errOf = async (fn) => { try { await fn(); return ''; } catch (error) { return String(error?.message ?? error); } };
+
+  // ① RETEST-01：`rp_table remove` 的回显不能是删除前的列表
+  {
+    const sid = crypto.randomUUID();
+    const ws = join(TEST_HOME, 'ws-retest-table');
+    mkdirSync(ws, { recursive: true });
+    D.setSessionCwd(sid, ws);
+    const ctx = { agent: { id: sid } };
+    const table = tools.get('rp_table');
+    await table.execute({ action: 'set', name: '甲表', dice: '1d4', entries: ['A', 'B', 'C', 'D'] }, ctx);
+    await table.execute({ action: 'set', name: '乙表', dice: '1d6', entries: ['X', 'Y'] }, ctx);
+    const rm = await table.execute({ action: 'remove', name: '甲表' }, ctx);
+    check('RETEST-01：删除后回显只剩剩下的表', rm.lines.length, 1);
+    check('RETEST-01：回显里不再出现刚删掉的那张', rm.lines.join('｜').includes('甲表'), false);
+    check('RETEST-01：note 写明删了哪一张', rm.note.includes('甲表'), true);
+    check('RETEST-01：剩下的表是对的', rm.lines[0].startsWith('乙表'), true);
+    // 删一张不存在的表也不能谎报成功（同一类问题：回显与事实不符）
+    const miss = await errOf(() => table.execute({ action: 'remove', name: '没有这张' }, ctx));
+    check('RETEST-01：删不存在的表报错而不是「已删除」', miss.includes('没有名为 "没有这张" 的表'), true);
+    check('RETEST-01：报错里列出实际有哪些表', miss.includes('甲表') || miss.includes('乙表'), true);
+    check('RETEST-01：删完之后再删同一张也会报错（幂等失败要说出来）',
+      (await errOf(() => table.execute({ action: 'remove', name: '甲表' }, ctx))).includes('没有名为'), true);
+  }
+
+  // ② RETEST-02：场景 id 的字段契约
+  {
+    check('RETEST-02：约定字段优先', D.sceneIdOf({ scene_id: 'A', id: 'B' }), 'A');
+    check('RETEST-02：id 别名兜底', D.sceneIdOf({ id: 'S01' }), 'S01');
+    check('RETEST-02：sceneId 别名兜底', D.sceneIdOf({ sceneId: 'S02' }), 'S02');
+    check('RETEST-02：title 兜底', D.sceneIdOf({ title: '第一幕' }), '第一幕');
+    check('RETEST-02：什么都没有给 ?', D.sceneIdOf({}), '?');
+    check('RETEST-02：分镜 id 也认 id 别名', D.panelIdOf({ id: 'p9' }), 'p9');
+    check('RETEST-02：分镜约定字段优先', D.panelIdOf({ panel_id: 'p1', id: 'p2' }), 'p1');
+
+    const sid = crypto.randomUUID();
+    const ws = join(TEST_HOME, 'ws-retest-scenes');
+    mkdirSync(ws, { recursive: true });
+    D.setSessionCwd(sid, ws);
+    const ctx = { agent: { id: sid } };
+    const scenes = tools.get('rp_scenes');
+    const file = join(ws, 'scenes.json');
+    // 场景 id 完全对不上 → 必须报错，并列出文件里实际有什么
+    writeFileSync(file, JSON.stringify({ scenes: [{ scene_id: 'S07', panels: [{ panel_id: 'p1', positive: 'x' }] }] }));
+    const miss = await errOf(() => scenes.execute({ scenesFile: file, sceneId: 'S01', style: 'manga' }, ctx));
+    check('RETEST-02：筛不到时报错（以前静默 0/0 且 ok:true）', miss.includes('没有 scene_id="S01" 这一幕'), true);
+    check('RETEST-02：报错里列出实际可用的 id', miss.includes('S07'), true);
+    check('RETEST-02：报错里说明按哪些字段识别', miss.includes('scene_id / sceneId / id / title'), true);
+    // 有幕但没有 panels → 也要说清楚，而不是 0/0
+    writeFileSync(file, JSON.stringify({ scenes: [{ scene_id: 'S01' }] }));
+    check('RETEST-02：有幕但没有 panels 时也报错',
+      (await errOf(() => scenes.execute({ scenesFile: file, sceneId: 'S01', style: 'manga' }, ctx))).includes('没有 panels 数组'), true);
+
+    // **筛选命中后不能再静默 0/0**：把 ComfyUI 指到一个空端口，断言它「确实走到了生图那一步」
+    // （连不上 → 每格失败进 errors），而不是「一幕都没匹配上」。这样既证明修复、又不会真出图。
+    const stylesFile = join(TEST_HOME, 'data', 'dsh-rp-tools', 'styles.json');
+    await tools.get('rp_styles').execute({}, ctx);           // 先触发一次默认配置落盘
+    const baseCfg = JSON.parse(readFileSync(stylesFile, 'utf8'));
+    try {
+      writeFileSync(stylesFile, JSON.stringify({ ...baseCfg, comfyui: { ...(baseCfg.comfyui ?? {}), baseUrl: 'http://127.0.0.1:9' } }));
+      writeFileSync(file, JSON.stringify({ scenes: [{ id: 'S01', panels: [{ panel_id: 'p1', positive: '雨夜客栈' }] }] }));
+      const styleKey = Object.keys(baseCfg.styles ?? {})[0] ?? 'manga';
+      const run = await scenes.execute({ scenesFile: file, sceneId: 'S01', style: styleKey }, ctx);
+      check('RETEST-02：id 别名能筛中（total=1，不再 0/0）', run.total, 1);
+      check('RETEST-02：确实走到了生图那一步（失败原因是连不上，不是没匹配上）', run.failed, 1);
+      check('RETEST-02：失败信息里不含「没有 scene_id」', String(run.errors.join(' ')).includes('没有 scene_id'), false);
+    } finally {
+      writeFileSync(stylesFile, JSON.stringify(baseCfg));    // 还原，别影响后面的用例
+    }
+  }
+
+  // ③ RETEST-03：`rp_assets get` / `tag` 的错误信息要分清「没传」和「不存在」
+  {
+    const sid = crypto.randomUUID();
+    const ws = join(TEST_HOME, 'ws-retest-assets-err');
+    mkdirSync(ws, { recursive: true });
+    D.setSessionCwd(sid, ws);
+    const ctx = { agent: { id: sid } };
+    const assets = tools.get('rp_assets');
+    const noId = await errOf(() => assets.execute({ action: 'get' }, ctx));
+    const badId = await errOf(() => assets.execute({ action: 'get', id: 'deadbeef00' }, ctx));
+    check('RETEST-03：没传 id 时说「需要 id」', noId.includes('需要 id'), true);
+    check('RETEST-03：id 不存在时**不说**「需要 id」（以前两句一模一样）', badId.includes('需要 id'), false);
+    check('RETEST-03：id 不存在时明确说没有这条', badId.includes('没有 id=deadbeef00 这条资源'), true);
+    check('RETEST-03：报错里带上现有条数便于自查', badId.includes('本会话共'), true);
+    const tagBad = await errOf(() => assets.execute({ action: 'tag', id: 'nope', label: 'x' }, ctx));
+    check('RETEST-03：tag 的错误信息与 get 一致', tagBad.includes('没有 id=nope 这条资源'), true);
+    // 存在的 id 仍然正常
+    const made = await D.archiveAsset(sid, { bytes: Buffer.from([1, 2, 3, 4]), kind: 'scene', ext: 'png', label: '有这张' });
+    check('RETEST-03：存在的 id 照常能 get',
+      (await assets.execute({ action: 'get', id: made.id }, ctx)).lines[0].includes('有这张'), true);
+  }
+
+  // ④ launch 文件路径进常驻段 —— M-3 的正解：让 DM **不必去找**
+  {
+    const sid = crypto.randomUUID();
+    const ws = join(TEST_HOME, 'ws-launch-standing');
+    mkdirSync(ws, { recursive: true });
+    D.setSessionCwd(sid, ws);
+    const loreFile = join(ws, 'rp-sessions', sid, 'rp-worldbook.md');
+    const cardsDir = join(ws, 'rp-sessions', sid, 'cards');
+    const session = () => ({ ...D.loadSession(sid), sessionId: sid });
+    const noLaunch = D.buildStandingText(session(), { loreFile });
+    check('launch：没有时明说没有', noLaunch.includes('【开局文件】本会话没有'), true);
+    check('launch：没有时给出「不要找别人的」', noLaunch.includes('不要在别处找别人的 launch 文件'), true);
+    // 放一份 launch 文件进去 → 常驻段直接给路径
+    mkdirSync(cardsDir, { recursive: true });
+    writeFileSync(join(cardsDir, '某种卡.launch.md'), '# 开局引导\n\n选定开场：第一幕\n');
+    const withLaunch = D.buildStandingText(session(), { loreFile });
+    check('launch：有给出绝对路径', withLaunch.includes(join(cardsDir, '某种卡.launch.md')), true);
+    check('launch：不再说「本会话没有」', withLaunch.includes('【开局文件】本会话没有'), false);
+    check('launch：明确说不要再 glob 找它', withLaunch.includes('不要再 glob 找它'), true);
+    // **只认本会话自己的 cards 目录**：别处的 launch 文件不该被列进来
+    const otherDir = join(ws, 'rp-sessions', '另一个会话', 'cards');
+    mkdirSync(otherDir, { recursive: true });
+    writeFileSync(join(otherDir, '别人的卡.launch.md'), '# 别人的开局\n');
+    const still = D.buildStandingText(session(), { loreFile });
+    check('launch：不会把别的会话的 launch 列进来', still.includes('别人的卡.launch.md'), false);
+    check('launch：helper 只扫本会话目录', D.listLaunchFiles(loreFile).length, 1);
+  }
+
+  // ⑤ 资源库内容去重：同字节不再存第二份
+  {
+    const sid = crypto.randomUUID();
+    const ws = join(TEST_HOME, 'ws-asset-dedup');
+    mkdirSync(ws, { recursive: true });
+    D.setSessionCwd(sid, ws);
+    const bytesA = Buffer.from('PNG-A-'.repeat(40));
+    const bytesB = Buffer.from('PNG-B-'.repeat(40));
+    const one = await D.archiveAsset(sid, { bytes: bytesA, kind: 'scene', ext: 'png', label: '甲场景', tags: '甲' });
+    check('去重：第一次正常入库', one.deduped, undefined);
+    const again = await D.archiveAsset(sid, { bytes: bytesA, kind: 'scene', ext: 'png', label: '甲场景（第二次）', tags: '乙' });
+    check('去重：同字节第二次不新增条目', D.loadAssets(sid).assets.length, 1);
+    check('去重：返回的是已有那条（同一个 id）', again.id, one.id);
+    check('去重：标记 deduped', again.deduped, true);
+    check('去重：新标签并进已有那条', (again.tags ?? []).slice().sort().join(','), '乙,甲');
+    check('去重：磁盘上只有一份文件', readdirSync(join(ws, 'rp-sessions', sid, 'assets', 'scenes')).length, 1);
+    // 不同分类、不同字节都不该被合并
+    await D.archiveAsset(sid, { bytes: bytesA, kind: 'portrait', ext: 'png', label: '同一张但算立绘' });
+    await D.archiveAsset(sid, { bytes: bytesB, kind: 'scene', ext: 'png', label: '乙场景' });
+    check('去重：不同分类不合并', D.loadAssets(sid).assets.length, 3);
+    check('去重：索引里记了 sha256', Boolean(D.loadAssets(sid).assets[0].sha256), true);
+    // **并发**归档同一张图也只能留一条（查重必须在写锁里，锁外查会双双通过）
+    const sid2 = crypto.randomUUID();
+    const ws2 = join(TEST_HOME, 'ws-asset-dedup-concurrent');
+    mkdirSync(ws2, { recursive: true });
+    D.setSessionCwd(sid2, ws2);
+    await Promise.all(Array.from({ length: 8 }, () => D.archiveAsset(sid2, { bytes: bytesA, kind: 'scene', ext: 'png', label: '并发同图' })));
+    check('去重：8 个并发归档同一张图只留一条', D.loadAssets(sid2).assets.length, 1);
+  }
 }
 
 // agent/created：宿主侧能否直接识别预设并自动登记
@@ -2565,14 +2724,17 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     check('预设：指向 rp_assets 复用同一张图', prefix.includes('调 `rp_assets`'), true);
     check('预设：说明 rp_assets 能按 kind/characters/tags/q 查',
       prefix.includes('按 `kind` / `characters` / `tags` / `q` 查'), true);
-    // 跨会话串档（真机日志里 `glob **/*.launch.md` 一次捞出 4 个别会话的 launch 文件）：
-    // persona 必须把「找 launch 文件」限制在本会话目录里
-    check('预设：launch 文件限定在本会话目录里找',
-      prefix.includes('launch 文件必须按【世界书】那一行给的路径同目录去找'), true);
-    check('预设：点明在根目录 glob 会捞到别的会话',
-      prefix.includes('会捞出**别的会话的** launch 文件'), true);
+    // 跨会话串档（真机日志里 `glob **/*.launch.md` 一次捞出 4 个别会话的 launch 文件）。
+    // 1.13.2 起不再靠「警告 DM 别找错地方」，而是**把 launch 路径直接印进常驻段**——
+    // 宿主知道该去哪找，DM 就不必去找了。persona 里那句「会捞到别的会话」的警告保留作第二道。
+    check('预设：不要自己去 glob 找 launch 文件或世界书',
+      prefix.includes('不要用 `glob` 去找 launch 文件或世界书'), true);
+    check('预设：点明根目录 glob 会捞到别的会话',
+      prefix.includes('**别的会话的** launch 文件'), true);
     check('预设：点明读错 launch 不会报错',
       prefix.includes('读了就会拿别人的世界观开团，而且不会报错'), true);
+    check('预设：说明宿主已经把两行事实印在系统提示里',
+      prefix.includes('宿主已经把该给的两行都印在系统提示里了'), true);
     // 约定 ≠ 状态（报告 BUG-01/02 的种子）
     check('预设：说明「常驻条目 / 已有可用图」是规则而不是已有状态',
       prefix.includes('是**规则说明**；本会话真的有没有，看它下面列的东西'), true);

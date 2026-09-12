@@ -77,7 +77,7 @@ models/loras/krea2_*.safetensors                               ← 9 个风格 L
 | `rp_state` | 状态追踪（场景 / 时间 / 地点 / 在场 / 线索 + 队伍 + 旗标） | `action`* `field?` `value?` `party?` `flags?` |
 | `rp_lore` | 世界书按条读取 / 生成模板 | `action`* `query?` `limit?` |
 | `rp_session` | 本会话设置（世界 / 前缀 / 会话默认风格 / 风格备注 / 战役名） | `action`* `world?` `prompt_prefix?` `default_style?` `style_notes?` `campaign_name?` |
-| `rp_scenes` | 按场景文件逐格批量出图（整幕共享一个组存进资源库） | `scenesFile`* `sceneId?` `style?` `limit?` `label?` `tags?` |
+| `rp_scenes` | 按场景文件逐格批量出图（`scenes[].scene_id` + `panels[].panel_id`；整幕共享一个组存进资源库） | `scenesFile`* `sceneId?` `style?` `limit?` `label?` `tags?` |
 | `rp_config` | **全局**配置（负面词 / 全局默认风格 / ComfyUI 地址 / 单个风格的触发词·步数·CFG） | `action`* `negative?` `default_style?` `base_url?` `style_key?` `trigger?` `steps?` `cfg?` |
 | `rp_table` | 随机表定义与掷表 | `action`* `name?` `dice?` `entries?` `count?` `seed?` |
 
@@ -162,6 +162,14 @@ DM 出的第一张单人图会**自动记成那个角色的立绘**（已有立�
 
 入库的四个入口：`rp_illustrate` 出图、`rp_scenes` 每格（整幕共享一个 `group`）、
 `rp_character(portrait:true)`、面板「导入图片」。导入卡的卡面**不入库** —— 它属于卡库。
+
+**按内容去重**：入库前比对 `sha256`，同一个分类里字节完全相同的图**复用已有那条**（合并标签、不写第二份文件）。
+本地出图是「同 seed + 同提示词 → 同一张图」，没有这一步，重出一张一样的就会在库里留下两条只有 id 不同的记录
+—— 图墙看着两张、磁盘占两份、人还分不出区别。查重放在写锁内（否则并发归档同一张会各写一份）。
+
+`rp_scenes` 的场景文件**字段名是固定的**：幕的 id 是 `scene_id`（不是 `id`），分镜是 `panel_id`；
+`sceneId` 参数筛的就是它（也兼容 `id`/`title` 这类常见写法）。**筛不到会直接报错**并列出文件里实际有哪些 id ——
+不会静默返回 0 张（那看起来像生图服务坏了）。字段名与最小合法示例写在工具的 `description` 里。
 
 **DM 侧**用 `rp_assets` 按 `kind` / `characters` / `tags` / `q` 查，返回的每行都带能直接放进
 `dsh-ui` image 组件的地址；常驻段里**只报条数**（`资源库：本会话已有 23 张图（角色 6、场景 14、道具 3）`）
