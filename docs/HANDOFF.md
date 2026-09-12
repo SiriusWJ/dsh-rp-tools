@@ -179,6 +179,9 @@ RP 配置按会话 id 存，而 fork 出来的是**新 id** —— 不处理的�
   - 注入时由 **`systemPrompt.variable(name, provider)`** 在 agent 作用域逐名注册（`macroVars`/`macroRegistrars`/`macroValueCache`），
     所以世界设定 / 世界书条目里写的 `{{x}}` 会**跟着面板改的值变**（不是把值烤进文件）；
   - 未注册的宏由 `neutralizeMustache(text, known)` 换成全角 —— 宿主对未知变量是**严格**的（直接抛错）；
+  - **自动宏**（`time` / `date` / `datetime` / `weekday` / `isotime` / `localtime` / `timezone`）：永远注册、值在装配时现算，
+    导入界面把它们列出来并标「自动」（不用填）；用户也可以填个固定值把它**钉死**（例如游戏内时间「子时三刻」）。
+    注意：写进 standing 段的自动宏每轮都变，会打穿前缀缓存 —— 放进世界书条目（走 turn 通道）没这个问题。
   - `{{char}}` 仍是**导入时展开成卡名**：一场戏可能多角色，全局变量表达不了它。
   - ⚠️ 注册必须发生在**该会话的 agent 作用域**；路由（全局作用域）改完宏表要通过 `refreshSessionMacros` 回调进去，
     否则要么污染别的会话，要么下一轮装配因未知变量抛错。

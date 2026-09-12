@@ -267,7 +267,10 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card } = await import(
   check('占位符：合法宏名保留原文', resolvePlaceholders('{{place}}').text, '{{place}}');
   check('占位符：大写名字规范化成小写', resolvePlaceholders('{{Place}}').text, '{{place}}');
   check('占位符：给了卡名才换 {{char}}', resolvePlaceholders('{{char}}', { charLabel: '沈砚' }).text, '沈砚');
-  check('占位符：时间类直接删掉', resolvePlaceholders('现在是 {{time}}。').text, '现在是 。');
+  check('占位符：时间类改成自动宏（保留原文，宿主装配时填）', resolvePlaceholders('现在是 {{time}}。').text, '现在是 {{time}}。');
+  check('自动宏：扫宏名时标出来（界面据此显示「自动」）', discoverMacros('{{time}} {{place}}').find((m) => m.name === 'time')?.auto, true);
+  check('自动宏：自动的排在前面', discoverMacros('{{place}} 和 {{date}}')[0].name, 'date');
+  check('占位符：导出模式把自动宏也展开成值', /^\d{4}-\d{2}-\d{2}$/.test(resolvePlaceholders('{{date}}', { keepMacros: false }).text), true);
   check('占位符：带参数的写法去括号留文字', resolvePlaceholders('{{random:1,10}}').text, 'random:1,10');
   check('占位符：没有占位符时原样返回', resolvePlaceholders('普通文本').text, '普通文本');
   check('占位符：空输入不炸', resolvePlaceholders('').text, '');

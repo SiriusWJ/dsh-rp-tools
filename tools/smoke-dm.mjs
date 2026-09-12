@@ -648,6 +648,21 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('删除风格：removedStyles 记录', res.json.removedStyles, [NEWKEY]);
 }
 
+// 风格库只留「二次元 / 写实 / 黑白漫画」：老配置里的旧内置键要被清掉
+{
+  const state = (await callGet('/rp-tools/state')).json;
+  const keys = Object.keys(state.config.styles).filter((k) => state.config.styles[k].builtin !== false).sort();
+  const builtinKeys = state.styles.filter((s) => s.builtin).map((s) => s.key).sort();
+  check('风格：内置只剩三个', builtinKeys.join(','), 'anime,manga,realistic');
+  check('风格：二次元的显示名', state.styles.find((s) => s.key === 'anime')?.label, '二次元');
+  check('风格：写实的显示名', state.styles.find((s) => s.key === 'realistic')?.label, '写实');
+  check('风格：黑白漫画还在', state.styles.find((s) => s.key === 'manga')?.label, '黑白漫画');
+  check('风格：旧内置风格已移除', ['darkbrush', 'dotmatrix', 'kidsdrawing', 'neondrip', 'rainywindow', 'retroanime', 'softwatercolor', 'sunsetblur', 'vintagetarot']
+    .some((k) => state.config.styles[k]), false);
+  check('风格：默认风格回落到 manga', state.config.defaultStyle, 'manga');
+  void keys;
+}
+
 // 内置风格也不能通过接口被删掉（客户端不给按钮，但接口要挡住手抖）
 {
   const res = await callPost('/rp-tools/config', { styleOps: [{ action: 'remove', key: 'manga' }] });
@@ -960,6 +975,12 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     const stand2 = mod.__debug.buildStandingText(sess, { macros: new Set(['user']) });
     check('宏：未注册的 {{place}} 被中和', /｛｛place｝｝/.test(stand2), true);
     check('宏：中和后 {{user}} 仍在', stand2.includes('{{user}}'), true);
+    // 自动宏（time/date/…）：永远注册、值当场算，用户不用填
+    check('宏：自动宏默认放行', /\{\{time\}\}/.test(mod.__debug.neutralizeMustache('现在是 {{time}}')), true);
+    check('宏：自动宏 date 算出日期', /^\d{4}-\d{2}-\d{2}$/.test(mod.__debug.autoMacroValue('date')), true);
+    check('宏：自动宏 time 算出时刻', /^\d{2}:\d{2}$/.test(mod.__debug.autoMacroValue('time')), true);
+    check('宏：宏表里的固定值覆盖自动宏（钉死游戏内时间）', mod.__debug.autoMacroValue('time', { time: '子时三刻' }), '子时三刻');
+    check('宏：自动宏清单里有 time/date', mod.__debug.AUTO_MACROS.includes('time') && mod.__debug.AUTO_MACROS.includes('date'), true);
     // 未注册的宏进不了 renderPrompt（宿主严格插值会抛错），所以中和是必须的兜底
     check('宏：中和函数把不认识的宏全转全角', /\{\{/.test(mod.__debug.neutralizeMustache('{{a}} {{b}}', new Set())), false);
   }

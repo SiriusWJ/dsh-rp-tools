@@ -1635,8 +1635,10 @@ window.__ModuleLoader__.load({
         setMacroRows((rows) => {
           const byName = new Map(rows.map((r) => [r.name, r.value]));
           const names = ['user', ...(found ?? []).map((m) => m.name).filter((n) => n !== 'user')];
+          const autoSet = new Set((found ?? []).filter((m) => m.auto).map((m) => m.name));
           return names.map((name) => ({
             name,
+            auto: autoSet.has(name),
             // user 的默认值来自全局「玩家称呼」（设置页）；用户随手改掉也只影响本会话
             value: byName.get(name) ?? (name === 'user' ? globalUserLabelRef.current : ''),
           }));
@@ -1904,8 +1906,11 @@ window.__ModuleLoader__.load({
             + `默认 {{user}} = ${globalUserLabel || '玩家'}（设置页的「玩家称呼」）。`),
           ...macroRows.map((row, i) => h('div', { key: `m${i}`, className: 'row macrorow' }, [
             h('span', { key: 'n', className: 'mono' }, `{{${row.name}}}`),
+            // 自动宏（time/date/…）：后台每轮自己算，用户不用填；留空即可，想钉死游戏内时间也可以填
+            row.auto ? h('span', { key: 'a', className: 'badge ok', title: '自动：装配时按当前时间/日期填写，留空即可' }, '自动') : null,
             h('input', {
-              key: 'v', type: 'text', value: row.value, placeholder: row.name === 'user' ? '玩家称呼' : '这一项的值',
+              key: 'v', type: 'text', value: row.value,
+              placeholder: row.auto ? '留空 = 自动（当前时间/日期）' : (row.name === 'user' ? '玩家称呼' : '这一项的值'),
               onChange: (e) => setMacroRow(i, e.target.value),
             }),
             h('button', { key: 'd', className: 'tiny', onClick: () => removeMacroRow(i) }, '×'),
