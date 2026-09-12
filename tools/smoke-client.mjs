@@ -130,6 +130,8 @@ const sessionStub = {
   sessionId: 'session-abc', preset: 'dm', defaultStyle: null,
   campaign: { name: '长安', prompt_prefix: '' }, characters: [], characterIndex: [],
   tables: [], world: '天宝年间。', state: {}, styleNotes: '', portraits: {},
+  // 会话宏表（面板的「宏 / 变量」卡片只显示值，不再提供加/删）
+  macros: { user: '阿岚', place: '长安' },
 };
 /** `/rp-tools/state` 返回的全局配置（设置页/导入表单都读它）；空列表那条用例会临时改它。 */
 const stateStub = {
@@ -739,36 +741,69 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.equal(lorePost.body.title, '长安城', 'update 应带上原名（改名时用它定位）');
   assert.equal(lorePost.body.entry.constant, true, '勾选状态应写进 constant');
 
-  // ★ 面板里的故事书导入：chip 消失时的保底通道，展开后必须真的能走完「列卡库 → 选卡 → 导入按钮」。
-  // （chip 的可见性依赖投影+宿主两侧判定，历史上两度消失；而且会话一旦开局 chip 就没了，
-  //   但「再导一张卡」是开工之后才有的需求 —— 这条通道不判定预设/开局。）
+  // ★ 面板里**不再**有故事书导入（用户明确要求去掉）：导入入口只剩工作区那一行的 chip。
   {
-    const openLib = findAll(panel2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '展开卡库');
-    assert.equal(openLib.length, 1, '面板里应有「展开卡库」入口');
-    await openLib[0].props.onClick();
-    const asPanel = () => render({
+    assert.equal(findAll(panel2, (n) => textOf(n) === '展开卡库').length, 0, '面板里不该再出现「展开卡库」');
+    assert.equal(text.includes('PNG 故事书导入'), false, '面板里不该再出现「PNG 故事书导入」卡片');
+  }
+
+  // ★ 面板里的宏：**只改值**（不许加、不许删）—— 名字来自卡里的占位符 / 设置页的默认宏列表，
+  //   在面板里改名或加宏都会与卡对不上；要加宏去设置页「默认宏列表」（那里的名字可改）。
+  {
+    assert.equal(findAll(panel2, (n) => textOf(n) === '＋ 添加宏').length, 0, '面板里不该再有「＋ 添加宏」');
+    assert.equal(text.includes('宏名（小写字母/数字/下划线）'), false, '面板里不该再有宏名输入框');
+    const macroRows = byClass(panel2, 'macrorow');
+    assert.ok(macroRows.length >= 1, '宏要有行');
+    for (const row of macroRows) {
+      assert.equal(findAll(row, (n) => n.type === 'button').length, 0, '宏行不该有删除按钮');
+      assert.equal(findAll(row, (n) => n.type === 'input').length, 1, '宏行只有值一个输入框');
+    }
+  }
+
+  // ★ 人物卡片：标题叫「人物」（不叫「角色卡」）；**有立绘就两列、图在左**
+  {
+    assert.ok(text.includes('人物（'), '卡片标题应叫「人物」');
+    assert.equal(text.includes('角色卡（'), false, '不该再叫「角色卡」');
+    // 会话里那个角色带了一张**卡面**（登记在 session.portraits[name].card，导入卡时写进去的）
+    sessionStub.characters = [{ name: '阿岚', appearance: '白衣长剑' }];
+    sessionStub.portraits = { 阿岚: { card: 'cards/古风/长安.card.png' } };
+    resetHooks();
+    let withFace = render({
       sessionId: SID,
       useSessions: (sel) => sel(store),
       useInput: (sel) => sel({ draft: '' }),
       inputActions,
     }, tab.component);
-    // 展开后要等「卡库列表」这一跳回来（定长 tick 不够稳，轮询到出现为止）
-    let withImport = asPanel();
-    for (let i = 0; i < 14 && !textOf(withImport).includes('3269'); i++) {
+    for (let i = 0; i < 14 && byClass(withFace, 'charface').length === 0; i++) {
       await tick(30);
-      withImport = asPanel();
+      withFace = render({
+        sessionId: SID,
+        useSessions: (sel) => sel(store),
+        useInput: (sel) => sel({ draft: '' }),
+        inputActions,
+      }, tab.component);
     }
-    assert.ok(textOf(withImport).includes('3269'), `展开后应列出卡库（实际：${textOf(withImport).slice(0, 120)}）`);
-    const items = byClass(withImport, 'item');
-    assert.ok(items.length >= 1, '卡库里的卡应能选');
-    items[0].props.onClick();
-    let picked = asPanel();
-    for (let i = 0; i < 14 && !textOf(picked).includes('导入并开始'); i++) {
-      await tick(30);
-      picked = asPanel();
-    }
-    assert.ok(textOf(picked).includes('导入并开始') || textOf(picked).includes('新建会话并导入'),
-      '面板里选完卡也要有导入按钮');
+    const box = byClass(withFace, 'charbox')[0];
+    assert.ok(box, '应渲染出人物行');
+    assert.equal(box.props['data-hasface'], 'true', '有图的人物行要标 data-hasface');
+    const face = byClass(withFace, 'charface')[0];
+    assert.ok(face, '有图时应有左列 charface');
+    const faceImg = findAll(face, (n) => n.type === 'img');
+    assert.equal(faceImg.length, 1, '左列恰好一张图');
+    assert.ok(String(faceImg[0].props.src).includes('/rp-tools/card-image?'), '图片走卡面路由');
+    // 顺序即布局：face 必须在 body 之前（图在左、字在右）
+    const kids = (box.children ?? []).map((n) => String(n?.props?.className ?? ''));
+    assert.ok(kids.indexOf('charface') >= 0 && kids.indexOf('charbody') > kids.indexOf('charface'),
+      `DOM 顺序应是 charface → charbody（实际 ${JSON.stringify(kids)}）`);
+    assert.ok(/\.rpt \.charbox\[data-hasface='true'\]/.test(style.textContent), '样式里要有「有图两列」的规则');
+    // 还原
+    sessionStub.portraits = {
+      阿岚: {
+        generated: { file: 'rp-portrait-1.png', subfolder: 'rp', type: 'output' },
+        style: '二次元', elapsedMs: 18300, at: '2026-09-12T01:00:00.000Z',
+      },
+    };
+    resetHooks();
   }
 
   // ★ 立绘持久化（用户报的「角色卡生成的立绘下次打开就消失了」）：

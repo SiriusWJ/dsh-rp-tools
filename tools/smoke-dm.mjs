@@ -1055,6 +1055,30 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('隔离：工作区根不再产生 rp-cards/', !existsSync(join(ws, 'rp-cards')), true);
   check('导入：会话立绘已登记', sess.json.session?.portraits?.['烟测卡']?.card, rel);
   check('导入：战役名补成卡名', sess.json.session?.campaign?.name, '烟测卡');
+  check('导入：角色卡标为「有角色」', imported.json.isCharacterCard, true);
+
+  // ── 故事书：卡里没有角色字段 → **不建人物**（别把书名当人物）────────────────
+  // 用户报的「标题不是角色卡」：`下班，然后成为魔法少女` 那种书名原先会进人物列表。
+  {
+    const storyRel = 'cards/测试分类/故事书.png';
+    writeFileSync(join(libRoot, 'cards', '测试分类', '故事书.png'), simpleCardPng('下班，然后成为魔法少女', {
+      scenario: '都市夜景，魔法少女在加班。',
+      character_book: { entries: [{ name: '世界观', keys: ['魔法'], content: '魔法少女也要打卡。' }] },
+    }));
+    const storySid = crypto.randomUUID();
+    await callPost('/rp-tools/dm-mark', { sessionId: storySid, preset: 'dm' });
+    const story = await callPost('/rp-tools/card-import', { sessionId: storySid, workspace: ws, path: storyRel });
+    check('故事书：导入成功', story.status, 200);
+    check('故事书：标为「不是角色卡」', story.json.isCharacterCard, false);
+    check('故事书：世界书照常导入', story.json.lore?.added, 1);
+    const storySess = await callGet('/rp-tools/session', `?sessionId=${storySid}`);
+    check('故事书：没有建人物', (storySess.json.session?.characters ?? []).length, 0);
+    check('故事书：也没登记立绘（没有人物可挂）', Object.keys(storySess.json.session?.portraits ?? {}).length, 0);
+    // 源文件名是 故事书.png（没有 .card 标记）→ slug 就是「故事书」，落到 故事书.png
+    check('故事书：卡面仍然复制到会话目录', existsSync(join(ws, 'rp-sessions', storySid, 'cards', '故事书.png')), true);
+    check('故事书：世界设定里标的是「故事书」', String(story.json.world).includes('【故事书】'), true);
+    check('故事书：summary 说明了原因', String(story.json.summary).includes('不建人物'), true);
+  }
 
   // 同一个会话再导一次：同名条目不该重复（幂等）
   const again = await callPost('/rp-tools/card-import', { sessionId: IMPORT_SID, workspace: ws, path: rel });

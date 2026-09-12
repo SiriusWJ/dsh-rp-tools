@@ -91,6 +91,43 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
   check('缩略图：带卡的真图缩完还能解码出原尺寸信息', readPngPixels(carded)?.width, 64);
 }
 
+// ── 卡里到底有没有角色（决定要不要建人物）───────────────────────────────────
+// 用户报的「标题不是角色卡」：故事书里 `name` 是**书名**，早先也被建成了人物。
+{
+  const { hasCharacterFields } = await mod('card-import.js');
+  check('是否角色卡：只有书名 → 不是', hasCharacterFields({ name: '下班，然后成为魔法少女' }), false);
+  check('是否角色卡：有描述 → 是', hasCharacterFields({ name: 'X', description: '设定' }), true);
+  check('是否角色卡：有性格 → 是', hasCharacterFields({ name: 'X', personality: '冷淡' }), true);
+  check('是否角色卡：有对白范例 → 是', hasCharacterFields({ name: 'X', mes_example: 'X：你好' }), true);
+  check('是否角色卡：有开场白 → 是', hasCharacterFields({ name: 'X', first_mes: '……' }), true);
+  check('是否角色卡：只有备用开场白也算', hasCharacterFields({ name: 'X', alternate_greetings: ['……'] }), true);
+  check('是否角色卡：只有情境（scenario）→ 不算（故事书也有）', hasCharacterFields({ name: 'X', scenario: '某地' }), false);
+  check('是否角色卡：只有作者注 → 不算', hasCharacterFields({ name: 'X', creator_notes: '转自某处' }), false);
+  check('是否角色卡：空白字段不算', hasCharacterFields({ name: 'X', description: '   ' }), false);
+}
+
+// buildImport 要把这个判断带出来，调用方才知道该不该写进人物表
+{
+  const story = buildImport(decodeCardPng(makePng([
+    textChunk('ccv3', card({
+      name: '下班，然后成为魔法少女',
+      scenario: '都市夜景',
+      character_book: { entries: [{ name: '世界观', content: '魔法少女在加班。' }] },
+    }, 'chara_card_v3')),
+  ])));
+  check('故事书：isCharacterCard=false', story.isCharacterCard, false);
+  check('故事书：世界书照常导入', story.stats?.kept >= 1, true);
+  check('故事书：world 里标的是「故事书」而不是「角色卡」', /【故事书】/.test(String(story.world)), true);
+  check('故事书：summary 说明了为什么不建人物', story.summary.join('\n').includes('不建人物'), true);
+
+  const role = buildImport(decodeCardPng(makePng([
+    textChunk('ccv3', card({ name: '翠雀', description: '三十余岁，银发', personality: '寡言' }, 'chara_card_v3')),
+  ])));
+  check('角色卡：isCharacterCard=true', role.isCharacterCard, true);
+  check('角色卡：world 仍标「角色卡」', /【角色卡】/.test(String(role.world)), true);
+  check('角色卡：summary 里有角色名', role.summary.join('\n').includes('翠雀'), true);
+}
+
 // ── 解码：chunk 遍历与优先级 ───────────────────────────────────────────────
 {
   const v2 = makePng([textChunk('chara', card({ name: 'v2卡' }))]);
