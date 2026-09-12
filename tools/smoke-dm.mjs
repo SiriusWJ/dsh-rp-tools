@@ -704,6 +704,25 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   );
   writeFileSync(join(libRoot, 'cards', '解压密码Wait', '坏卡.png'), simpleCardPng('坏卡'));
 
+  // ★ 卡库目录默认 = **会话工作区下的 rp-cards/**（不配 cards.root 时）
+  {
+    const wsLib = join(TEST_HOME, 'ws-lib-default');
+    mkdirSync(join(wsLib, 'rp-cards'), { recursive: true });
+    writeFileSync(join(wsLib, 'rp-cards', '工作区卡.png'), simpleCardPng('工作区卡'));
+    const reset = await callPost('/rp-tools/config', { cards: { root: '' } });
+    check('卡库：清空配置后回到默认', reset.json.config?.cards?.root, '');
+    const def = await callGet('/rp-tools/cards', `?limit=5&workspace=${encodeURIComponent(wsLib)}`);
+    check('卡库：默认指向工作区的 rp-cards', def.json.root, join(wsLib, 'rp-cards'));
+    check('卡库：来源标为 workspace', def.json.rootSource, 'workspace');
+    check('卡库：能列到工作区里的卡', def.json.items?.some((i) => i.name === '工作区卡'), true);
+    // 拿不到工作区时回落到内置大卡库（兜底，不至于什么都列不出来）
+    const noWs = await callGet('/rp-tools/cards', '?limit=1');
+    // 相对路径的 cards.root 按工作区解析
+    await callPost('/rp-tools/config', { cards: { root: 'my-cards' } });
+    const relRoot = await callGet('/rp-tools/cards', `?limit=1&workspace=${encodeURIComponent(wsLib)}`);
+    check('卡库：相对路径配置按工作区解析', relRoot.json.root, join(wsLib, 'my-cards'));
+    check('卡库：来源标为 config', relRoot.json.rootSource, 'config');
+  }
   const setRoot = await callPost('/rp-tools/config', { cards: { root: libRoot } });
   check('卡库根目录可配置', setRoot.json.config?.cards?.root, libRoot);
 

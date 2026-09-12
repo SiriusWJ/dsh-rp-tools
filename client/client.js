@@ -53,8 +53,12 @@ window.__ModuleLoader__.load({
     /** 宏名规则：与宿主变量名一致（[a-z][a-z0-9_]*）。 */
     const MACRO_RE = /^[a-z][a-z0-9_]{0,31}$/;
 
-    /** 卡面图（导入时复制到工作区的那张）走卡库只读路由。 */
-    const cardImageUrl = (rel) => `/rp-tools/card-image?path=${encodeURIComponent(rel)}`;
+    /**
+     * 卡面图 URL。卡库默认在**会话工作区**下的 rp-cards/，所以要把 cwd 一起带上，
+     * 宿主才能把相对路径解析到同一个根（不然会按内置卡库去查、404）。
+     */
+    const cardImageUrl = (rel, workspace) => `/rp-tools/card-image?path=${encodeURIComponent(rel)}`
+      + (workspace ? `&workspace=${encodeURIComponent(workspace)}` : '');
 
     let stylesInjected = false;
     function injectStyles() {
@@ -541,7 +545,7 @@ window.__ModuleLoader__.load({
             h('span', { key: 'k1' }, '卡库目录'),
             h('input', {
               key: 'k2', type: 'text', value: draft.cards?.root ?? '',
-              placeholder: 'PNG 故事书库的根目录（留空 = 内置默认）',
+              placeholder: '留空 = 会话工作区下的 rp-cards（相对路径按工作区解析）',
               onChange: (e) => setDraft({ ...draft, cards: { ...(draft.cards ?? {}), root: e.target.value } }),
             }),
             h('span', { key: 'u1' }, '玩家称呼'),
@@ -554,9 +558,11 @@ window.__ModuleLoader__.load({
           h('div', { key: 'note', className: 'dim' },
             '负面词对所有会话与风格生效；krea2 turbo 默认 CFG=1 时负向不参与计算 —— 想让负面真正起作用，把对应风格的 CFG 调到 1.5~2.5。'),
           h('div', { key: 'note2', className: 'dim' },
-            '卡库目录是「导入 PNG 故事书」扫描角色卡的地方：目录下的 cards/<分类>/*.png 会被列出来。改完记得保存。'),
+            '卡库目录是「导入 PNG 故事书」扫描角色卡的地方。留空 = 会话工作区下的 rp-cards（卡跟着战役走）；'
+            + '填绝对路径可指向共享卡库，填相对路径则按工作区解析。改完记得保存。'),
           h('div', { key: 'note3', className: 'dim' },
-            '卡里的 {{user}} / {{char}} / <USER> 等占位符在**导入时**展开成「玩家称呼」与卡名 —— 留着的话 DM 只会看到一串全角括号。'),
+            '卡里用到的 {{宏}} 会在导入时列出来让你填（{{time}} / {{date}} 等自动宏由系统每轮现算，不用填）；'
+            + '值按会话保存，RP 面板里随时能改。'),
           // 预览结果就放在这条配置里（卡片的「试出」按钮在风格库那边，滚过来即可见）
           preview ? h('div', { key: 'prev', className: 'card', ref: previewRef }, [
             h('div', { key: 'l', className: 'row' }, [
@@ -1155,7 +1161,8 @@ window.__ModuleLoader__.load({
             // 导入 PNG 卡时登记的卡面（会话配置里的 portraits）：没生成过立绘时直接当立绘用，
             // 生成过就排在生成图下面 —— 卡面是「原图」，不覆盖用户的出图结果。
             const cardRel = pkey ? draft?.portraits?.[pkey]?.card : undefined;
-            const cardUrl = typeof cardRel === 'string' && cardRel ? cardImageUrl(cardRel) : '';
+            // 卡库默认在会话工作区下 → 拼卡面 URL 也要带上 cwd（state.cwd 来自 /rp-tools/session）
+            const cardUrl = typeof cardRel === 'string' && cardRel ? cardImageUrl(cardRel, state?.cwd ?? '') : '';
             const setField = (field, value) => {
               const n = [...chars];
               n[i] = { ...n[i], [field]: value };
@@ -1575,6 +1582,7 @@ window.__ModuleLoader__.load({
       // 异步回调里要拿到最新 props（React 的闭包会留住旧值）
       const propsRef = React.useRef(props);
       propsRef.current = props;
+      // 卡库默认 <工作区>/rp-cards，所以请求卡库/卡面时要带上会话的 cwd（见 live.current.cwd）
 
       // 一律选**原始值**（对象选择器会在每次 store 变更时产生新引用 → 无限重渲染）
       const currentId = typeof props?.useSessions === 'function' ? props.useSessions((s) => s?.current) : undefined;
@@ -1598,6 +1606,8 @@ window.__ModuleLoader__.load({
       // 最新值放一份在 ref 里：startSession 之后的那次导入要用**新会话**的 cwd
       const live = React.useRef({});
       live.current = { sessionId, blank, cwd, agentPreset };
+      // 卡库/卡面请求要用同一个 cwd（propsRef 在异步回调里是唯一能取到最新值的地方）
+      propsRef.current = { ...props, _cwd: cwd };
 
       const [open, setOpen] = React.useState(false);
       const [q, setQ] = React.useState('');
@@ -1685,7 +1695,8 @@ window.__ModuleLoader__.load({
       async function load(query, cat = category) {
         setLoading(true);
         try {
-          const res = await API.cards({ q: query, category: cat, limit: 60 });
+          // 卡库默认在会话工作区下的 rp-cards/ → 把 cwd 一起报上去
+      const res = await API.cards({ q: query, category: cat, limit: 60, workspace: propsRef.current?._cwd ?? '' });
           if (!res?.ok) throw new Error(res?.error ?? '读取卡库失败');
           setLib({ root: res.root, exists: res.exists, indexSource: res.indexSource, librarySize: res.librarySize, categories: res.categories ?? [] });
           setItems(res.items ?? []);
@@ -1712,7 +1723,7 @@ window.__ModuleLoader__.load({
         setResult(null);
         setBusy('preview');
         try {
-          const res = await API.card(cardPath);
+          const res = await API.card(cardPath, propsRef.current?._cwd ?? '');
           if (!res?.ok) throw new Error(res?.error ?? '解析失败');
           setPreview(res);
           applyDiscoveredMacros(res.macros);
@@ -1979,7 +1990,11 @@ window.__ModuleLoader__.load({
           h('div', { key: 'meta', className: 'dim' },
             lib && lib.exists === false
               ? `卡库目录不存在：${lib.root} —— 到「设置 → RP工具 → 卡库目录」改成正确路径`
-              : `卡库 ${lib?.root ?? ''}${lib?.indexSource === 'scan' ? '（目录扫描：卡名取文件名）' : ''}｜命中 ${total} 张`),
+              : `卡库 ${lib?.root ?? ''}`
+                + (lib?.rootSource === 'workspace' ? '（默认：会话工作区下的 rp-cards）' : '')
+                + (lib?.rootSource === 'fallback' ? '（兜底：内置卡库；本会话没有工作区）' : '')
+                + (lib?.indexSource === 'scan' ? '（目录扫描：卡名取文件名）' : '')
+                + `｜命中 ${total} 张`),
           h('div', { key: 'split', className: 'split' }, [
             h('div', { key: 'list', className: 'list' }, items.length
               ? items.map((it, i) => h('div', {
