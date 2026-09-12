@@ -662,6 +662,16 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('风格：旧内置风格已移除', ['darkbrush', 'dotmatrix', 'kidsdrawing', 'neondrip', 'rainywindow', 'retroanime', 'softwatercolor', 'sunsetblur', 'vintagetarot', 'anime', 'realistic']
     .some((k) => state.config.styles[k]), false);
   check('风格：默认风格是二次元', state.config.defaultStyle, 'uncensored_anime');
+  // 尺寸调小：三档都是小尺寸（scene 1024×576 / portrait 640×896 / item 768×768）
+  const sizesOf = (k) => state.config.styles[k]?.sizes;
+  check('风格尺寸：二次元的场景尺寸变小', sizesOf('uncensored_anime')?.scene, [1024, 576]);
+  check('风格尺寸：二次元的立绘尺寸变小', sizesOf('uncensored_anime')?.portrait, [640, 896]);
+  check('风格尺寸：写实同步', sizesOf('uncensored_real')?.item, [768, 768]);
+  check('风格尺寸：黑白漫画也变小（krea2 老默认 1344×768）', sizesOf('manga')?.scene, [1024, 576]);
+  // 用户自己改过的尺寸不该被迁移覆盖
+  await callPost('/rp-tools/config', { styles: { manga: { sizes: { scene: [1536, 864] } } } });
+  const after = (await callGet('/rp-tools/state')).json.config.styles.manga.sizes.scene;
+  check('风格尺寸：用户自定义的尺寸不被迁移覆盖', after, [1536, 864]);
   void keys;
 }
 
