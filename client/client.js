@@ -98,6 +98,8 @@ window.__ModuleLoader__.load({
       lore: (sessionId) => jget(`/rp-tools/lore?sessionId=${encodeURIComponent(sessionId)}`),
       loreEntry: (sessionId, title) => jget(`/rp-tools/lore?sessionId=${encodeURIComponent(sessionId)}&title=${encodeURIComponent(title)}`),
       loreSave: (body) => jpost('/rp-tools/lore', body),
+      // 设定整备指令正文（宿主给措辞，界面只负责填进输入框）
+      tidy: (body) => jpost('/rp-tools/tidy', body),
     };
 
     /** 宏名规则：与宿主变量名一致（[a-z][a-z0-9_]*）。 */
@@ -934,6 +936,31 @@ window.__ModuleLoader__.load({
         } finally { setBusy(''); }
       }
 
+      /**
+       * 「整理设定」：拿宿主的指令正文填进输入框，由用户确认后发送。
+       *
+       * 为什么不让界面自己拼这段话：措辞只有一处（`lib/card-import.js` 的 `buildTidyPrompt`），
+       * 而且它要带上本会话的世界书路径与条目列表 —— 这些只有宿主知道。
+       * 也**不自动发送**：这是一条长指令，先进输入框让用户能改。
+       */
+      async function sendTidy() {
+        setBusy('tidy');
+        try {
+          const res = await API.tidy({ sessionId });
+          const text = String(res?.text ?? '');
+          if (!res?.ok || !text) throw new Error(res?.error ?? '宿主没有返回指令正文');
+          const actions = props?.inputActions;
+          if (!actions || typeof actions.setDraft !== 'function') {
+            setMsg({ kind: 'err', text: '拿不到输入框，没法把指令填进去。可以直接对 DM 说：「按世界书条目做一次设定整理」。' });
+            return;
+          }
+          actions.setDraft(text);
+          setMsg({ kind: 'ok', text: '已把「整理设定」指令填进输入框 —— 看一眼没问题就发送。' });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
       /** 搜索过滤（标题 / 触发词 / 正文预览都搜，与 liketavern 的搜索框一致）。
        *  **空条目默认不显示**（用户要求：「需要智能过滤世界书，无内容的不要」）：
        *  它们不会进上下文，但也没从文件里删掉 —— 想看/想删就点那一行提示展开。 */
@@ -1283,6 +1310,13 @@ window.__ModuleLoader__.load({
             }, busy === 'lore-lz' ? '处理中…' : '属性中文化'),
             h('button', { key: 'r', className: 'tiny', onClick: () => void loadLore(), disabled: busy === 'lore' },
               busy === 'lore' ? '读取中…' : '刷新'),
+            // 让 DM 把设定收一次尾（导入是规则解码，「当前进度/前情提要/物品清单」那类会过期的
+            // 条目得由它看着删或改成触发式）。指令正文由宿主给（措辞只有一处），这里只负责发出去。
+            h('button', {
+              key: 'tidy', className: 'tiny', disabled: Boolean(busy),
+              title: '把一条「整理设定」的指令发给 DM：角色卡字段归位、世界书删掉会过期的条目、补触发词。指令会填进输入框，你可以改完再发',
+              onClick: () => void sendTidy(),
+            }, busy === 'tidy' ? '准备中…' : '整理设定'),
           ]),
           lore && lore.exists === false
             ? h('div', { key: 'none', className: 'dim' }, '本会话还没有自己的世界书。用「📖 导入故事书」导入一张卡，或让 DM 用 rp_lore 生成模板。')

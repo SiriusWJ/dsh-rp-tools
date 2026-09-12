@@ -1274,6 +1274,21 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   const loreMissing = await callGet('/rp-tools/lore', `?sessionId=${crypto.randomUUID()}`);
   check('lore：拿不到工作区时不报错、只说明', loreMissing.json.exists, false);
 
+  // ── 设定整备指令（面板「整理设定」按钮的数据源）────────────────────────
+  // 导入是**规则解码**：「当前进度 / 前情提要 / 物品清单」这类会过期的条目也会被导进来，
+  // 得让 DM 做一次整理（用户要求：「开局第一轮提示 DM 完善角色卡和世界书」）。
+  {
+    const tidy = await callPost('/rp-tools/tidy', { sessionId: IMPORT_SID });
+    check('tidy 路由：200', tidy.status, 200);
+    check('tidy：说明只做这一件事（不是开局场景）', String(tidy.json.text).includes('只做这一件事'), true);
+    check('tidy：带上本会话的世界书路径', String(tidy.json.text).includes(String(IMPORT_SID)), true);
+    check('tidy：列出条目名供对照', String(tidy.json.text).includes('烟测条目'), true);
+    check('tidy：要求角色字段归位', String(tidy.json.text).includes('appearance'), true);
+    check('tidy：给出条目数', tidy.json.entries, 2);
+    const badTidy = await callPost('/rp-tools/tidy', { sessionId: IMPORT_SID }, 'http://evil.example');
+    check('tidy：跨域被拒', badTidy.status, 403);
+  }
+
   // ── 世界书编辑（面板里的「编辑 / 常驻开关 / 新建 / 删除」走这条路由）──────
   {
     const read = () => readFileSync(LORE_FILE, 'utf8');

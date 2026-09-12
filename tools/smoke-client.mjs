@@ -225,6 +225,14 @@ globalThis.fetch = async (url, options = {}) => {
       note: '只有命中的条目才进每轮上下文。',
     });
   }
+  // 设定整备指令：宿主编好措辞与条目清单，界面只负责填进输入框
+  if (target === '/rp-tools/tidy') {
+    return reply({
+      ok: true,
+      entries: 2,
+      text: '【设定整备】现在做一次设定整理：只做这一件事，做完回一行摘要，然后停下等玩家。\n① 角色卡字段归位\n② 世界书过滤',
+    });
+  }
   if (target.startsWith('/rp-tools/session')) {
     return reply({
       ok: true, isDm: true, preset: 'dm',
@@ -689,6 +697,20 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.ok(textOf(panel2).includes('＋ 新建条目'), '面板应有新建条目入口');
   const editBtns = findAll(panel2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '详情 / 编辑');
   assert.equal(editBtns.length, 2, '每个条目应有「详情 / 编辑」按钮（空壳条目默认不列）');
+
+  // 「整理设定」按钮：宿主给措辞（含世界书路径与条目清单），界面填进输入框、**不自动发送**
+  {
+    assert.ok(text.includes('整理设定'), '世界书卡片应有「整理设定」按钮');
+    const tidyBtn = findAll(panel2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '整理设定')[0];
+    assert.ok(tidyBtn, '「整理设定」应是个可点按钮');
+    const before = actions.drafts.length;
+    const submittedBefore = actions.submitted;
+    await tidyBtn.props.onClick();
+    await tick(50);
+    assert.ok(actions.drafts.length > before, '点「整理设定」应把指令填进输入框（setDraft）');
+    assert.ok(String(actions.drafts.at(-1)).includes('【设定整备】'), '填进去的是宿主的整备指令正文');
+    assert.equal(actions.submitted, submittedBefore, '**不自动发送**：先进输入框让用户确认/修改');
+  }
 
   // 点「显示 / 清理」→ 空条目才出现在列表里（带「空」徽标，标题划线）
   const showBtn = findAll(panel2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '显示 / 清理')[0];

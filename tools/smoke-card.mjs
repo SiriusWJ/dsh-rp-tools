@@ -14,7 +14,7 @@ import { pathToFileURL } from 'node:url';
 const here = new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const mod = (p) => import(pathToFileURL(join(here, '..', 'lib', p)).href);
 const { readPngTextChunks, decodeCardPng } = await mod('card-png.js');
-const { buildImport, worldBookMarkdown, pickGreeting, isAdText, cardToCharacter, cardToMarkdown, buildOpeningPrompt, resolvePlaceholders, describePlaceholders, localizeAttributes, discoverMacros, collectCardText, isJunkLoreBody, loreKindOf } = await mod('card-import.js');
+const { buildImport, worldBookMarkdown, pickGreeting, isAdText, cardToCharacter, cardToMarkdown, buildOpeningPrompt, buildTidyPrompt, resolvePlaceholders, describePlaceholders, localizeAttributes, discoverMacros, collectCardText, isJunkLoreBody, loreKindOf } = await mod('card-import.js');
 
 let pass = 0; let fail = 0;
 const check = (name, got, want) => {
@@ -362,9 +362,36 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
   check('开场指令：带立绘路径', opening.includes('rp-cards/测试卡.png'), true);
   check('开场指令：要求给带 action 的选项', opening.includes('action'), true);
   check('开场指令：附上卡组开场白作参考', opening.includes('开场白一'), true);
+  // 设定整备（用户要求：「开局第一轮提示 DM 完善角色卡和世界书」/「这样就可以过滤无关项了」）
+  check('开场指令：带上设定整备', opening.includes('【设定整备】'), true);
+  check('整备：要求角色字段归位', opening.includes('把外貌搬进 appearance'), true);
+  check('整备：点名要删的是「会过期」的条目', opening.includes('当前进度 / 前情提要 / 历史纪要 / 物品清单'), true);
+  check('整备：要求删掉空壳条目', opening.includes('空的 markdown 代码块'), true);
+  check('整备：要求补触发词', opening.includes('玩家真的会说出口'), true);
+  check('整备：常驻只留核心的 1-3 条', opening.includes('只留给真正的核心设定'), true);
+  check('整备：不许动玩家手写的条目', opening.includes('玩家手写的条目与注释不要动'), true);
+  check('整备：强调只搬家不缩写', opening.includes('只搬家、不缩写、不自己编'), true);
+  check('整备：带上世界书文件路径', opening.includes('rp-worldbook.md'), true);
   const bare = buildOpeningPrompt({ character: { name: '无开场' }, stats: {}, }, {});
   check('开场指令：无开场白时不出现参考段', bare.includes('只作场景与文风参考'), false);
   check('开场指令：缺文件名时有兜底', bare.includes('rp-worldbook.md'), true);
+  check('开场指令：可以整备（历史行为不变）', bare.includes('【设定整备】'), true);
+
+  // 已开局的会话让面板再发一次：同一段措辞，但语气是「现在做」而不是「开局顺手做」
+  const tidyNow = buildTidyPrompt({
+    worldFile: 'D:/Story/rp-sessions/abc/rp-worldbook.md',
+    character: '祁俊',
+    loreTitles: ['世界总纲', '当前进度'],
+    when: 'now',
+  });
+  check('整备指令（当下）：说明只做这一件事', tidyNow.includes('只做这一件事'), true);
+  check('整备指令（当下）：不给「开局顺手做」的说法', tidyNow.includes('开场画面之后'), false);
+  check('整备指令：列出条目名供对照', tidyNow.includes('世界总纲、当前进度'), true);
+  check('整备指令：带上本会话世界书路径', tidyNow.includes('rp-sessions/abc/rp-worldbook.md'), true);
+  check('整备指令：指名角色卡', tidyNow.includes('《祁俊》'), true);
+  // 关掉整备 = 老行为（给测试与将来留一个开关）
+  const noTidy = buildOpeningPrompt({ character: { name: 'x' }, stats: {} }, { tidy: false });
+  check('开场指令：tidy=false 时不带整备段', noTidy.includes('【设定整备】'), false);
 
   // ⚠️ 回归：截断绝不能往引用正文里插「（已截断）」这类元信息
   // —— 模型会把它当叙事照念（用户实测：DM 第一条回复里原样出现了那行字）。
