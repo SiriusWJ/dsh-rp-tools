@@ -600,6 +600,10 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.ok(formText.includes('删除条目'), '详情里应有删除');
   assert.ok(text.includes('世界设定'), '卡片标题应是「世界设定」');
   assert.equal(text.includes('世界 / 战役设定'), false, '不该再出现旧标题');
+  // 诊断行：把「界面看到的」和「宿主说的」摆在一起。导入入口两度消失都栽在这两个值不一致上，
+  // 留着它下次能一眼看出是哪边不对（这行本身也是「宿主说了算」那条路的现场证据）。
+  assert.ok(text.includes('入口判据'), '面板里应有入口判据诊断行');
+  assert.ok(text.includes('宿主：预设'), '诊断行要显示宿主侧的预设');
   // 「看不全」那次的教训：右侧栏很窄，正文框必须给足高度，列表也要按视口给高度
   assert.ok(/\.rpt \.loreform textarea\.lorebody \{[^}]*min-height:\s*2\d\dpx/.test(style.textContent),
     '正文输入框要有足够高度（≥200px）');
@@ -623,8 +627,39 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.equal(lorePost.body.action, 'update', '编辑已有条目应走 update');
   assert.equal(lorePost.body.title, '长安城', 'update 应带上原名（改名时用它定位）');
   assert.equal(lorePost.body.entry.constant, true, '勾选状态应写进 constant');
-}
 
+  // ★ 面板里的故事书导入：chip 消失时的保底通道，展开后必须真的能走完「列卡库 → 选卡 → 导入按钮」。
+  // （chip 的可见性依赖投影+宿主两侧判定，历史上两度消失；而且会话一旦开局 chip 就没了，
+  //   但「再导一张卡」是开工之后才有的需求 —— 这条通道不判定预设/开局。）
+  {
+    const openLib = findAll(panel2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '展开卡库');
+    assert.equal(openLib.length, 1, '面板里应有「展开卡库」入口');
+    await openLib[0].props.onClick();
+    const asPanel = () => render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    // 展开后要等「卡库列表」这一跳回来（定长 tick 不够稳，轮询到出现为止）
+    let withImport = asPanel();
+    for (let i = 0; i < 14 && !textOf(withImport).includes('3269'); i++) {
+      await tick(30);
+      withImport = asPanel();
+    }
+    assert.ok(textOf(withImport).includes('3269'), `展开后应列出卡库（实际：${textOf(withImport).slice(0, 120)}）`);
+    const items = byClass(withImport, 'item');
+    assert.ok(items.length >= 1, '卡库里的卡应能选');
+    items[0].props.onClick();
+    let picked = asPanel();
+    for (let i = 0; i < 14 && !textOf(picked).includes('导入并开始'); i++) {
+      await tick(30);
+      picked = asPanel();
+    }
+    assert.ok(textOf(picked).includes('导入并开始') || textOf(picked).includes('新建会话并导入'),
+      '面板里选完卡也要有导入按钮');
+  }
+}
 // ── 关键断言 ⑤：会话工作区「界面不知道」时必须回宿主问 ──────────────────────
 // 真机上就是这么没的：会话列表投影里没有 cwd（刚新建 / 列表还没回来 / 重启后恢复），
 // 而宿主那边也只记内存。两处都不知道 → 卡库根落空。这里钉住界面这一半的兜底：
@@ -683,12 +718,19 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.equal(byClass(await waitFor(startedBlank, 1), 'rpc-chip').length, 1,
     '摘要说已开局、宿主说没开局时，应以宿主为准');
 
-  // ③ 反向：宿主说真的开局了 → 必须藏起来（别把入口挂在已开局的会话上）
+  // ③ 两侧都说「已开局」→ 藏起来（别把入口挂在已开局的会话上）
   rt.cells = [];
   gateReply = { ok: true, dm: true, started: true };
-  const reallyStarted = () => propsFor({ blank: true, preset: 'dm', sid: 'session-really-started' });
+  const reallyStarted = () => propsFor({ blank: false, preset: 'dm', sid: 'session-really-started' });
   assert.equal(byClass(await waitFor(reallyStarted, 0), 'rpc-chip').length, 0,
-    '宿主说已开局 → 即使投影说没开局也要藏起来');
+    '两侧都说已开局 → 入口必须藏起来');
+
+  // ④ 只有一侧说已开局 → **显示**。方向是刻意的：入口少显示一次用户就找不回来
+  //    （连着报过两次「按钮不见了」），多显示一次最坏是点进去发现要新建会话。
+  rt.cells = [];
+  const splitVerdict = () => propsFor({ blank: true, preset: 'dm', sid: 'session-split-verdict' });
+  assert.equal(byClass(await waitFor(splitVerdict, 1), 'rpc-chip').length, 1,
+    '界面说未开局、宿主说已开局时宁可显示（用户找不回入口的代价更大）');
   gateReply = { ok: true, dm: true, started: false };
 }
 

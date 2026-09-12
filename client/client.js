@@ -654,7 +654,7 @@ window.__ModuleLoader__.load({
     // ── 会话 RP 面板：两种外壳共用同一份内容 ────────────────────────────────
     //   variant='float'（默认）：点头部按钮弹出的浮层，自带关闭按钮
     //   variant='embed'        ：挂在右侧栏页签里，由右栏自己管关闭/收起
-    function RpSessionOverlay({ sessionId, onClose, variant }) {
+    function RpSessionOverlay({ sessionId, onClose, variant, ...props }) {
       const embed = variant === 'embed';
       const [state, setState] = React.useState(null);
       const [draft, setDraft] = React.useState(null);
@@ -668,6 +668,11 @@ window.__ModuleLoader__.load({
       /** 正在编辑的世界书条目草稿：{ title(原值), keysText, constant, order, probability, body, isNew } */
       const [loreEdit, setLoreEdit] = React.useState(null);
       const [loreQuery, setLoreQuery] = React.useState('');
+      // 宿主对「这个会话是不是 dm / 有没有开局」的答复：面板里显示一行诊断，
+      // 也是导入入口的第二条判据（见 dock 里的说明）。
+      const [gate, setGate] = React.useState(null);
+      // 面板里的故事书导入：默认收起（面板已经很满，卡库列表又高）
+      const [importOpen, setImportOpen] = React.useState(false);
       const [tableDraft, setTableDraft] = React.useState({ name: '', dice: '', entries: '' });
       // 新增宏的临时输入 + 全局玩家称呼（面板里 {{user}} 留空的说明要用）
       const [newMacroName, setNewMacroName] = React.useState('');
@@ -679,6 +684,18 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => { injectStyles(); void reload(); }, [sessionId]);
 
+      // 界面侧的判据（与 dock 里的快速路径同源）：只用来和宿主答复对照着显示。
+      // 必须用**原始值**选择器，否则每次 store 变更都产生新引用 → 无限重渲染。
+      const clientPreset = typeof props?.useSessions === 'function'
+        ? props.useSessions((s) => {
+          const v = sessionId ? s?.byId?.[sessionId]?.projectionValues?.agentPreset : undefined;
+          return typeof v === 'string' ? v : '';
+        })
+        : '';
+      const clientBlank = typeof props?.useSessions === 'function'
+        ? props.useSessions((s) => (sessionId ? s?.byId?.[sessionId]?.blank : undefined))
+        : undefined;
+
       async function reload() {
         setBusy('load');
         try {
@@ -689,6 +706,10 @@ window.__ModuleLoader__.load({
           setGlobalUserLabel(String(global?.config?.cards?.userLabel ?? ''));
           setDraft(JSON.parse(JSON.stringify(data.session)));
           setMsg(null);
+          // 诊断：把「界面看到的预设」和「宿主说的预设/是否开局」都记下来。
+          // 导入入口的可见性一度只依赖客户端投影，而它会被切预设清空 —— 这一行是为了
+          // 下次再出「入口不见了」时能一眼看出是哪一侧的值不对，而不是靠猜。
+          try { setGate(await API.gate(sessionId)); } catch { setGate(null); }
           // 世界书条目单独取（放在工作区的文件里，不在会话配置里）
           try {
             const l = await API.lore(sessionId);
@@ -980,6 +1001,28 @@ window.__ModuleLoader__.load({
           embed ? null : h('button', { key: 'x', onClick: onClose }, '关闭'),
         ]),
         msg ? h('div', { key: 'msg', className: 'msg' }, msg.text) : null,
+        // 诊断行：导入入口的可见性历史上就看这两侧的值，出问题时一眼能看出是哪边不对
+        h('div', { key: 'diag', className: 'dim' }, `入口判据 — 界面：预设「${clientPreset || '空'}」/${clientBlank === false ? '已开局' : clientBlank === true ? '未开局' : '未知'}；宿主：预设「${gate?.preset || '未知'}」/${gate ? (gate.started ? '已开局' : '未开局') : '未答'}`),
+
+        // ── PNG 故事书导入（面板里的常驻入口）──────────────────────────────
+        // 工作区那一行的 chip 只在「未开局的 DM 新会话」出现，一旦会话开过局它就没了；
+        // 而「再导一张卡 / 换一本故事书」是开工之后才有的需求。所以面板里给一条常驻入口 ——
+        // 它同时也是 chip 判定出问题时的保底通道（chip 消失过两次，用户根本找不回来）。
+        h('div', { key: 'import', className: 'card' }, [
+          h('div', { key: 'h', className: 'row' }, [
+            h('h4', { key: 't' }, 'PNG 故事书导入'),
+            h('span', { key: 'sep', className: 'sep' }),
+            h('button', { key: 'b', className: 'tiny', onClick: () => setImportOpen((v) => !v) }, importOpen ? '收起卡库' : '展开卡库'),
+          ]),
+          h('div', { key: 'd', className: 'dim' },
+            '世界书按标题追加合并（不动你手写的条目）；卡全文与卡面落到本会话目录。'),
+          importOpen
+            ? h(RpCardImport, {
+              sessionId, variant: 'embed',
+              useSessions: props?.useSessions, useInput: props?.useInput, inputActions: props?.inputActions,
+            })
+            : null,
+        ]),
 
         h('div', { key: 'world', className: 'card' }, [
           h('h4', { key: 't' }, '世界设定'),
@@ -1459,7 +1502,12 @@ window.__ModuleLoader__.load({
           h('div', { key: 'm', className: 'dim' }, known ? '当前会话不是 DM 会话，RP 面板不可用。' : '正在识别会话…'),
         ]);
       }
-      return h(RpSessionOverlay, { sessionId, variant: 'embed' });
+      return h(RpSessionOverlay, {
+        sessionId, variant: 'embed',
+        // 把槽位这几件「会话相关」的道具透传下去：面板里的诊断行要读界面侧的预设/开局状态，
+        // 拿来和宿主答复对照（导入入口的可见性历史上就栽在这两个值不一致上）。
+        useSessions: props?.useSessions, useInput: props?.useInput, inputActions: props?.inputActions,
+      });
     }
 
     /** 面板页签在右栏条上的小标题。 */
@@ -1614,6 +1662,12 @@ window.__ModuleLoader__.load({
      *      「不要再问世界从哪来」，否则 dm 预设的 persona 会先反问玩家一遍。
      */
     function RpCardImport(props) {
+      // 两种挂法共用同一套逻辑与界面：
+      //   dock  —— 工作区那一行的 chip（只在未开局的 DM 新会话上出现，见下面的可见性判定）
+      //   embed —— 挂在 RP 面板里（会话进行中也能导入）。**这是入口的保底通道**：
+      //            chip 的可见性依赖投影/宿主两侧的判定，历史上两度因为那两侧不一致而消失，
+      //            面板里的这条只要你在 DM 会话里就一定能打开（头部 🎲 RP 入口是另一条独立判定）。
+      const embedMode = props?.variant === 'embed';
       // 异步回调里要拿到最新 props（React 的闭包会留住旧值）
       const propsRef = React.useRef(props);
       propsRef.current = props;
@@ -1621,7 +1675,7 @@ window.__ModuleLoader__.load({
 
       // 一律选**原始值**（对象选择器会在每次 store 变更时产生新引用 → 无限重渲染）
       const currentId = typeof props?.useSessions === 'function' ? props.useSessions((s) => s?.current) : undefined;
-      const sessionId = [props?.sessionId, currentId].find((v) => typeof v === 'string' && v !== '') || '';
+      const sessionId = [props?.sessionId, currentId, props?.session?.id].find((v) => typeof v === 'string' && v !== '') || '';
       // 摘要里的 blank：**只把明确的 false 当「已开局」**。之前写成 `=== true`，
       // 于是摘要还没到（重挂载后那一瞬）就被当成「不是新会话」→ 入口闪一下就没。
       const blankRaw = typeof props?.useSessions === 'function'
@@ -1668,9 +1722,13 @@ window.__ModuleLoader__.load({
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [sessionId, blankRaw, agentPreset]);
       const gate = gateState && gateState.key === gateKey ? gateState.value : null;
-      // 宿主说了算；宿主还没回话时用投影（投影说「没开局」就直接显示，说已开局也先问一问）
-      const dmNow = gate ? gate.dm : storeDm;
-      const startedNow = gate ? gate.started : storeStarted;
+      // 两个来源各说一半时**都往「显示」那边靠**：
+      //  · dm  ：任一来源说是 dm 就算 dm（客户端投影会被切预设清空，宿主投影也可能落后）
+      //  · 开局：只有两个来源**都**说已开局才收起入口
+      // 方向是刻意的 —— 入口少显示一次，用户就再也找不回来（这正是他报的 bug）；
+      // 多显示一次最坏是点进去发现要新建会话，导入流程自己会处理那条路。
+      const dmNow = gate ? (gate.dm || storeDm) : storeDm;
+      const startedNow = gate ? (gate.started && storeStarted) : storeStarted;
       const unstarted = !startedNow;
       const draftText = typeof props?.useInput === 'function' ? props.useInput((s) => s?.draft ?? '') : '';
       // 最新值放一份在 ref 里：startSession 之后的那次导入要用**新会话**的 cwd
@@ -1679,7 +1737,7 @@ window.__ModuleLoader__.load({
       // 卡库/卡面请求要用同一个 cwd（propsRef 在异步回调里是唯一能取到最新值的地方）
       propsRef.current = { ...props, _cwd: cwd };
 
-      const [open, setOpen] = React.useState(false);
+      const [open, setOpen] = React.useState(embedMode);   // embed 模式常开（面板里已经由外层收起/展开）
       const [q, setQ] = React.useState('');
       const [category, setCategory] = React.useState('');
       const [lib, setLib] = React.useState(null);
@@ -1912,7 +1970,8 @@ window.__ModuleLoader__.load({
       // 这时把面板藏掉会让用户看不到结果（`keep` 一直维持到用户自己收起）。
       const keepOpen = open && (busy === 'import' || result !== null);
       if (!sessionId) return null;
-      if (!(unstarted && dmNow) && !keepOpen) return null;
+      // embed 模式不受「未开局的 DM 新会话」这条限制：它就在 RP 面板里，用户是主动打开的
+      if (!embedMode && !(unstarted && dmNow) && !keepOpen) return null;
 
       // 入口要待在「工作区 / DM 主持人」那一行上，而不是自己占一行。
       // 那一行的两个座位（`conversation.hero.workspace` / `conversation.hero.agentPreset`）
@@ -2051,10 +2110,9 @@ window.__ModuleLoader__.load({
           : null,
       ]) : null;
 
-      return h('div', { className: 'rpc', ref: rootRef }, [
-        holder,
-        entry,
-        h('div', { key: 'panel', className: 'panel' }, [
+      // 面板主体：dock 与 embed 两种挂法共用（曾经的 chip 判定出过两次事故，
+      // 所以这条通道必须在两个入口都能用）。
+      const panelBody = h('div', { key: 'panel', className: 'panel' }, [
           h('div', { key: 'bar', className: 'row' }, [
             h('input', {
               key: 'q', type: 'search', value: q, placeholder: '搜卡名 / 作者 / 标签（回车或停顿即搜）',
@@ -2093,8 +2151,11 @@ window.__ModuleLoader__.load({
             h('div', { key: 'right', style: { display: 'flex', flexDirection: 'column', gap: 8 } }, [previewCard, resultCard]),
           ]),
           msg ? h('div', { key: 'msg', className: `msg ${msg.kind === 'err' ? 'err' : msg.kind === 'warn' ? '' : 'ok'}` }, msg.text) : null,
-        ]),
-      ]);
+        ]);
+
+      // embed：只出面板块（外面的 RP 面板负责收起/展开，也不再判定预设/开局）
+      if (embedMode) return h('div', { className: 'rpc embed' }, [panelBody]);
+      return h('div', { className: 'rpc', ref: rootRef }, [holder, entry, panelBody]);
     }
 
     const name = 'dsh-rp-tools';
