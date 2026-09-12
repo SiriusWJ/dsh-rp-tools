@@ -1086,6 +1086,57 @@ window.__ModuleLoader__.load({
     let pendingImport = null;
 
     /**
+     * 找到「工作区 / DM 主持人」那一行，并决定入口怎么贴上去。
+     *
+     * 为什么要在 DOM 上找：那一行的两个座位都是 single 且被官方插件占满，没有第三个槽位。
+     * 为什么不只看「上一兄弟」：dock 的条目外面常有一层包装（每个 cell 一个容器），
+     * 所以真正的那一行可能在**祖先的**上一兄弟上 —— 逐层往上找，找到就停。
+     *
+     * 三种结果：
+     * - `{kind:'portal', row}`：那把 chip 用 portal 送进这一行（最好，正经的第三个 chip）；
+     * - `{kind:'fixed', style}`：拿到行但没法 portal（没有 react-dom）→ 量出位置把 chip 贴上去；
+     * - `null`：找不到 → 退回自己占一行（宁可难看也别消失）。
+     */
+    function findHeroRowSlot(root) {
+      if (!root || typeof root !== 'object') return null;
+      let node = root;
+      let row = null;
+      for (let up = 0; up < 4 && node && !row; up++) {
+        let prev = node.previousElementSibling;
+        while (prev && !row) {
+          // 校验：里面已经有 chip（button），而且是个矮行（那一行只有 chip，没有大块内容）
+          try {
+            const hasButton = typeof prev.querySelector === 'function' && prev.querySelector('button');
+            const rect = typeof prev.getBoundingClientRect === 'function' ? prev.getBoundingClientRect() : null;
+            const short = !rect || !rect.height || rect.height <= 64;
+            if (hasButton && short) row = prev;
+          } catch { /* 这个候选不可用，继续往左找 */ }
+          prev = prev.previousElementSibling;
+        }
+        node = node.parentElement;
+      }
+      if (!row) return null;
+      if (ReactDOM && typeof ReactDOM.createPortal === 'function') return { kind: 'portal', row };
+      try {
+        const rect = typeof row.getBoundingClientRect === 'function' ? row.getBoundingClientRect() : null;
+        if (!rect || !rect.width) return null;
+        // 贴在那一行的最右端：纵向与行对齐，横向接在最后一个 chip 后面
+        const kids = row.children ? Array.from(row.children) : [];
+        const last = kids.length ? kids[kids.length - 1] : row;
+        const lastRect = typeof last?.getBoundingClientRect === 'function' ? last.getBoundingClientRect() : rect;
+        return {
+          kind: 'fixed',
+          style: {
+            position: 'fixed',
+            left: `${Math.round((lastRect.right || rect.right || rect.left) + 6)}px`,
+            top: `${Math.round(rect.top + Math.max(0, (rect.height - 24) / 2))}px`,
+            zIndex: 5,
+          },
+        };
+      } catch { return null; }
+    }
+
+    /**
      * 在「工作区/输入框上方」那一行放一个折叠入口：点开 → 列卡库 → 选卡 → 导入并开始。
      *
      * 完整流程（每一步都有它必须存在的理由）：
@@ -1304,44 +1355,36 @@ window.__ModuleLoader__.load({
       if (!sessionId) return null;
       if (!(blank && isDmNow) && !keepOpen) return null;
 
-      // 入口挂在「工作区 / DM 主持人」那一行上，而不是自己占一行。
-      // 那一行（heroWorkspaceRow）里的两个座位 `conversation.hero.workspace` 与
-      // `conversation.hero.agentPreset` 都是 **single 且已被官方插件占满**，
-      // 没有第三个槽位可注册；而我们的 dock 条目正好**紧挨在那一行后面**渲染，
-      // 所以用 portal 把 chip 放进它的 DOM 里（找不到就退回自己占一行，不至于消失）。
+      // 入口要待在「工作区 / DM 主持人」那一行上，而不是自己占一行。
+      // 那一行的两个座位（`conversation.hero.workspace` / `conversation.hero.agentPreset`）
+      // 都是 **single 且已被官方插件占满**，没有第三个槽位可注册 ——
+      // 所以只能在 DOM 上想办法：**优先**用 portal 把 chip 送进那一行（它是 flex 行，
+      // 送进去就是正经的第三个 chip）；拿不到 react-dom（或找不到那一行）时退回
+      // 「量出那一行的位置、把 chip 固定在它右边」，最差也只是自己占一行，不会消失。
       const rootRef = React.useRef(null);
-      const [rowTarget, setRowTarget] = React.useState(undefined);
+      const [slot, setSlot] = React.useState(undefined);   // undefined=还没量 / null=找不到 / {kind,row|rect}
       React.useLayoutEffect(() => {
-        if (rowTarget !== undefined) return;
-        let target = null;
-        try {
-          // ⚠️ 要看的是**本条目根元素**的上一兄弟（那一行），不是根元素内部那个占位的上一兄弟
-          // —— 第一版就是在这里看错了一层，于是永远定位失败、chip 一直留在自己那一行。
-          const root = rootRef.current;
-          const row = root?.previousElementSibling;
-          // 校验：同一父节点下的兄弟，且里面已经有 chip（button）—— 结构变了就宁可不搬
-          if (row && root.parentElement && row.parentElement === root.parentElement && row.querySelector('button')) {
-            target = row;
-          }
-        } catch { target = null; }
-        setRowTarget(target);
-      }, [rowTarget, sessionId]);
+        if (slot !== undefined) return;
+        setSlot(findHeroRowSlot(rootRef.current));
+      }, [slot, sessionId]);
 
+      const isRow = slot?.kind === 'portal';
       const chip = h('button', {
         key: 'chip', type: 'button', className: 'chip',
         'data-open': open ? 'true' : 'false',
-        // 送进那一行时用矮一号的规格（那边是 24~28px 的小 chip 行）
-        'data-row': rowTarget ? 'true' : 'false',
+        // 进那一行时用矮一号的规格（那边是 24~28px 的小 chip 行）
+        'data-row': slot ? 'true' : 'false',
         'aria-expanded': open,
+        style: slot?.kind === 'fixed' ? slot.style : undefined,
         onClick: () => setOpen((v) => !v),
         title: '从本地 PNG 角色卡库导入一本故事书：世界书写进工作区，自动开场（只在未开局的 DM 新会话上出现）',
       }, [h('span', { key: 'g' }, '📖'), h('span', { key: 't' }, open ? '收起' : '导入故事书')]);
 
-      // 定位用的空节点：没有它，根元素在「chip 被 portal 走」之后就只剩面板了
+      // 定位用的空节点：chip 被送走之后，根元素里还得留个锚
       const holder = h('span', { key: 'holder', className: 'rpc-holder', 'aria-hidden': 'true' });
-      const entry = (ReactDOM && rowTarget === undefined)
-        ? null                                  // 首帧先不画，等 useLayoutEffect 定位（它在绘制前跑，不会闪）
-        : (ReactDOM && rowTarget ? ReactDOM.createPortal(chip, rowTarget) : chip);
+      const entry = slot === undefined
+        ? null                                     // 首帧先不画，等 useLayoutEffect 量完（它在绘制前跑，不会闪）
+        : (slot?.kind === 'portal' ? ReactDOM.createPortal(chip, slot.row) : chip);
 
       if (!open) {
         return h('div', { className: 'rpc', ref: rootRef }, [holder, entry]);

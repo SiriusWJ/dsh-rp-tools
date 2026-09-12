@@ -73,14 +73,30 @@ const React = {
 // 结构照抄真实布局（这一层必须忠实，否则测不出「看错了哪一级兄弟」这类错）：
 //   composerStack
 //     ├─ heroWorkspaceRow   ← 里面已经有 chip（button）
-//     └─ .rpc（我们的条目根元素）      ← previousElementSibling 就是上面那一行
-//          └─ .rpc-holder（占位）      ← previousElementSibling 是 null！
+//     └─ wrapper（dock 每个条目一层容器）
+//          └─ .rpc（我们的条目根元素）
+//               └─ .rpc-holder（占位）   ← 它的 previousElementSibling 是 null！
+// domVariant 用来模拟「那一行是不是根元素的直接上一兄弟」两种宿主实现。
+let domVariant = 'direct';
 const stackEl = { children: [] };
-const rowEl = { parentElement: stackEl, previousElementSibling: null, querySelector: () => ({ tag: 'button' }) };
-const holderFake = { parentElement: null, previousElementSibling: null };   // .rpc 内部的占位
-const rootEl = { parentElement: stackEl, previousElementSibling: rowEl, children: [holderFake] };
+const rowEl = {
+  parentElement: null,
+  previousElementSibling: null,
+  querySelector: () => ({ tag: 'button' }),
+  children: [],
+  getBoundingClientRect: () => ({ top: 100, height: 28, left: 20, right: 300, width: 280 }),
+};
+const wrapperEl = { parentElement: stackEl, previousElementSibling: rowEl, children: [] };
+const holderFake = { parentElement: null, previousElementSibling: null };
+const rootEl = {
+  parentElement: wrapperEl,
+  children: [holderFake],
+  get previousElementSibling() { return domVariant === 'direct' ? rowEl : null; },
+};
 holderFake.parentElement = rootEl;
-stackEl.children = [rowEl, rootEl];
+rowEl.parentElement = stackEl;
+stackEl.children = [rowEl, wrapperEl];
+wrapperEl.children = [rootEl];
 const ReactDOM = {
   createPortal: (child, container) => ({ type: 'Portal', props: { container }, children: flatten([child]) }),
 };
@@ -273,12 +289,12 @@ function renderNode(node) {
  * React 的 useLayoutEffect 在**绘制前**跑，所以这里循环到稳定，
  * 组件的「先定位、再 portal」两步就都能被观察到。
  */
-const render = (props) => {
+const render = (props, Component = dockReg.component) => {
   let tree = null;
   for (let pass = 0; pass < 4; pass++) {
     rt.dirty = false;
     resetSignals();
-    tree = renderNode(dockReg.component(props));
+    tree = renderNode(Component(props));
     flushEffects();
     if (!rt.dirty) break;
   }
@@ -355,6 +371,45 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   // ⑦ 收起之后，入口就该彻底消失（会话已经不是新会话了）
   byClass(after, 'chip')[0].props.onClick();
   assert.equal(render(propsFor({ blank: false, preset: 'dm' })), null, '收起后入口应消失（已开局且非空白）');
+}
+
+// ── 关键断言 ③：两种宿主差异都要能贴到那一行 ───────────────────────────────
+{
+  const DM_PROPS = () => propsFor({ blank: true, preset: 'dm' });
+
+  // ① dock 的条目外面套了一层容器（那一行不是根元素的直接上一兄弟）→ 要逐层往上找
+  domVariant = 'wrapped';
+  rt.cells = [];                       // 换一种 DOM 布局 = 重新挂载组件
+  const wrapped = render(DM_PROPS());
+  const portalsW = findAll(wrapped, (n) => n.type === 'Portal');
+  assert.equal(portalsW.length, 1, '套了容器也要能找到那一行（逐层往上找）');
+  assert.equal(portalsW[0].props.container, rowEl, 'portal 目标仍应是那一行');
+  domVariant = 'direct';
+  rt.cells = [];
+
+  // ② 拿不到 react-dom → 退回「量出那一行的位置、把 chip 贴上去」，而不是自己占一行
+  (0, eval)(source);                   // 再求值一次 bundle，拿一个新的 factory
+  const plugin2 = captured.factory((name) => {
+    if (name === 'react') return React;
+    if (name === 'react-dom') throw new Error('no react-dom in this宿主');
+    throw new Error(`未预期的 require: ${name}`);
+  });
+  const regs2 = [];
+  plugin2.apply({
+    slots: { inject: (k, cb) => { cb(); return () => {}; }, register: (spec, c) => { regs2.push({ ...spec, c }); return () => {}; } },
+    inject: () => () => {},
+    effect: () => () => {},
+    get: () => undefined,
+  });
+  const dock2 = regs2.find((r) => r.name === 'conversation.input.dock');
+  rt.cells = [];
+  const noDom = render(DM_PROPS(), dock2.c);   // 注意：渲染的是**第二个实例**的组件
+  const chips2 = byClass(noDom, 'chip');
+  assert.equal(chips2.length, 1, '拿不到 react-dom 时 chip 仍要在（不能消失）');
+  assert.equal(findAll(noDom, (n) => n.type === 'Portal').length, 0, '没有 react-dom 时不能走 portal');
+  assert.equal(chips2[0].props['data-row'], 'true', '应仍按「在那一行里」的样式渲染');
+  assert.equal(chips2[0].props.style?.position, 'fixed', '没有 portal 就用量出来的位置贴上去');
+  assert.equal(chips2[0].props.style?.left, '306px', '横向应接在那一行最后一个 chip 后面（right+6）');
 }
 
 console.log('客户端冒烟测试通过：');
