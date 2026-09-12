@@ -61,6 +61,49 @@ export function makePng(chunks) {
   return Buffer.concat([PNG_SIG, chunk('IHDR', ihdr), ...chunks, chunk('IEND', Buffer.alloc(0))]);
 }
 
+/**
+ * 造一张**真的** RGBA 图（带 IDAT 像素数据）。
+ *
+ * `simpleCardPng` 那种卡只塞文本块、没有像素 —— 测缩略图时必须用这个，
+ * 否则「解码 → 降采样 → 重编码」整条路根本没被走到。
+ *
+ * @param w 宽
+ * @param h 高
+ * @param fill (x, y) => [r, g, b, a?]
+ * @returns 8bit RGBA、非隔行、每行 filter 0 的 PNG
+ */
+export function imagePng(w, h, fill) {
+  const stride = w * 4;
+  const raw = Buffer.alloc((stride + 1) * h);
+  for (let y = 0; y < h; y += 1) {
+    raw[y * (stride + 1)] = 0;                      // filter type 0
+    for (let x = 0; x < w; x += 1) {
+      const [r, g, b, a = 255] = fill(x, y) ?? [0, 0, 0, 255];
+      const at = y * (stride + 1) + 1 + x * 4;
+      raw[at] = r; raw[at + 1] = g; raw[at + 2] = b; raw[at + 3] = a;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; ihdr[9] = 6;                          // 8bit RGBA
+  return Buffer.concat([PNG_SIG, chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+/** 带卡数据的真图（预览/卡面路由的测试用）：在 IHDR 后面插文本块。 */
+export function cardImagePng(name, w = 64, h = 64, extra = {}) {
+  const img = imagePng(w, h, (x, y) => [
+    Math.round(x * (255 / Math.max(1, w - 1))),
+    Math.round(y * (255 / Math.max(1, h - 1))),
+    128, 255,
+  ]);
+  const afterIhdr = 8 + 25;                          // 签名(8) + IHDR 块(4+4+13+4)
+  return Buffer.concat([
+    img.subarray(0, afterIhdr),
+    textChunk('ccv3', card({ name, ...extra }, 'chara_card_v3')),
+    img.subarray(afterIhdr),
+  ]);
+}
+
 /** 把卡对象编成 PNG 文本块里的 base64。`spec` 传 null 得到 v1 形状（字段铺在顶层）。 */
 export function card(data, spec = 'chara_card_v2') {
   return Buffer.from(JSON.stringify(spec ? { spec, data } : data), 'utf8').toString('base64');

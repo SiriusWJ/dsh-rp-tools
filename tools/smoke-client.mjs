@@ -506,6 +506,18 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   tree2 = render(DM_PROPS());
   const previewText = textOf(byClass(tree2, 'prev')[0] ?? tree2);
   assert.ok(previewText.includes('长安'), '预览应显示卡名');
+  // ★ 卡面只在**选中**这张时加载：列表里一张图都不请求，预览里只有这一张。
+  //   （用户明确说「选中再看」——几十张几 MB 的卡同时拉会拖死两端。）
+  const listImgs = findAll(byClass(tree2, 'list')[0] ?? [], (n) => n.type === 'img');
+  assert.equal(listImgs.length, 0, '列表里不该有缩略图（只在选中后加载）');
+  const faceImgs = byClass(tree2, 'face');
+  assert.equal(faceImgs.length, 1, '预览区应有且仅有一张卡面');
+  const faceSrc = String(faceImgs[0].props.src ?? '');
+  assert.ok(faceSrc.startsWith('/rp-tools/card-image?'), '卡面要走宿主的卡面路由');
+  assert.ok(faceSrc.includes('thumb=1'), '卡面要请求服务端降采样版本（卡 PNG 可能几 MB）');
+  assert.ok(faceSrc.includes('width=420'), '降采样宽度要收敛到 420');
+  assert.ok(faceSrc.includes(`sessionId=${SID}`), '卡面请求要带会话身份');
+  assert.equal(faceImgs[0].props.loading, 'lazy', '卡面要懒加载');
   assert.ok(previewText.includes('世界书 12 条'), '预览应显示世界书条数');
   assert.ok(previewText.includes('备用开场白'), '预览应说明开场白来源（被广告污染的 first_mes 不能用）');
   const importBtn = findAll(tree2, (n) => String(n.props?.className ?? '').includes('primary')

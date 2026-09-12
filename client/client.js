@@ -107,7 +107,7 @@ window.__ModuleLoader__.load({
      * 卡面图 URL。卡库默认在**会话工作区**下的 rp-cards/，所以要把 sessionId + cwd 一起带上，
      * 宿主才能把相对路径解析到同一个根（只给 sessionId 也行：宿主会自己查会话的工作区）。
      */
-    const cardImageUrl = (rel, workspace, sessionId) => `/rp-tools/card-image?${qs({ path: rel, workspace, sessionId })}`;
+    const cardImageUrl = (rel, workspace, sessionId, extra) => `/rp-tools/card-image?${qs({ path: rel, workspace, sessionId, ...(extra ?? {}) })}`;
 
     let stylesInjected = false;
     function injectStyles() {
@@ -364,6 +364,10 @@ window.__ModuleLoader__.load({
 .rpc .item .nm { font-size: 12.5px; }
 .rpc .item .mt { font-size: 11px; opacity: .6; }
 .rpc .prev { display: flex; flex-direction: column; gap: 8px; }
+/* 卡面：选中卡片后显示的那张大图。列表里**不**出缩略图（几十张几 MB 的卡同时拉会拖死），
+   只有选中这一张才请求，而且走宿主服务端降采样（thumb=1&width=420）。 */
+.rpc .face { max-width: 100%; max-height: 260px; width: auto; align-self: flex-start;
+  border-radius: 10px; border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent)); }
 .rpc .greet { display: flex; flex-direction: column; gap: 4px; }
 .rpc .macroblk { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 8px;
   background: color-mix(in oklab, currentColor 5%, transparent); }
@@ -2253,6 +2257,17 @@ window.__ModuleLoader__.load({
           + `｜开场白来源：${preview.character?.greetingSource === 'alternate_greetings'
             ? `备用开场白（共 ${preview.character?.greetingAlternatives} 条）`
             : preview.character?.greetingSource === 'first_mes' ? 'first_mes' : '无'}`),
+        // 卡面：**只在选中这张时才加载**（列表里一张图都不请求，避免几十张几 MB 的卡同时拉）。
+        // 走宿主 `thumb=1&width=420` 的服务端降采样 —— 卡 PNG 正文可能有上百万字，
+        // 原图动辄几 MB，预览只需要看一眼封面。解码失败时宿主会回退原图。
+        preview.path
+          ? h('img', {
+            key: 'face', className: 'face',
+            src: cardImageUrl(preview.path, cwd, sessionId, { thumb: '1', width: '420' }),
+            alt: `${preview.name} 卡面`,
+            loading: 'lazy', decoding: 'async',
+          })
+          : null,
         // 卡里常见的占位符：这里摊开给用户看，并解释每一类**怎么被处理**（免得
         // 「我卡里的 {{user}} 怎么没了」「{{char}} 是什么」这类疑问）
         preview.placeholders?.total

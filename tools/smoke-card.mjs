@@ -25,9 +25,71 @@ const check = (name, got, want) => {
 
 // ── 构造 PNG ──────────────────────────────────────────────────────────────
 // chunk 构造器抽在 tools/png-fixture.mjs（smoke-dm 造卡库时用同一份）。
-const { makePng, textChunk, iTXtChunk, zTXtChunk, card } = await import(
+const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng } = await import(
   pathToFileURL(join(here, 'png-fixture.mjs')).href
 );
+
+// ── 卡面缩略图（lib/png-thumb.js）───────────────────────────────────────────
+// 列表/预览都靠它：卡 PNG 单张可能几 MB，不降采样直接给 <img> 会拖死两端。
+// 这里的关键断言是「解码→降采样→重编码」真的走通，以及**不支持时回退**（返回 null）。
+{
+  const { makeThumbnail, pngSize, readPngPixels } = await mod('png-thumb.js');
+  // 64×64 的渐变色块 → 缩到 16 宽（整数倍 4）
+  const src = imagePng(64, 64, (x, y) => [x * 4, y * 4, 128, 255]);
+  check('缩略图：原始尺寸读得出', pngSize(src), { width: 64, height: 64 });
+  const thumb = makeThumbnail(src, 16);
+  check('缩略图：真的产出了一张 PNG', Buffer.isBuffer(thumb) && thumb.subarray(0, 8).toString('latin1') === '\u0089PNG\r\n\u001a\n', true);
+  check('缩略图：宽按整数倍降到 16', pngSize(thumb), { width: 16, height: 16 });
+  check('缩略图：体积显著变小', thumb.length < src.length, true);
+  // 像素级验证：只断言「变小了」会漏掉「整张压成空白色块」这种错
+  check('缩略图：自己能读回像素（自检用）', readPngPixels(src)?.width, 64);
+  const solid = readPngPixels(makeThumbnail(imagePng(8, 8, () => [200, 100, 50, 255]), 4));
+  check('缩略图：纯色块缩完仍是那个颜色（含 alpha 通道）',
+    [solid.width, solid.channels, solid.pixels[0], solid.pixels[1], solid.pixels[2], solid.pixels[3]],
+    [4, 4, 200, 100, 50, 255]);
+  // 左红右蓝：每个 2×2 box 内部同色 → 缩完精确保持左右分界
+  const half = readPngPixels(makeThumbnail(imagePng(8, 8, (x) => (x < 4 ? [255, 0, 0, 255] : [0, 0, 255, 255])), 4));
+  const px = (x, y) => Array.from(half.pixels.subarray((y * 4 + x) * 4, (y * 4 + x) * 4 + 3));
+  check('缩略图：box 平均保留左右分界（左红）', px(0, 0), [255, 0, 0]);
+  check('缩略图：box 平均保留左右分界（右蓝）', px(3, 3), [0, 0, 255]);
+  // 2×2 平均：四个像素分别是黑/白/白/黑 → 结果应为 127/128 灰
+  const mixed = readPngPixels(makeThumbnail(imagePng(2, 2, (x, y) => ((x + y) % 2 === 0 ? [0, 0, 0, 255] : [255, 255, 255, 255])), 1));
+  check('缩略图：确实是取平均（黑白各半 → 中灰）', mixed.pixels[0] >= 120 && mixed.pixels[0] <= 135, true);
+  // 灰度与 RGB 也要能处理（通道数不同）
+  const { chunk: fxChunk } = await import(pathToFileURL(join(here, 'png-fixture.mjs')).href);
+  const { deflateSync } = await import('node:zlib');
+  const grayPng = (() => {
+    const w = 8; const h = 8;
+    const raw = Buffer.alloc((w + 1) * h);
+    for (let y = 0; y < h; y += 1) { raw[y * (w + 1)] = 0; raw.fill(90, y * (w + 1) + 1, (y + 1) * (w + 1)); }
+    const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 0;
+    return Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      fxChunk('IHDR', ihdr),
+      fxChunk('IDAT', deflateSync(raw)),
+      fxChunk('IEND', Buffer.alloc(0)),
+    ]);
+  })();
+  const grayThumb = readPngPixels(makeThumbnail(grayPng, 4));
+  check('缩略图：灰度图也能缩（单通道）', [grayThumb.width, grayThumb.channels, grayThumb.pixels[0]], [4, 1, 90]);
+  // 已经够小 → 不折腾（返回 null 表示「原图就行」）
+  check('缩略图：本来就够小则不重编码', makeThumbnail(imagePng(32, 32, () => [1, 2, 3, 255]), 64), null);
+  // 只塞文本块、没有 IDAT 的卡 PNG（测试夹具的 simpleCardPng）→ 必须回退
+  check('缩略图：没有像素数据时回退（返回 null）', makeThumbnail(makePng([textChunk('ccv3', card({ name: 'x' }))]), 32), null);
+  check('缩略图：不是 PNG 也说 null', makeThumbnail(Buffer.from('not a png')), null);
+  check('缩略图：截断的 PNG 说 null', makeThumbnail(imagePng(64, 64, () => [1, 2, 3, 255]).subarray(0, 60), 16), null);
+  // 16bit（IHDR depth=16）不支持 → 回退（把字节改掉即可，不必造真 16bit 图）
+  const deep = Buffer.from(imagePng(64, 64, () => [1, 2, 3, 255]));
+  deep[8 + 8] = 16;
+  check('缩略图：16bit 图回退', makeThumbnail(deep, 16), null);
+  const interlaced = Buffer.from(imagePng(64, 64, () => [1, 2, 3, 255]));
+  interlaced[8 + 12] = 1;
+  check('缩略图：隔行扫描图回退', makeThumbnail(interlaced, 16), null);
+  // 带卡数据的真图：文本块不影响解码
+  const carded = cardImagePng('烟测卡', 64, 64, { description: '设定' });
+  check('缩略图：带 ccv3 文本块的真图也能缩', pngSize(makeThumbnail(carded, 16)), { width: 16, height: 16 });
+  check('缩略图：带卡的真图缩完还能解码出原尺寸信息', readPngPixels(carded)?.width, 64);
+}
 
 // ── 解码：chunk 遍历与优先级 ───────────────────────────────────────────────
 {

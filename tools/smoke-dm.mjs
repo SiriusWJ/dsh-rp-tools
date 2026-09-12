@@ -117,7 +117,11 @@ function mkRes() {
     out,
     writeHead: (s) => { out.status = s; },
     setHeader: () => {},
-    end: (b) => { out.body = typeof b === 'string' ? b : Buffer.from(b ?? '').toString('utf8'); },
+    end: (b) => {
+      // 图片路由发的是二进制：utf8 转字符串会毁掉字节，所以额外留一份原始 Buffer
+      if (Buffer.isBuffer(b)) { out.raw = b; out.body = b.toString('utf8'); }
+      else { out.raw = Buffer.from(b ?? '', 'utf8'); out.body = typeof b === 'string' ? b : String(b ?? ''); }
+    },
     on: () => {},
   };
 }
@@ -138,6 +142,14 @@ async function callPost(path, body, origin = 'http://127.0.0.1:3080', host = '12
   req.headers = { origin, host, 'content-type': 'application/json' };
   await route.handler(req, res);
   return { status: res.out.status, json: JSON.parse(res.out.body || '{}') };
+}
+/** 取二进制响应（图片路由用；mkRes 已经按 buffer 存了原始字节）。 */
+async function callGetRaw(pathAndQuery) {
+  const [path, query = ''] = String(pathAndQuery).split(/\?(?=[^]*$)/);
+  const route = routes.get(path);
+  const res = mkRes();
+  await route.handler({ method: 'GET', url: `${path}${query ? `?${query}` : ''}`, headers: {} }, res);
+  return { status: res.out.status, bytes: Buffer.isBuffer(res.out.raw) ? res.out.raw : Buffer.from(res.out.body, 'utf8') };
 }
 
 // 全部用随机 id：数据目录是本次运行的临时目录，没有任何历史记录会干扰断言。
@@ -1244,6 +1256,31 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   const imgEscape = mkRes();
   imgRoute.handler({ method: 'GET', url: '/rp-tools/card-image?path=..%2F..%2Fsecret.png', headers: {} }, imgEscape);
   check('卡面路由：路径逃逸被拒', imgEscape.out.status, 400);
+
+  // ── 缩略图（预览区选中卡片时只看一眼封面；卡 PNG 单张可能几 MB）──────────
+  {
+    const { cardImagePng } = await import(pathToFileURL(join(here, 'png-fixture.mjs')).href);
+    const bigRel = 'cards/测试分类/大图卡.png';
+    writeFileSync(join(libRoot, 'cards', '测试分类', '大图卡.png'), cardImagePng('大图卡', 128, 128));
+    const full = await callGetRaw(`/rp-tools/card-image?path=${encodeURIComponent(bigRel)}`);
+    // 取 width=64：源图 128 → 整数倍 2 → 结果 64（宿主对 width 有 48 的下限，别取更小）
+    const small = await callGetRaw(`/rp-tools/card-image?path=${encodeURIComponent(bigRel)}&thumb=1&width=64`);
+    check('缩略图：原图能取到', full.status, 200);
+    check('缩略图：源图尺寸就是 128', full.bytes.readUInt32BE(16), 128);
+    check('缩略图：thumb=1 返回成功', small.status, 200);
+    check('缩略图：体积比原图小', small.bytes.length < full.bytes.length, true);
+    check('缩略图：仍然是一张 PNG', small.bytes.subarray(0, 4).toString('latin1'), '\u0089PNG');
+    // 宽度对齐：thumb 的 IHDR 在签名(8)+长度(4)+类型(4)=16 偏移处放宽度
+    check('缩略图：宽度按 width 降采样', small.bytes.readUInt32BE(16), 64);
+    // 请求的宽度比源图还大 → 没必要缩放，回退原图（同样是 200，字节等于原图）
+    const noNeed = await callGetRaw(`/rp-tools/card-image?path=${encodeURIComponent(bigRel)}&thumb=1&width=1000`);
+    check('缩略图：本来就够大则回退原图', noNeed.bytes.length, full.bytes.length);
+    // 没有像素数据的卡（夹具的 simpleCardPng）→ 回退原图，不许报错
+    const plainFull = await callGetRaw(`/rp-tools/card-image?path=${encodeURIComponent(rel)}`);
+    const plainThumb = await callGetRaw(`/rp-tools/card-image?path=${encodeURIComponent(rel)}&thumb=1&width=64`);
+    check('缩略图：解不了就回退原图（不报错）', plainThumb.status, 200);
+    check('缩略图：回退时字节数与原图一致', plainThumb.bytes.length, plainFull.bytes.length);
+  }
 }
 
 // ── 老配置迁移（放最后：它会**直接改写 styles.json**，前面那些用例依赖完整配置）──
