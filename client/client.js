@@ -113,6 +113,10 @@ window.__ModuleLoader__.load({
       assetSave: (body) => jpost('/rp-tools/assets', body),
       // 通用导入：kind=portrait 且带 name 时同步登记成那个角色的立绘
       assetUpload: (body) => jpost('/rp-tools/asset-upload', body),
+      // 会话包：导出是**下载**（走 <a download>，不用 fetch，也不经过 JSON），快照与导入是 POST
+      snapshots: (params) => jget(`/rp-tools/snapshots?${qs(params)}`),
+      snapshot: (body) => jpost('/rp-tools/snapshot', body),
+      importBundle: (body) => jpost('/rp-tools/import', body),
       // 会话闸门：宿主回答「现在是不是 dm」「有没有真的开局」。
       // 为什么不能只信客户端投影：切预设会重建投影基线、把基线里没有的键**清掉**，
       // 于是 `projectionValues.agentPreset` 变空 → 判定「不是 DM」→ 入口永久消失。
@@ -356,6 +360,14 @@ window.__ModuleLoader__.load({
 .rpt .assetview .assetmeta input[type=text] { width: 100%; }
 .rpt .assetview .assetprompt { font-size: 12px; line-height: 1.5; opacity: .62; word-break: break-word; }
 @media (max-width: 720px) { .rpt .assetview { grid-template-columns: minmax(0, 1fr); } }
+/* 备份：一行按钮 + 恢复点清单。清单要能滚（快照多了不该把面板撑长） */
+.rpt .backupbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.rpt .snaplist { display: flex; flex-direction: column; gap: 4px; max-height: min(30vh, 220px); overflow: auto; }
+.rpt .snaprow {
+  display: flex; gap: 8px; align-items: baseline; font-size: 12px;
+  padding: 2px 0; border-top: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 8%, transparent));
+}
+.rpt .snaprow .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 @media (max-width: 860px) {
   .rpt .chareditform { grid-template-columns: minmax(0, 1fr); }
   .rpt .chareditform .facepreview { position: static; }
@@ -1028,6 +1040,8 @@ window.__ModuleLoader__.load({
       const [assetQuery, setAssetQuery] = React.useState('');
       const [assetEdit, setAssetEdit] = React.useState(null);
       const [assetImportKind, setAssetImportKind] = React.useState('scene');
+      // 会话包：快照列表（面板显示「有几个恢复点」）+ 待恢复的快照
+      const [snaps, setSnaps] = React.useState(null);
       // 详情浮窗里的可编辑副本（**打开时**从那条资源铺一次，不在打字过程中被外部刷新冲掉）
       const [assetMetaDraft, setAssetMetaDraft] = React.useState({ label: '', tags: '' });
       const [assetPortraitTarget, setAssetPortraitTarget] = React.useState('');
@@ -1159,6 +1173,7 @@ window.__ModuleLoader__.load({
             setLore(l?.ok ? l : { exists: false, total: 0, entries: [], error: l?.error });
           } catch { setLore({ exists: false, total: 0, entries: [] }); }
           void refreshAssets();
+          void refreshSnapshots();
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }
@@ -1186,6 +1201,65 @@ window.__ModuleLoader__.load({
         if (!res?.ok) throw new Error(res?.error ?? '操作失败');
         await refreshAssets();
         return res;
+      }
+
+      /**
+       * 拉快照列表。和资源库一样**失败不打断面板**。
+       * 导出不是 fetch：走下面那个 `<a download>`，由浏览器直接存盘（省一次 base64 往返）。
+       */
+      async function refreshSnapshots() {
+        try {
+          const res = await API.snapshots({ sessionId });
+          if (res?.ok) setSnaps(res);
+        } catch { /* 备份信息拉不到不影响面板其它部分 */ }
+      }
+
+      /** 打一个快照（宿主侧会顺手修剪到最近 N 个）。 */
+      async function takeSnapshotNow() {
+        setBusy('snapshot');
+        try {
+          const res = await API.snapshot({ sessionId });
+          if (!res?.ok) throw new Error(res?.error ?? '快照失败');
+          setSnaps({ ok: true, keep: res.keep, total: (res.items ?? []).length, items: res.items ?? [] });
+          setMsg({
+            kind: res.failed?.length ? 'warn' : 'ok',
+            text: `已拍快照 ${res.name}（${Math.round(Number(res.bytes ?? 0) / 1024)}KB，含 ${res.files} 个文件）`
+              + (res.failed?.length ? `；但有 ${res.failed.length} 个旧快照删不掉，请手动清理` : ''),
+          });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
+      /**
+       * 从选中的文件导入会话包。
+       *
+       * **默认不覆盖**：宿主在目标会话已有内容且没收到 overwrite 时回 409，这里弹一句确认，
+       * 用户点了「覆盖」才带 overwrite 再来一次（宿主会在覆盖前自动拍一个快照兜底）。
+       */
+      async function importBundleFromFile(file, { overwrite = false } = {}) {
+        setBusy('import');
+        try {
+          const dataUrl = await readAsDataUrl(file);
+          const payload = { sessionId, dataUrl, overwrite };
+          let res = await API.importBundle(payload);
+          // 宿主回 409 + needsOverwrite（`jpost` 只回 JSON，不看状态码，所以认这个标志位）
+          if (res?.needsOverwrite === true) {
+            const yes = window.confirm('目标会话已有内容。导入会**覆盖**它（宿主会先自动拍一个快照兜底）。继续吗？');
+            if (!yes) { setMsg({ kind: 'warn', text: '已取消导入（没有改动任何东西）' }); return; }
+            res = await API.importBundle({ ...payload, overwrite: true });
+          }
+          if (!res?.ok) throw new Error(res?.error ?? '导入失败');
+          await reload();                       // 配置与世界书都换了，整份重新载入
+          await refreshSnapshots();
+          setMsg({
+            kind: 'ok',
+            text: `已导入会话包（来自 ${String(res.from ?? '').slice(0, 8) || '未知会话'}，还原 ${res.files} 个文件`
+              + `${res.snapshot ? `，覆盖前的快照：${res.snapshot}` : ''}）`,
+          });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
       }
 
       function patch(p) { dirtyRef.current = true; setDraft((d) => (d ? { ...d, ...p } : d)); }
@@ -2159,6 +2233,54 @@ window.__ModuleLoader__.load({
               : null,
             (assets?.assets ?? []).length ? null : h('div', { key: 'none', className: 'dim' }, '没有符合条件的图。'),
           ]) : null,
+
+        // 备份：会话配置在全局数据目录、世界书与图在**工作区** —— 两处分离，手工备份必漏。
+        // 这里把整个会话打成一个 zip（下载或快照），以及从文件还原。
+        h('div', { key: 'backup', className: 'card' }, [
+          h('div', { key: 'h', className: 'row' }, [
+            h('h4', { key: 't' }, '备份 / 会话包'),
+            h('span', { key: 'd', className: 'dim' },
+              '一个文件带走整个会话：配置 + 世界书 + 资源库图 + 导入卡产物'),
+          ]),
+          h('div', { key: 'bar', className: 'backupbar' }, [
+            // 下载走 <a download>：浏览器自己存盘，不经过 fetch、也不用 base64 绕一圈
+            h('a', {
+              key: 'dl', className: 'tiny', download: '',
+              href: `/rp-tools/export?${qs({ sessionId })}`,
+              title: '把本会话打成一个 zip 下载下来（含世界书与资源库里的图）',
+            }, busy ? '导出' : '导出会话包'),
+            h('button', {
+              key: 'snap', className: 'tiny', disabled: Boolean(busy),
+              title: `在会话目录里留一个恢复点（只保留最近 ${snaps?.keep ?? 5} 个）`,
+              onClick: () => void takeSnapshotNow(),
+            }, busy === 'snapshot' ? '快照中…' : '拍快照'),
+            h('label', {
+              key: 'imp', className: `tiny filebtn${busy ? ' disabled' : ''}`,
+              title: '从一个会话包 zip 还原（默认不覆盖：目标有内容时会先问一句，并自动留一个恢复点）',
+            }, [
+              busy === 'import' ? '导入中…' : '从文件导入',
+              h('input', {
+                key: 'f', type: 'file', accept: 'application/zip,application/x-zip-compressed,.zip',
+                disabled: Boolean(busy),
+                onChange: (e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (file) void importBundleFromFile(file);
+                },
+              }),
+            ]),
+          ]),
+          (snaps?.items ?? []).length
+            ? h('div', { key: 'list', className: 'snaplist' }, [
+              h('div', { key: 'l', className: 'dim' },
+                `恢复点 ${snaps.items.length}/${snaps.keep ?? 5}（最新的在前；导入覆盖前会自动拍一个）`),
+              ...snaps.items.map((s) => h('div', { key: s.name, className: 'snaprow' }, [
+                h('span', { key: 'n', className: 'mono' }, String(s.name).replace(/^snapshot-|\.zip$/g, '')),
+                h('span', { key: 'b', className: 'dim' }, `${Math.round(Number(s.bytes ?? 0) / 1024)}KB`),
+              ])),
+            ])
+            : h('div', { key: 'none', className: 'dim' }, '还没有恢复点 —— 长团建议开局后拍一个。'),
+        ]),
 
         // 随机表：**没有表时整张卡片不渲染**（一张「RP 表格 / 随机表（0）」摆在面板里
         // 只是噪音）；真建了表才出现，掷表入口也随之回来。

@@ -74,7 +74,7 @@ models/loras/krea2_*.safetensors                               ← 9 个风格 L
 | `rp_illustrate` | 按风格生成一张图（并自动存进资源库） | `prompt`* `style?` `seed?` `aspect?` `width?` `height?` `label?` `tags?` `kind?` |
 | `rp_assets` | **浏览资源库**（找回来复用，不必重出） | `action?` `kind?` `characters?` `tags?` `q?` `limit?` `id?` `label?` |
 | `rp_character` | 角色卡增删查 + 出立绘 | `action`* `name?` `appearance?` `portrait?` `style?` |
-| `rp_state` | 状态追踪（场景 / 时间 / 地点 / 在场 / 线索 + 队伍 + 旗标） | `action`* `field?` `value?` `party?` `flags?` |
+| `rp_state` | 状态追踪（场景 / 时间 / 地点 / 在场 / 线索 + 队伍 + 旗标） | `action`* `field?` `value?` `party?` `party_mode?` `party_remove?` `flags?` |
 | `rp_lore` | 世界书按条读取 / 生成模板 | `action`* `query?` `limit?` |
 | `rp_session` | 本会话设置（世界 / 前缀 / 会话默认风格 / 风格备注 / 战役名） | `action`* `world?` `prompt_prefix?` `default_style?` `style_notes?` `campaign_name?` |
 | `rp_scenes` | 按场景文件逐格批量出图（`scenes[].scene_id` + `panels[].panel_id`；整幕共享一个组存进资源库） | `scenesFile`* `sceneId?` `style?` `limit?` `label?` `tags?` |
@@ -194,6 +194,34 @@ DM 出的第一张单人图会**自动记成那个角色的立绘**（已有立�
 
 ---
 
+## 备份 / 会话包
+
+长一点的团需要最低限度的保障。**会话配置在全局数据目录、世界书与资源图在工作区** ——
+两处分离，手工备份必漏一半，所以插件把它们打成一个 zip：
+
+```
+MANIFEST.json          格式与版本 / 导出时间 / 原会话 id / 每个文件的 sha256
+session.json           会话配置
+rp-worldbook.md        世界书（可能没有）
+assets.json            资源库索引
+assets/<分类>/<id>.<ext>   出过的图与导入的图（1.13.0 起真存了一份，所以包是自包含的）
+cards/<slug>.{md,json,launch.md,png}   导入卡产物（含卡面与开局引导）
+```
+
+- **导出**：面板「备份 / 会话包 → 导出会话包」是一个 `<a download>`，浏览器自己存盘。
+- **快照**：同一个卡片里的「拍快照」把包写进 `<工作区>/rp-sessions/<id>/snapshots/`，
+  **只保留最近 5 个**；只管自己写的 `snapshot-*.zip`，你放进这个目录的别的包不会被当成快照、也不会被删。
+- **导入**：选一个 zip。**默认不覆盖** —— 目标会话已有内容时宿主回 409，界面问一句，
+  确认后才带 `overwrite:true` 重来，而且**覆盖前会自动拍一个快照**兜底。
+- 包是 **STORE（不压缩）** 的 zip：里面装的是已经压过的 PNG，再压一遍没意义。
+  用别的工具重新打包时会默认压缩 → 导入会明确报「只支持 STORE 包」，不会给你一堆乱码。
+
+> ⚠️ 解包是**外部输入**：条目名可能带 `../`（zip-slip）。所以每个条目名都要过
+> `safeEntryName()`（逐段判定 `..`/绝对路径/盘符），落盘时**再做一次**目标路径前缀校验 ——
+> 两道锁都留着，单点失效不至于写穿会话目录。清单里的 sha256 也会逐个核对。
+
+---
+
 ## 数据与配置
 
 ```
@@ -208,7 +236,8 @@ DM 出的第一张单人图会**自动记成那个角色的立绘**（已有立�
 └── rp-sessions/<会话 id>/
     ├── cards/<slug>.{md,json,png}      导入产物：卡全文 / 规范化结果 / 卡面
     ├── assets.json                     资源库索引（一张图一条）
-    └── assets/<分类>/<id>.<ext>        出过的图与导入的图（portraits / scenes / items / other）
+    ├── assets/<分类>/<id>.<ext>        出过的图与导入的图（portraits / scenes / items / other）
+    └── snapshots/snapshot-<时间>.zip   恢复点（只保留最近 5 个；只删自己写的那些）
 ```
 
 `styles.json` 关键字段：
@@ -302,6 +331,10 @@ dsh-rp-tools/
 | `/rp-tools/assets` | GET/POST | 资源库：列出（可筛分类/角色/标签/关键词）/ 改名称与标签 / 删除 / 设为某角色的立绘 |
 | `/rp-tools/asset-upload` | POST | 导入外部图进资源库（data URL → `assets/<分类>/<id>.<ext>`，只收 png/jpeg/webp、≤8MB） |
 | `/rp-tools/asset-image` | GET | 发资源图（按 `id`；`thumb=1&width=N` 走服务端降采样，图墙用它） |
+| `/rp-tools/export` | GET | 下载会话包（STORE-only zip：配置 + 世界书 + 资源库 + 导入卡产物） |
+| `/rp-tools/snapshots` | GET | 列恢复点（只列自己写的 `snapshot-*.zip`） |
+| `/rp-tools/snapshot` | POST | 拍一个恢复点并修剪到最近 5 个；删不掉的如实报在 `failed` 里 |
+| `/rp-tools/import` | POST | 导入会话包（`path`＝会话目录内的包，或 `dataUrl`）；**默认不覆盖**，覆盖前自动拍快照 |
 | `/rp-tools/preview` | POST | 试出一张（设置页 / 面板用，可带 sessionId；`sizeKey` 选场景/立绘/道具档） |
 | `/rp-tools/cards` | GET | 列卡库（服务端搜索 / 分类 / 分页） |
 | `/rp-tools/card` | GET | 解析单张卡 → 摘要与预览（不落盘） |

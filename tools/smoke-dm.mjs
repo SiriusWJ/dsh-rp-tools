@@ -616,6 +616,9 @@ if (rpTable) {
     const del = await callPost('/rp-tools/assets', { sessionId: sid, action: 'delete', id: two.id });
     check('资源库：删除成功', del.status, 200);
     check('资源库：磁盘文件也没了', del.json.fileGone, true);
+    // **别只信返回的 fileGone，回到磁盘确认一次** —— 这一条以前只断言那个布尔量，
+    // 而它是「rmSync 没抛错」推出来的；本机实测 rmSync 对中文名会静默失败。
+    check('资源库：磁盘上确实没有那个文件了', existsSync(join(sessionDir, two.file)), false);
     check('资源库：索引里也删了', D.loadAssets(sid).assets.some((a) => a.id === two.id), false);
     check('资源库：删掉的图不再有立绘引用（不留死链）', (del.json.droppedPortraits ?? []).join(','), '祁俊');
     check('资源库：那条立绘真的被解除了', D.loadSession(sid).portraits?.祁俊, undefined);
@@ -927,6 +930,283 @@ if (rpTable) {
     D.setSessionCwd(sid2, ws2);
     await Promise.all(Array.from({ length: 8 }, () => D.archiveAsset(sid2, { bytes: bytesA, kind: 'scene', ext: 'png', label: '并发同图' })));
     check('去重：8 个并发归档同一张图只留一条', D.loadAssets(sid2).assets.length, 1);
+  }
+}
+
+// ── P0：队伍局部更新（修「照文档用就会丢数据」）────────────────────────────
+// 这是本轮最重要的一条。改动前实测：party 里两人，按工具说明「只列你要更新的人」提交
+// `[{character:'祁俊', conditions:''}]` 之后 —— 祝婉宁整行消失，祁俊自己的 status 与 inventory
+// 也没了。文档承诺的是局部更新，实现是整组替换，两边不一致且失败是静默的。
+{
+  const D = mod.__debug;
+  const two = () => D.applyStateUpdates(D.normalizeState({}), {
+    party: [
+      { character: '祁俊', status: '警戒', inventory: '腰刀、短枪', conditions: '左臂擦伤' },
+      { character: '祝婉宁', status: '疲惫', inventory: '药箱' },
+    ],
+  });
+  const names = (st) => (st.party ?? []).map((r) => r.character).join(',');
+  const row = (st, name) => (st.party ?? []).find((r) => r.character === name) ?? {};
+
+  // ① 核心场景：只提交一个字段的变化
+  const hurt = D.applyStateUpdates(two(), { party: [{ character: '祁俊', conditions: '' }] });
+  check('P0：局部更新不动队友', names(hurt), '祁俊,祝婉宁');
+  check('P0：局部更新不动同一行的其它字段', row(hurt, '祁俊').inventory, '腰刀、短枪');
+  check('P0：传空串清掉那个字段', row(hurt, '祁俊').conditions, undefined);
+  check('P0：队友那一行完全没动', JSON.stringify(row(hurt, '祝婉宁')), JSON.stringify({ character: '祝婉宁', status: '疲惫', inventory: '药箱' }));
+
+  // ② 改值 / 追加新人 / 顺序
+  const changed = D.applyStateUpdates(two(), { party: [{ character: '祁俊', status: '重伤' }, { character: '新同伴', status: '警戒' }] });
+  check('P0：改值不动其它字段', row(changed, '祁俊').inventory, '腰刀、短枪');
+  check('P0：新人在末尾追加', names(changed), '祁俊,祝婉宁,新同伴');
+  check('P0：已有成员的顺序不变', names(two()), '祁俊,祝婉宁');
+
+  // ③ party_remove：不用重发全组就能删人
+  const removed = D.applyStateUpdates(two(), { partyRemove: '祝婉宁' });
+  check('P0：party_remove 只删指定的人', names(removed), '祁俊');
+  check('P0：party_remove 也吃逗号串', names(D.applyStateUpdates(two(), { partyRemove: '祝婉宁,祁俊' })), '');
+  check('P0：party_remove 与 party 可同时用',
+    names(D.applyStateUpdates(two(), { partyRemove: '祝婉宁', party: [{ character: '祁俊', status: '重伤' }] })), '祁俊');
+
+  // ④ 空数组仍然清空（文档承诺过，不能因为改成 merge 就失效）
+  check('P0：party:[] 两种模式下都清空', names(D.applyStateUpdates(two(), { party: [] })), '');
+  check('P0：party:[] + replace 也清空', names(D.applyStateUpdates(two(), { party: [], partyMode: 'replace' })), '');
+
+  // ⑤ replace：想删人/重排顺序时的显式出口
+  const rep = D.applyStateUpdates(two(), { party: [{ character: '祝婉宁', status: '精神' }], partyMode: 'replace' });
+  check('P0：replace 整组替换（没列的人真的没了）', names(rep), '祝婉宁');
+  check('P0：replace 时该行只留传了的字段', JSON.stringify(row(rep, '祝婉宁')), JSON.stringify({ character: '祝婉宁', status: '精神' }));
+
+  // ⑥ 错误路径要明确，不能猜
+  const badMode = (() => { try { D.applyStateUpdates(two(), { party: [{ character: 'x' }], partyMode: 'patch' }); return ''; } catch (e) { return String(e.message); } })();
+  check('P0：partyMode 非法时报错并给出可选值', badMode.includes('只能是 "merge"'), true);
+  const noName = (() => { try { D.applyStateUpdates(two(), { party: [{ status: '全员警戒' }] }); return ''; } catch (e) { return String(e.message); } })();
+  check('P0：merge 时缺 character 报错（而不是塞一行删不掉的匿名记录）', noName.includes('每项都要有 character'), true);
+  check('P0：replace 时缺 character 不报错（整组替换不需要按名字定位）',
+    D.applyStateUpdates(two(), { party: [{ status: '全员警戒' }], partyMode: 'replace' }).party.length, 1);
+
+  // ⑦ 走工具入口（参数映射：party_mode / party_remove → patch.partyMode / patch.partyRemove）
+  {
+    const sid = crypto.randomUUID();
+    const ws = join(TEST_HOME, 'ws-p0-party');
+    mkdirSync(ws, { recursive: true });
+    D.setSessionCwd(sid, ws);
+    const exec = { agent: { id: sid } };
+    const rpState = tools.get('rp_state');
+    await rpState.execute({ action: 'set', party: two().party }, exec);
+    await rpState.execute({ action: 'set', party: [{ character: '祁俊', conditions: '' }] }, exec);
+    const after = D.loadSession(sid).state;
+    check('P0：经工具调用也是局部更新', (after.party ?? []).length, 2);
+    check('P0：经工具调用清字段也生效', after.party[0].conditions, undefined);
+    await rpState.execute({ action: 'set', party_remove: '祝婉宁' }, exec);
+    check('P0：经工具调用 party_remove 生效', (D.loadSession(sid).state.party ?? []).length, 1);
+    // 工具说明必须与实现一致 —— 这条是本次修 bug 的根因，钉住它。
+    // 注意 `defineTool` 暴露的 `parameters` 是 **JSON schema 形态**（properties 里才是各参数）。
+    const partyDesc = String(rpState.parameters?.properties?.party?.description ?? '');
+    check('P0：工具说明写明是局部更新', partyDesc.includes('默认是局部更新'), true);
+    check('P0：工具说明写明不要漏掉队友', partyDesc.includes('更不要把队友漏掉'), true);
+    check('P0：工具说明写明空数组清空', partyDesc.includes('清空全部'), true);
+    check('P0：注册了 party_mode 与 party_remove 两个参数',
+      Boolean(rpState.parameters?.properties?.party_mode) && Boolean(rpState.parameters?.properties?.party_remove), true);
+  }
+}
+
+// ── P1：会话包（导出 / 快照 / 列表 / 导入）──────────────────────────────────
+// 会话配置在全局数据目录、世界书与资源图在**工作区** —— 两处分离，手工备份必漏一半。
+// 这里把「一个会话能带走的一切」打成一个 STORE-only zip，并验四件事：
+// 包是完整的、快照会修剪、导入默认不覆盖、覆盖前自动兜底。
+{
+  const D = mod.__debug;
+  const bundleMod = await import(pathToFileURL(join(here, '..', 'lib', 'session-bundle.js')).href);
+  const zipMod = await import(pathToFileURL(join(here, '..', 'lib', 'zip.js')).href);
+
+  // ① zip 本身：往返 + 拒绝（这一层是 P1 的地基，先钉死）
+  {
+    const files = [
+      { name: 'a.txt', data: Buffer.from('hello') },
+      { name: 'dir/b.bin', data: Buffer.from([0, 1, 2, 255]) },
+      { name: '中文名.md', data: Buffer.from('中文内容', 'utf8') },
+    ];
+    const zip = zipMod.writeZip(files, new Date('2026-09-13T01:00:00Z'));
+    const back = zipMod.readZip(zip);
+    check('会话包：zip 条目数与顺序', back.map((e) => e.name).join('|'), 'a.txt|dir/b.bin|中文名.md');
+    check('会话包：zip 字节一致', back.every((e, i) => e.data.equals(files[i].data)), true);
+    check('会话包：中文内容不乱码', back[2].data.toString('utf8'), '中文内容');
+    check('会话包：空 zip 也能读', zipMod.readZip(zipMod.writeZip([])).length, 0);
+    // 数据被改 → CRC 必须报错（本地头 30 + 文件名 5 = 数据从 35 开始）
+    const bad = Buffer.from(zipMod.writeZip([{ name: 'a.txt', data: Buffer.from('payload') }]));
+    bad[37] ^= 0xff;
+    check('会话包：内容被改时报 CRC 不符', (() => { try { zipMod.readZip(bad); return ''; } catch (e) { return String(e.message); } })().includes('校验和不符'), true);
+    check('会话包：截断的包被拒', (() => { try { zipMod.readZip(zip.subarray(0, 40)); return ''; } catch (e) { return String(e.message); } })().includes('中央目录'), true);
+    check('会话包：不是 zip 被拒', (() => { try { zipMod.readZip(Buffer.from('hello')); return ''; } catch (e) { return String(e.message); } })().includes('不是有效的 zip'), true);
+    // 路径穿越（zip-slip）：写与读两侧都要挡
+    check('会话包：safeEntryName 拒 ../', zipMod.safeEntryName('../x.txt'), null);
+    check('会话包：safeEntryName 拒绝对路径', zipMod.safeEntryName('/abs.txt'), null);
+    check('会话包：safeEntryName 拒盘符', zipMod.safeEntryName('C:\\win.txt'), null);
+    check('会话包：safeEntryName 规范化多余斜杠', zipMod.safeEntryName('a//b'), 'a/b');
+    check('会话包：写越界名直接报错', (() => { try { zipMod.writeZip([{ name: '../e', data: Buffer.from('x') }]); return ''; } catch (e) { return String(e.message); } })().includes('条目名不合法'), true);
+  }
+
+  // ② 打包：装什么、不装什么
+  const sid = crypto.randomUUID();
+  const ws = join(TEST_HOME, 'ws-bundle');
+  mkdirSync(ws, { recursive: true });
+  D.setSessionCwd(sid, ws);
+  const dir = join(ws, 'rp-sessions', sid);
+  mkdirSync(join(dir, 'assets', 'scenes'), { recursive: true });
+  mkdirSync(join(dir, 'cards'), { recursive: true });
+  mkdirSync(join(dir, 'snapshots'), { recursive: true });
+  writeFileSync(join(dir, 'rp-worldbook.md'), '# 世界书\n\n## 世界总纲\nconstant\n\n测试世界。\n');
+  writeFileSync(join(dir, 'assets.json'), JSON.stringify({ version: 1, assets: [] }));
+  writeFileSync(join(dir, 'assets', 'scenes', 's1.png'), Buffer.from([9, 8, 7, 6]));
+  writeFileSync(join(dir, 'cards', '某卡.launch.md'), '# 开局引导\n');
+  // 两个「不是我们放的」文件：ASCII 一个、中文名一个（中文名那个还顺带钉住 rmSync 的静默失败）
+  writeFileSync(join(dir, 'snapshots', 'user-backup.zip'), Buffer.from('不该被当成快照'));
+  writeFileSync(join(dir, 'snapshots', '用户自己的.zip'), Buffer.from('不该被当成快照'));
+  writeFileSync(join(dir, '用户自己放的东西.txt'), '不该进包');
+  await callPost('/rp-tools/session', {
+    sessionId: sid, world: '测试世界', characters: [{ name: '祁俊', appearance: '白衣长剑' }],
+    state: { scene: '雨夜客栈', party: [{ character: '祁俊', inventory: '腰刀' }] },
+  });
+  {
+    const exported = await callGetRaw(`/rp-tools/export?sessionId=${sid}`);
+    check('会话包：导出返回 200', exported.status, 200);
+    const names = zipMod.readZip(exported.bytes).map((e) => e.name);
+    check('会话包：含会话配置', names.includes('session.json'), true);
+    check('会话包：含世界书', names.includes('rp-worldbook.md'), true);
+    check('会话包：含资源库图', names.includes('assets/scenes/s1.png'), true);
+    check('会话包：含导入卡产物', names.includes('cards/某卡.launch.md'), true);
+    check('会话包：**不含** snapshots（套娃没意义）', names.some((n) => n.startsWith('snapshots/')), false);
+    check('会话包：**不含**用户自己放的文件', names.includes('用户自己放的东西.txt'), false);
+    const parsed = bundleMod.parseBundle(exported.bytes);
+    check('会话包：清单格式与版本', parsed.manifest.format, 'dsh-rp-tools/session-bundle');
+    check('会话包：清单记了原会话 id', parsed.sessionId, sid);
+    check('会话包：配置里的角色带过去了', parsed.sessionConfig.characters[0].name, '祁俊');
+    check('会话包：导出缺 sessionId 时 400', (await callGetRaw('/rp-tools/export')).status, 400);
+    check('会话包：导出只认 GET', (await callPost('/rp-tools/export', { sessionId: sid })).status, 405);
+  }
+
+  // ③ 快照：落盘 + 只留最近 5 个
+  {
+    const made = await callPost('/rp-tools/snapshot', { sessionId: sid });
+    check('会话包：快照 200', made.status, 200);
+    check('会话包：快照落到 snapshots/', String(made.json.file).includes('snapshots'), true);
+    check('会话包：快照文件真的存在', existsSync(made.json.file), true);
+    check('会话包：快照是合法的会话包', bundleMod.parseBundle(readFileSync(made.json.file)).sessionId, sid);
+    for (let i = 0; i < 6; i += 1) {
+      // 时间戳精度到毫秒，连着打会撞名 —— 撞了就覆盖，所以这里用最小的间隔错开
+      await new Promise((r) => setTimeout(r, 5));
+      const each = await callPost('/rp-tools/snapshot', { sessionId: sid });
+      // **每一步都不能超**：修剪要是漏了一次，后面永远补不回来（只留最近 N 个是硬约束）
+      check(`会话包：第 ${i + 2} 次快照后仍不超过 5 个`, (each.json.items ?? []).length <= 5, true);
+      check(`会话包：第 ${i + 2} 次快照没有删不掉的`, (each.json.failed ?? []).length, 0);
+    }
+    const list = await callGet('/rp-tools/snapshots', `?sessionId=${sid}`);
+    check('会话包：快照列表 200', list.status, 200);
+    check('会话包：快照只保留最近 5 个', list.json.total, 5);
+    check('会话包：保留数写在返回里（面板要显示）', list.json.keep, 5);
+    check('会话包：磁盘上的 snapshot-*.zip 也只剩 5 个',
+      readdirSync(join(dir, 'snapshots')).filter((n) => n.startsWith('snapshot-')).length, 5);
+    // 用户自己放进 snapshots/ 的包：既不算快照、也**绝不能**被修剪删掉
+    check('会话包：用户自己的包不算快照', list.json.items.some((it) => it.name === 'user-backup.zip'), false);
+    check('会话包：ASCII 的用户包没被删', existsSync(join(dir, 'snapshots', 'user-backup.zip')), true);
+    check('会话包：中文名的用户包没被删', existsSync(join(dir, 'snapshots', '用户自己的.zip')), true);
+    check('会话包：新的排在前面', String(list.json.items[0].name) > String(list.json.items[4].name), true);
+    check('会话包：快照列表缺 sessionId 时 400', (await callGet('/rp-tools/snapshots')).status, 400);
+    check('会话包：快照要 POST', (await callGet('/rp-tools/snapshot', `?sessionId=${sid}`)).status, 405);
+  }
+
+  // ③b rmSync 对中文名静默失败 —— 这是本机实测的坑，插件所有删除都必须走「验证过的删除」
+  {
+    const probe = join(TEST_HOME, 'ws-rm-verified');
+    mkdirSync(probe, { recursive: true });
+    const cjk = join(probe, '中文文件.txt');
+    writeFileSync(cjk, 'x');
+    check('删除：中文名文件被真正删掉（rmSync 会静默失败）', D.removeFileVerified(cjk), true);
+    check('删除：确认磁盘上确实没了', existsSync(cjk), false);
+    const ascii = join(probe, 'plain.txt');
+    writeFileSync(ascii, 'x');
+    check('删除：ASCII 名也正常', D.removeFileVerified(ascii), true);
+    check('删除：不存在的文件算已删除（幂等）', D.removeFileVerified(join(probe, 'never.txt')), true);
+  }
+
+  // ④ 导入：默认不覆盖 → 显式覆盖 → 自动兜底快照
+  {
+    const target = crypto.randomUUID();
+    const ws2 = join(TEST_HOME, 'ws-bundle-target');
+    mkdirSync(ws2, { recursive: true });
+    D.setSessionCwd(target, ws2);
+    const targetDir = join(ws2, 'rp-sessions', target);
+    mkdirSync(targetDir, { recursive: true });
+    // 把包放进**会话目录**（接口只允许导这里面的包）
+    const exported = await callGetRaw(`/rp-tools/export?sessionId=${sid}`);
+    writeFileSync(join(targetDir, 'backup.zip'), exported.bytes);
+
+    // 目标会话先放点东西，测「默认不覆盖」
+    await callPost('/rp-tools/session', { sessionId: target, world: '原有世界', characters: [{ name: '原有角色' }] });
+    const refused = await callPost('/rp-tools/import', { sessionId: target, path: 'backup.zip' });
+    check('会话包：目标有内容时默认拒绝覆盖（409）', refused.status, 409);
+    check('会话包：拒绝时说明要传 overwrite', refused.json.needsOverwrite, true);
+    check('会话包：拒绝时不动目标的世界设定',
+      D.loadSession(target).world, '原有世界');
+
+    const done = await callPost('/rp-tools/import', { sessionId: target, path: 'backup.zip', overwrite: true });
+    check('会话包：显式覆盖后 200', done.status, 200);
+    check('会话包：覆盖前自动拍了快照', String(done.json.snapshot ?? '').startsWith('snapshot-'), true);
+    check('会话包：还原了文件', done.json.files >= 3, true);
+    check('会话包：世界书还原到目标目录', existsSync(join(targetDir, 'rp-worldbook.md')), true);
+    check('会话包：图片字节还原一致',
+      readFileSync(join(targetDir, 'assets', 'scenes', 's1.png')).equals(Buffer.from([9, 8, 7, 6])), true);
+    check('会话包：配置被覆盖成包里的', D.loadSession(target).world, '测试世界');
+    check('会话包：配置里的 sessionId 改成目标 id（自我指涉字段）', D.loadSession(target).sessionId, target);
+    check('会话包：包里的相对路径不用改写', readFileSync(join(targetDir, 'assets.json'), 'utf8').includes('"version"'), true);
+
+    // 空目标：不该要 overwrite
+    const fresh = crypto.randomUUID();
+    const ws3 = join(TEST_HOME, 'ws-bundle-fresh');
+    mkdirSync(ws3, { recursive: true });
+    D.setSessionCwd(fresh, ws3);
+    mkdirSync(join(ws3, 'rp-sessions', fresh), { recursive: true });
+    writeFileSync(join(ws3, 'rp-sessions', fresh, 'backup.zip'), exported.bytes);
+    const direct = await callPost('/rp-tools/import', { sessionId: fresh, path: 'backup.zip' });
+    check('会话包：空会话直接导入，不需要 overwrite', direct.status, 200);
+    check('会话包：空会话导入不拍无意义的快照', direct.json.snapshot, null);
+
+    // 拒绝路径
+    check('会话包：不允许导会话目录之外的文件',
+      (await callPost('/rp-tools/import', { sessionId: fresh, path: '../../../etc/hosts' })).status, 400);
+    check('会话包：找不到的包 404',
+      (await callPost('/rp-tools/import', { sessionId: fresh, path: '没有这个.zip' })).status, 404);
+    check('会话包：dataUrl 只认 zip',
+      (await callPost('/rp-tools/import', { sessionId: fresh, dataUrl: 'data:image/png;base64,QUJD' })).status, 400);
+    check('会话包：什么都不给 400',
+      (await callPost('/rp-tools/import', { sessionId: fresh })).status, 400);
+    check('会话包：损坏的包被拒（不是静默成功）',
+      (await callPost('/rp-tools/import', { sessionId: fresh, dataUrl: `data:application/zip;base64,${Buffer.from('这不是zip').toString('base64')}` })).status, 400);
+    check('会话包：跨源导入被拒',
+      (await callPost('/rp-tools/import', { sessionId: fresh, path: 'backup.zip' }, 'http://evil.example', '127.0.0.1:3080')).status, 403);
+
+    // data URL 那条也要能走通（面板选文件就是这条路）
+    const viaData = crypto.randomUUID();
+    const ws4 = join(TEST_HOME, 'ws-bundle-data');
+    mkdirSync(ws4, { recursive: true });
+    D.setSessionCwd(viaData, ws4);
+    const okData = await callPost('/rp-tools/import', {
+      sessionId: viaData, dataUrl: `data:application/zip;base64,${exported.bytes.toString('base64')}`,
+    });
+    check('会话包：dataUrl 导入成功', okData.status, 200);
+    check('会话包：dataUrl 导入后世界书到位', existsSync(join(ws4, 'rp-sessions', viaData, 'rp-worldbook.md')), true);
+  }
+
+  // ⑤ 还原层自己也要挡越界名（第二道锁，不依赖 parseBundle）
+  {
+    const targetDir = join(TEST_HOME, 'ws-bundle-restore');
+    mkdirSync(targetDir, { recursive: true });
+    const bad = (() => { try { bundleMod.restoreBundleEntries([{ name: '../evil.txt', data: Buffer.from('x') }], targetDir); return ''; } catch (e) { return String(e.message); } })();
+    check('会话包：还原层拒绝越界条目名', bad.includes('条目名不合法'), true);
+    check('会话包：越界文件没被写出去', existsSync(join(TEST_HOME, 'evil.txt')), false);
+    check('会话包：还原层会跳过 session.json（配置另写）',
+      bundleMod.restoreBundleEntries([{ name: 'session.json', data: Buffer.from('{}') }], targetDir).written, 0);
   }
 }
 
@@ -1679,9 +1959,13 @@ if (onSessionCreated) {
     check('状态：局部更新不动旗标', partial?.flags?.伏笔_黑猫, '已埋');
 
     // ③ 空串 = 清除（伤势好了/东西用掉了），不留幽灵键
-    await rpState.execute({ action: 'set', conditions: '', flags: { 伏笔_黑猫: '' } }, exec);
+    // ⚠️ 这里曾经是一条**死断言**：传的是顶层 `conditions: ''`，而 `conditions` 是**队伍行的字段**，
+    //    顶层根本没有这个键 —— 于是 `'conditions' in state` 恒为 false，测了个寂寞。
+    //    现在按队伍字段的正确用法测（1.13.3 起 party 支持局部更新）。
+    await rpState.execute({ action: 'set', party: [{ character: '祁俊', conditions: '' }], flags: { 伏笔_黑猫: '' } }, exec);
     const cleared = (await callGet('/rp-tools/session', `?sessionId=${SID}`)).json.session.state;
-    check('状态：空串清除字段', 'conditions' in (cleared ?? {}), false);
+    check('状态：空串清掉队伍行的那个字段', cleared?.party?.[0]?.conditions, undefined);
+    check('状态：清一个字段不动同行的其它字段', cleared?.party?.[0]?.inventory, '短枪枪头、腰刀');
     check('状态：空串删除旗标键', '伏笔_黑猫' in (cleared?.flags ?? {}), false);
     check('状态：植入的旗标仍在', cleared?.flags?.义王_好感, '警惕');
 

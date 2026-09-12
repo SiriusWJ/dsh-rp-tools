@@ -155,6 +155,12 @@ const portraitUploads = [];
 const assetWrites = [];
 /** 资源库列表桩（`/rp-tools/assets`）：用例可临时替换，测筛选/图墙/详情。 */
 let assetStub = [];
+/** 会话包的桩：快照列表 / 快照 / 导入。 */
+const snapshotPosts = [];
+const bundlePosts = [];
+let snapStub = { keep: 5, items: [] };
+/** 导入第一次回 409（needsOverwrite），第二次成功 —— 用例可切。 */
+let importNeedsOverwrite = true;
 /**
  * FileReader 桩：真实浏览器里「选文件 → data URL」就是这一步。
  * 测试造的 File 上带一个 `__dataUrl`，读出来即用它（这样断言能对上具体内容）。
@@ -326,6 +332,27 @@ globalThis.fetch = async (url, options = {}) => {
         }
         : sessionStub.portraits,
     });
+  }
+  // 会话包：快照列表 / 拍快照 / 导入（导入第一次回 409 让界面走「确认覆盖」那条路）
+  if (target.startsWith('/rp-tools/snapshots?')) {
+    return reply({ ok: true, sessionId: sessionStub.sessionId, keep: snapStub.keep, total: snapStub.items.length, items: snapStub.items });
+  }
+  if (target === '/rp-tools/snapshot') {
+    const body = JSON.parse(options.body ?? '{}');
+    snapshotPosts.push(body);
+    snapStub = {
+      keep: 5,
+      items: [{ name: 'snapshot-2026-09-13T01-00-00-000Z.zip', bytes: 2048, at: '2026-09-13T01:00:00.000Z' }, ...snapStub.items].slice(0, 5),
+    };
+    return reply({ ok: true, sessionId: body.sessionId, name: 'snapshot-2026-09-13T01-00-00-000Z.zip', bytes: 2048, files: 5, kept: snapStub.items.length, dropped: [], failed: [], items: snapStub.items });
+  }
+  if (target === '/rp-tools/import') {
+    const body = JSON.parse(options.body ?? '{}');
+    bundlePosts.push(body);
+    if (importNeedsOverwrite && body.overwrite !== true && importNeedsOverwrite !== 'never') {
+      return reply({ ok: false, needsOverwrite: true, error: '目标会话已有内容。要覆盖请传 overwrite:true' });
+    }
+    return reply({ ok: true, sessionId: body.sessionId, from: 'old-session-id', files: 6, bytes: 4096, snapshot: 'snapshot-before.zip' });
   }
   // 资源库列表：面板图墙用它。assetStub 可被用例临时替换。
   if (target.startsWith('/rp-tools/assets?')) {
@@ -1571,11 +1598,9 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     assert.ok(kindSel, '导入要能选分类');
     kindSel.props.onChange({ target: { value: 'item' } });
     const reRendered = asPanel();
-    const assetFile = findAll(reRendered, (n) => n.type === 'input' && n.props.type === 'file'
-      && String(n.props.className ?? '') !== 'charfile')[0];
-    const fileInputs = findAll(reRendered, (n) => n.type === 'input' && n.props.type === 'file');
-    assert.ok(fileInputs.length >= 1, '资源库要有导入图片的 file input');
-    const importInput = fileInputs[fileInputs.length - 1];
+    const importInput = findAll(reRendered, (n) => n.type === 'input' && n.props.type === 'file'
+      && String(n.props.accept ?? '').includes('image/png'))[0];
+    assert.ok(importInput, '资源库要有导入图片的 file input');
     assert.equal(importInput.props.accept, 'image/png,image/jpeg,image/webp', '导入只收 png/jpeg/webp');
     const beforeImports = portraitUploads.length;
     importInput.props.onChange({
@@ -1585,7 +1610,6 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     assert.equal(portraitUploads.length, beforeImports + 1, '选完文件要 POST 一次');
     assert.equal(portraitUploads.at(-1).kind, 'item', '导入时选中的分类要传上去');
     assert.equal(portraitUploads.at(-1).dataUrl, 'data:image/png;base64,QUJD', '传的是 data URL');
-    assert.ok(assetFile === undefined || assetFile !== null, '（file input 定位兜底）');
 
     // 点一张图 → 详情浮窗：大图 + 名称/标签 + 三个动作
     resetHooks();
@@ -1640,16 +1664,104 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     for (let i = 0; i < 12 && assetWrites.length === writesBefore2; i++) await tick(30);
     assert.equal(assetWrites.at(-1).action, 'delete', '删除动作要对');
     assert.equal(assetWrites.at(-1).id, 's1', '删的是当前这张');
-    // 没有资源时整张卡片不渲染（空图墙只是噪音）
+    // 没有资源时整张卡片不渲染（空图墙只是噪音）。
+    // 按**卡片标题**判定，不按正文包含「资源库」—— 备份卡片里也提到了「资源库图」。
     assetStub = [];
     resetHooks();
     let empty = asPanel();
     for (let i = 0; i < 10; i++) { await tick(30); empty = asPanel(); }
-    assert.equal(byClass(empty, 'card').some((c) => textOf(c).includes('资源库')), false,
-      '没有图时不该渲染空的「资源库」卡片');
+    const assetCards = byClass(empty, 'card').filter((c) => findAll(c, (n) => n.type === 'h4')
+      .some((hh) => textOf(hh).startsWith('资源库')));
+    assert.equal(assetCards.length, 0, '没有图时不该渲染空的「资源库」卡片');
 
     assetStub = savedAssets;
     sessionStub.characters = savedChars;
+    resetHooks();
+  }
+
+  // ★ 备份 / 会话包（P1）：导出是一个下载链接，快照会更新恢复点清单，导入默认先问「要不要覆盖」。
+  {
+    const tab = slotRegs.find((r) => r.name === 'sidebar.right.pane.tab');
+    const store = { current: SID, byId: { [SID]: { blank: false, cwd: 'D:\\Story', projectionValues: { agentPreset: 'dm' } } } };
+    const asPanel = () => render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+
+    const savedSnapStub = snapStub;
+    const savedNeeds = importNeedsOverwrite;
+    snapStub = { keep: 5, items: [] };
+    snapshotPosts.length = 0;
+    bundlePosts.length = 0;
+    resetHooks();
+    let p = asPanel();
+    for (let i = 0; i < 12 && !textOf(p).includes('备份 / 会话包'); i++) { await tick(30); p = asPanel(); }
+    const card = byClass(p, 'card').find((c) => textOf(c).includes('备份 / 会话包'));
+    assert.ok(card, '面板要有「备份 / 会话包」卡片');
+    assert.ok(textOf(card).includes('还没有恢复点'), '没有恢复点时要有一句提示');
+
+    // 导出：必须是 `<a download>`（走浏览器自己存盘，不经过 fetch/base64）
+    const dl = findAll(card, (n) => n.type === 'a' && n.props.download !== undefined)[0];
+    assert.ok(dl, '导出要是一个带 download 的链接');
+    assert.ok(String(dl.props.href).startsWith('/rp-tools/export?'), `导出链接指向 /rp-tools/export（实际 ${dl.props.href}）`);
+    assert.ok(String(dl.props.href).includes(`sessionId=${SID}`), '导出链接要带 sessionId');
+    assert.equal(findAll(p, (n) => n.type === 'a' && String(n.props.href).includes('/rp-tools/export')).length, 1,
+      '导出只该有一个入口，别在别处再放一个');
+
+    // 拍快照：POST 一次 → 恢复点清单出现
+    const snapBtn = findAll(card, (n) => n.type === 'button' && textOf(n) === '拍快照')[0];
+    assert.ok(snapBtn, '要有「拍快照」按钮');
+    await snapBtn.props.onClick();
+    for (let i = 0; i < 10 && snapshotPosts.length === 0; i++) await tick(30);
+    assert.equal(snapshotPosts.length, 1, '「拍快照」要 POST 一次');
+    assert.equal(snapshotPosts[0].sessionId, SID, '快照要带 sessionId');
+    assert.equal(snapStub.items.length, 1, '宿主侧多了一个恢复点');
+
+    // 恢复点清单的渲染：**重新挂载**后再看（这个测试桩对「跨 render 的异步 setState」不可靠，
+    // 文件开头就记着这个限制；所以断言渲染时给一个已经装了快照的桩，别去赌时序）
+    snapshotPosts.length = 0;
+    resetHooks();
+    let withSnaps = asPanel();
+    for (let i = 0; i < 12 && !textOf(withSnaps).includes('恢复点 '); i++) { await tick(30); withSnaps = asPanel(); }
+    const card2 = byClass(withSnaps, 'card').find((c) => textOf(c).includes('备份 / 会话包'));
+    assert.ok(textOf(card2).includes('恢复点 1/5'), `快照后要显示恢复点数量（实际 ${JSON.stringify(textOf(card2)).slice(0, 120)}）`);
+    assert.equal(byClass(card2, 'snaprow').length, 1, '恢复点要逐条列出来');
+    assert.ok(byClass(card2, 'snaprow').length >= 1, '恢复点要列出来');
+
+    // 从文件导入：zip input + 409 → confirm → 带 overwrite 再来一次
+    const zipInput = findAll(card2, (n) => n.type === 'input' && n.props.type === 'file'
+      && String(n.props.accept ?? '').includes('zip'))[0];
+    assert.ok(zipInput, '要有导入 zip 的 file input');
+    zipInput.props.onChange({
+      target: { value: 'b.zip', files: [{ name: 'b.zip', __dataUrl: 'data:application/zip;base64,QUJD' }] },
+    });
+    for (let i = 0; i < 12 && bundlePosts.length < 2; i++) await tick(30);
+    assert.equal(bundlePosts.length, 2, '导入被 409 拒绝后要带 overwrite 再试一次');
+    assert.equal(bundlePosts[0].overwrite, false, '第一次不能带 overwrite（先问）');
+    assert.equal(bundlePosts[1].overwrite, true, '确认后第二次要带 overwrite');
+    assert.equal(bundlePosts[0].sessionId, SID, '导入要指定目标会话');
+    assert.ok(String(bundlePosts[0].dataUrl).startsWith('data:application/zip'), '传的是 zip 的 data URL');
+
+    // 取消确认 → 不能有任何第二次请求（不能默默覆盖）
+    bundlePosts.length = 0;
+    const realConfirm = globalThis.window.confirm;
+    globalThis.window.confirm = () => false;
+    try {
+      const snapPanel = asPanel();
+      const zip2 = findAll(snapPanel, (n) => n.type === 'input' && n.props.type === 'file'
+        && String(n.props.accept ?? '').includes('zip'))[0];
+      zip2.props.onChange({
+        target: { value: 'b.zip', files: [{ name: 'b.zip', __dataUrl: 'data:application/zip;base64,QUJD' }] },
+      });
+      for (let i = 0; i < 8; i++) await tick(30);
+      assert.equal(bundlePosts.length, 1, '用户取消后不该再发覆盖请求');
+      assert.equal(bundlePosts[0].overwrite, false, '取消时也不能带 overwrite');
+    } finally { globalThis.window.confirm = realConfirm; }
+
+    snapStub = savedSnapStub;
+    importNeedsOverwrite = savedNeeds;
     resetHooks();
   }
 
