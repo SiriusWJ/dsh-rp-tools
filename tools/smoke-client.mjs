@@ -135,6 +135,8 @@ const sessionStub = {
 const stateStub = {
   defaultStyle: 'manga', styles: { manga: { label: '黑白漫画' } }, comfyui: {}, negative: '',
   cards: { root: '', userLabel: '阿岚', macros: { user: '阿岚', place: '长安' } },
+  // 全局图像尺寸（设置页「图像」里那三行）
+  imageSizes: { scene: [1024, 576], portrait: [640, 896], item: [768, 768] },
   // 宿主给的自动宏名单（设置页要提示「哪些宏不用填」）
   autoMacros: ['time', 'date', 'datetime', 'isotime', 'localtime', 'timezone', 'weekday', 'year', 'month', 'day', 'hour', 'minute', 'second'],
 };
@@ -937,6 +939,25 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   const text = textOf(tree);
   assert.ok(text.includes('默认宏列表'), '设置页应有「默认宏列表」');
   assert.equal(text.includes('玩家称呼'), false, '「玩家称呼」应已被默认宏列表取代');
+  // 三大类：设定 / 图像 / 工具
+  assert.ok(text.includes('设定') && text.includes('图像') && text.includes('工具'), '设置页要按设定/图像/工具分三大类');
+  // 图像尺寸全局可编辑（三档：场景 / 立绘 / 道具）
+  const sizeRows = byClass(tree, 'szrow');
+  assert.equal(sizeRows.length, 3, '图像尺寸要开放三档编辑');
+  assert.ok(text.includes('场景') && text.includes('立绘') && text.includes('道具'), '三档要有名字');
+  const sizeInputs = sizeRows.flatMap((r) => findAll(r, (n) => n.type === 'input' && n.props.type === 'number'));
+  assert.equal(sizeInputs.length, 6, '每档两个数字框（宽 × 高）');
+  // 风格库：名称不可编辑、没有「新增风格」、参数仍可改
+  assert.equal(text.includes('新增风格'), false, '风格库不再提供「＋ 新增风格」');
+  const styleRows = byClass(tree, 'stylerow');
+  assert.equal(styleRows.length, 1, 'stub 里一个风格就是一行');
+  const nameInputs = findAll(styleRows[0], (n) => n.type === 'input' && n.props.type === 'text'
+    && ['manga', '黑白漫画'].includes(String(n.props.value)));
+  assert.equal(nameInputs.length, 0, '风格名称不可编辑（只显示文本）');
+  assert.ok(textOf(styleRows[0]).includes('黑白漫画') && textOf(styleRows[0]).includes('manga'), '名称与 key 要显示出来');
+  const paramInputs = findAll(styleRows[0], (n) => n.type === 'input' && n.props.type === 'number');
+  assert.equal(paramInputs.length, 2, 'CFG 与步数仍可编辑');
+  assert.equal(findAll(styleRows[0], (n) => n.type === 'select').length, 1, 'LoRA 仍可选');
   // 自动宏要在设置页提示出来：哪些宏根本不用填、由宿主现算
   assert.ok(text.includes('自动宏'), '设置页要提示自动宏');
   assert.ok(text.includes('{{year}}') && text.includes('{{time}}'), '自动宏名单要列出来（含年月日分量）');
@@ -959,6 +980,10 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.equal(post.body.cards.macros.player, '阿岚', '改过的名字要按新键提交（值跟着走）');
   assert.equal(post.body.cards.macros.place, '长安', '没动的条目要原样保留');
   assert.equal(Object.hasOwn(post.body.cards.macros, 'user'), false, '改名后不该再提交旧键');
+  // 全局图像尺寸也要一起提交（否则界面改了、出图还是旧尺寸）
+  assert.deepEqual(post.body.imageSizes.scene, [1024, 576], '图像尺寸要随保存提交（场景）');
+  assert.deepEqual(post.body.imageSizes.portrait, [640, 896], '图像尺寸要随保存提交（立绘）');
+  assert.deepEqual(post.body.imageSizes.item, [768, 768], '图像尺寸要随保存提交（道具）');
 
   // 空列表时要说人话：直接给出 `user -> 玩家` 这个例子，而不是留一个空白块让人猜
   stateStub.cards = { root: '', userLabel: '', macros: {} };

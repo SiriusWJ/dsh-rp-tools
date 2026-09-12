@@ -157,6 +157,29 @@ window.__ModuleLoader__.load({
 .rpt img.pv { max-width: 100%; border-radius: 8px; }
 .rpt .stylecard { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: start;
   border: 1px solid color-mix(in oklab, currentColor 11%, transparent); border-radius: 8px; padding: 10px; }
+/* ── 设置页三大类（设定 / 图像 / 工具）────────────────────────────────────
+   小节标题带一条细分隔线，比一堆卡片堆叠好扫；提示文字一律 dim + 12px，别抢正文。 */
+.rpt .rpsec { gap: 12px; }
+.rpt .sechead { align-items: baseline; gap: 10px; }
+.rpt .sechead h4 { margin: 0; font-size: 14px; }
+.rpt .rpsec .dim { font-size: 12px; line-height: 1.5; }
+/* 风格库：一行一个风格，用 flex-wrap 保证窄面板下自动换行而不是挤压输入框 */
+.rpt .stylegrid { display: flex; flex-direction: column; gap: 6px; }
+.rpt .stylerow { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center;
+  border: 1px solid color-mix(in oklab, currentColor 10%, transparent); border-radius: 8px; padding: 6px 8px; }
+.rpt .stylerow .styname { display: flex; flex-direction: column; min-width: 116px; font-size: 12.5px; }
+.rpt .stylerow .styname .mono { font-size: 10.5px; }
+.rpt .stylerow .styfield { display: flex; gap: 5px; align-items: center; font-size: 12px; opacity: .85; }
+.rpt .stylerow .styfield input[type=number] { width: 60px; }
+.rpt .stylerow .stylora select { max-width: 190px; }
+.rpt .stylerow .stytrigger { flex: 1 1 150px; min-width: 120px; }
+.rpt .stylerow .styact { gap: 4px; }
+/* 图像尺寸：三行「用途 宽 × 高 px」，数字框定宽，行与行对齐 */
+.rpt .szblock { display: flex; flex-direction: column; gap: 4px; }
+.rpt .szrow { display: flex; gap: 6px; align-items: center; }
+.rpt .szrow .szlabel { flex: 0 0 40px; font-size: 12px; opacity: .85; }
+.rpt .szrow input[type=number] { width: 78px; }
+.rpt .toollist { max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
 .rpt .nums { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .rpt .nums label { display: flex; gap: 5px; align-items: center; font-size: 12px; opacity: .85; }
 .rpt .nums input[type=number] { width: 64px; }
@@ -346,8 +369,6 @@ window.__ModuleLoader__.load({
       const [loraErr, setLoraErr] = React.useState('');
       // 宿主给的自动宏名单（设置页要把「哪些宏不用填」提示出来）
       const [autoMacros, setAutoMacros] = React.useState([]);
-      const [showNew, setShowNew] = React.useState(false);
-      const [newStyle, setNewStyle] = React.useState({ key: '', label: '', lora: '', trigger: '', notes: '' });
       // 界面里做过但还没提交的增删操作（保存时一次性交给宿主）
       const pendingOps = React.useRef([]);
       // 预览卡片紧贴「试出」按钮渲染；出图后滚过去
@@ -381,38 +402,6 @@ window.__ModuleLoader__.load({
 
       function patchStyle(key, field, value) {
         setDraft((d) => (d ? { ...d, styles: { ...d.styles, [key]: { ...d.styles[key], [field]: value } } } : d));
-      }
-
-      /** 新增一个风格：先在草稿里建出来（保存时才真正落盘到 styles.json）。 */
-      function addStyle() {
-        const key = newStyle.key.trim();
-        const label = newStyle.label.trim() || key;
-        if (!key) { setMsg({ kind: 'err', text: '请填风格 key（英文标识，如 inkwash）' }); return; }
-        if (!/^[\w.-]+$/.test(key)) { setMsg({ kind: 'err', text: 'key 只能用字母/数字/下划线/点/横线' }); return; }
-        if (draft?.styles?.[key]) { setMsg({ kind: 'err', text: `风格已存在：${key}` }); return; }
-        // 若之前删过同名 key，先把那条 remove 撤掉，避免同一个 key 上出现两个操作
-        pendingOps.current = pendingOps.current.filter((o) => !(o.action === 'remove' && o.key === key));
-        pendingOps.current.push({ action: 'add', key });
-        const tpl = draft.styles[draft.defaultStyle] ?? Object.values(draft.styles)[0] ?? {};
-        setDraft((d) => ({
-          ...d,
-          styles: {
-            ...d.styles,
-            [key]: {
-              label,
-              workflow: tpl.workflow ?? 'krea2',
-              lora: newStyle.lora,
-              trigger: newStyle.trigger,
-              notes: newStyle.notes,
-              cfg: tpl.cfg ?? 1,
-              steps: tpl.steps ?? 8,
-              sizes: JSON.parse(JSON.stringify(tpl.sizes ?? { scene: [1344, 768], portrait: [768, 1024], item: [1024, 1024] })),
-            },
-          },
-        }));
-        setNewStyle({ key: '', label: '', lora: '', trigger: '', notes: '' });
-        setShowNew(false);
-        setMsg({ kind: 'ok', text: `已加入风格 ${label}（${key}）——记得点「保存」落盘` });
       }
 
       /** 从草稿里去掉一个风格；内置风格只警告不删。 */
@@ -456,6 +445,8 @@ window.__ModuleLoader__.load({
             negative: draft.negative,
             // 默认宏列表整份提交（键值对）；userLabel 由宿主从 macros.user 同步，不再单独发
             cards: { root: draft.cards?.root ?? '', macros: draft.cards?.macros ?? {} },
+            // 全局图像尺寸（场景/立绘/道具）
+            imageSizes: draft.imageSizes ?? {},
             styles,
             styleOps,
           });
@@ -530,86 +521,88 @@ window.__ModuleLoader__.load({
         ]);
       }
 
-      const styleCards = state.styles.map((s) => {
+      // ── 风格库：**紧凑一行**（名称 + 参数），名称与 key 不可编辑 ──────────────
+      // 用户明确要求：去掉「新增风格」、名称不可改、只显示名称与后面的参数。
+      // 要加风格就直接改 styles.json（设置页顶部有「打开配置文件」）。
+      const styleRows = state.styles.map((s) => {
         const d = draft.styles[s.key] ?? {};
-        return h('div', { key: s.key, className: 'stylecard' }, [
-          h('div', { key: 'l', style: { display: 'flex', flexDirection: 'column', gap: 6 } }, [
-            h('div', { key: 'r1', className: 'row' }, [
-              h('input', {
-                key: 'n', type: 'text', value: d.label ?? '', style: { width: 148 },
-                onChange: (e) => patchStyle(s.key, 'label', e.target.value),
-              }),
-              h('span', { key: 'k', className: 'mono dim' }, s.key),
-              s.builtin ? null : h('span', { key: 'c', className: 'badge warn' }, '自定义'),
-            ]),
-            // 本地 LoRA 选取：清单来自 ComfyUI 的模型目录
-            h('div', { key: 'lr', className: 'row' }, [
-              h('span', { key: 't', className: 'dim mono', style: { flex: '0 0 34px' } }, 'LoRA'),
-              h('span', { key: 's', style: { flex: '1 1 220px' } }, loraSelect(d.lora ?? '', (v) => patchStyle(s.key, 'lora', v), `lora-${s.key}`)),
-            ]),
-            h('input', {
-              key: 't', type: 'text', value: d.trigger ?? '', placeholder: '触发词（写在提示词最前）',
-              onChange: (e) => patchStyle(s.key, 'trigger', e.target.value),
-            }),
+        return h('div', { key: s.key, className: 'stylerow' }, [
+          h('div', { key: 'n', className: 'styname' }, [
+            h('span', { key: 'l' }, d.label ?? s.key),
+            h('span', { key: 'k', className: 'mono dim' }, s.key),
+            s.builtin ? null : h('span', { key: 'c', className: 'badge warn' }, '自定义'),
           ]),
-          h('div', { key: 'c', style: { display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' } }, [
-            h('div', { key: 'nums', className: 'nums' }, [
-              h('label', { key: 'c' }, 'CFG', h('input', {
-                type: 'number', step: '0.1', min: '1', value: d.cfg ?? 1,
-                onChange: (e) => patchStyle(s.key, 'cfg', Number(e.target.value)),
-              })),
-              h('label', { key: 's' }, '步数', h('input', {
-                type: 'number', min: '1', value: d.steps ?? 8,
-                onChange: (e) => patchStyle(s.key, 'steps', Number(e.target.value)),
-              })),
-              h('button', { key: 'p', className: 'tiny', disabled: Boolean(busy), onClick: () => runPreview(s.key) },
-                busy === `preview:${s.key}` ? '…' : '试出'),
-              s.builtin ? null : h('button', {
-                key: 'd', className: 'tiny', disabled: Boolean(busy),
-                onClick: () => removeStyle(s.key),
-              }, '删除'),
-            ]),
-            h('div', { key: 'z', className: 'dim mono' },
-              ['scene', 'portrait', 'item'].map((k) => (Array.isArray(d.sizes?.[k]) ? `${k} ${d.sizes[k][0]}×${d.sizes[k][1]}` : null)).filter(Boolean).join('  ·  ')),
+          h('label', { key: 'c', className: 'styfield' }, 'CFG', h('input', {
+            type: 'number', step: '0.1', min: '1', value: d.cfg ?? 1,
+            onChange: (e) => patchStyle(s.key, 'cfg', Number(e.target.value)),
+          })),
+          h('label', { key: 's', className: 'styfield' }, '步数', h('input', {
+            type: 'number', min: '1', value: d.steps ?? 8,
+            onChange: (e) => patchStyle(s.key, 'steps', Number(e.target.value)),
+          })),
+          h('span', { key: 'lr', className: 'stylora' }, loraSelect(d.lora ?? '', (v) => patchStyle(s.key, 'lora', v), `lora-${s.key}`)),
+          h('input', {
+            key: 't', type: 'text', className: 'stytrigger', value: d.trigger ?? '',
+            placeholder: '触发词（写在提示词最前，可留空）',
+            onChange: (e) => patchStyle(s.key, 'trigger', e.target.value),
+          }),
+          h('div', { key: 'act', className: 'row styact' }, [
+            h('button', { key: 'p', className: 'tiny', disabled: Boolean(busy), onClick: () => runPreview(s.key) },
+              busy === `preview:${s.key}` ? '…' : '试出'),
+            s.builtin ? null : h('button', {
+              key: 'd', className: 'tiny', disabled: Boolean(busy), onClick: () => removeStyle(s.key),
+            }, '删除'),
           ]),
         ]);
       });
 
+      /** 三个大类小节：标题 + 一句说明 + 内容。 */
+      const section = (title, hint, children, key) => h('div', { key: `sec-${key}`, className: 'card rpsec' }, [
+        h('div', { key: 'h', className: 'row sechead' }, [
+          h('h4', { key: 't' }, title),
+          hint ? h('span', { key: 'd', className: 'dim' }, hint) : null,
+        ]),
+        ...children,
+      ]);
+      const sizeRow = (slot, label) => {
+        const pair = Array.isArray(draft.imageSizes?.[slot]) ? draft.imageSizes[slot] : [0, 0];
+        const setSlot = (idx, value) => {
+          const n = Number(value);
+          const next = [pair[0], pair[1]];
+          next[idx] = Number.isFinite(n) ? Math.round(n) : 0;
+          setDraft({ ...draft, imageSizes: { ...(draft.imageSizes ?? {}), [slot]: next } });
+        };
+        return h('div', { key: `sz-${slot}`, className: 'szrow' }, [
+          h('span', { key: 'l', className: 'szlabel' }, label),
+          h('input', { key: 'w', type: 'number', min: '256', step: '16', value: pair[0], onChange: (e) => setSlot(0, e.target.value) }),
+          h('span', { key: 'x', className: 'dim' }, '×'),
+          h('input', { key: 'h', type: 'number', min: '256', step: '16', value: pair[1], onChange: (e) => setSlot(1, e.target.value) }),
+          h('span', { key: 'u', className: 'dim' }, 'px'),
+        ]);
+      };
+
       return h('div', { className: 'rpt' }, [
         h('div', { key: 'head', className: 'row' }, [
           h('h3', { key: 't' }, 'RP工具'),
-          h('span', { key: 'd', className: 'dim' }, '本地 ComfyUI 生图 · 角色卡/世界/随机表按会话隔离'),
           h('span', { key: 'sep', className: 'sep' }),
           h('button', { key: 'chk', onClick: check, disabled: Boolean(busy) }, busy === 'check' ? '检查中…' : '检查连接'),
           h('button', { key: 'reload', onClick: reload, disabled: Boolean(busy) }, '刷新'),
+          h('button', { key: 'save', className: 'primary', onClick: save, disabled: Boolean(busy) }, busy === 'save' ? '保存中…' : '保存'),
+          h('button', { key: 'reset', onClick: reset, disabled: Boolean(busy) }, '恢复默认'),
         ]),
-        h('div', { key: 'file', className: 'dim mono' }, `配置文件：${state.file}`),
         msg ? h('div', { key: 'msg', className: 'msg' }, msg.text) : null,
 
-        h('div', { key: 'global', className: 'card' }, [
-          h('h4', { key: 't' }, '全局生图配置'),
+        // ══ 设定 ══ 文字与卡库类：卡往哪找、宏的默认值 ────────────────────────
+        section('设定', '文字与卡库', [
           h('div', { key: 'kv', className: 'kv' }, [
-            h('span', { key: 'c1' }, 'ComfyUI 地址'),
-            h('input', {
-              key: 'c2', type: 'text', value: draft.comfyui?.baseUrl ?? '',
-              onChange: (e) => setDraft({ ...draft, comfyui: { ...(draft.comfyui ?? {}), baseUrl: e.target.value } }),
-            }),
-            h('span', { key: 'g1' }, '全局默认风格'),
-            h('select', {
-              key: 'g2', value: draft.defaultStyle,
-              onChange: (e) => setDraft({ ...draft, defaultStyle: e.target.value }),
-            }, Object.keys(draft.styles).map((k) => h('option', { key: k, value: k }, `${draft.styles[k].label} (${k})`))),
-            h('span', { key: 'n1' }, '全局负面词'),
-            h('textarea', {
-              key: 'n2', value: draft.negative ?? '', placeholder: '反瑕疵词列表（已预置一套）',
-              onChange: (e) => setDraft({ ...draft, negative: e.target.value }),
-            }),
             h('span', { key: 'k1' }, '卡库目录'),
             h('input', {
               key: 'k2', type: 'text', value: draft.cards?.root ?? '',
-              placeholder: '留空 = 会话工作区下的 rp-cards（相对路径按工作区解析）',
+              placeholder: '留空 = 会话工作区下的 rp-cards',
               onChange: (e) => setDraft({ ...draft, cards: { ...(draft.cards ?? {}), root: e.target.value } }),
             }),
+          ]),
+          h('div', { key: 'mk', className: 'kv' }, [
             h('span', { key: 'u1' }, '默认宏列表'),
             h('div', { key: 'u2', className: 'macroblk' }, [
               // 键值对编辑器：**名字可以改**（这里只是预设默认值，还不知道会用哪张卡，
@@ -662,91 +655,71 @@ window.__ModuleLoader__.load({
                   setDraft({ ...draft, cards: { ...(draft.cards ?? {}), macros } });
                 },
               }, '＋ 添加默认宏'),
-              // 说人话：左边名字 → 右边默认值，一个具体的例子把规则讲完；
-              // 再列出**自动宏**（不用填，装配时现算）—— 卡里常见的那几个就在里面
-              h('div', { key: 'hint', className: 'dim' },
-                Object.keys(draft.cards?.macros ?? {}).length === 0
-                  ? '还没有默认宏。点「＋ 添加默认宏」，名字填 user、值填玩家 —— 卡里的 {{user}} 就会用这个名字。'
-                  : '左边是宏名（对应文本里的 {{…}}），右边是默认值。会话里填过的用它自己那份，这里只影响没填过的会话。' +
-                    `例：user → ${draft.cards?.macros?.user || '玩家'} 表示把 {{user}} 换成「${draft.cards?.macros?.user || '玩家'}」。`),
-              h('div', { key: 'auto', className: 'dim' },
-                `自动宏（不用在这里填，装配时按当前时间现算）：${(autoMacros ?? []).map((n) => `{{${n}}}`).join('、') || '（宿主没提供）'}。`
-                + '导入界面里它们会标「自动」；在这里给它一个默认值就等于钉成固定值。'),
+            ]),
+          ]),
+          h('div', { key: 'hint', className: 'dim' },
+            Object.keys(draft.cards?.macros ?? {}).length === 0
+              ? '还没有默认宏：点「＋ 添加默认宏」，名字填 user、值填玩家。'
+              : '导入卡时，卡里写的 {{宏}} 用这里的默认值预填（会话里填过的以会话为准）。'
+                + `例：user → ${draft.cards?.macros?.user || '玩家'}。`),
+          h('div', { key: 'auto', className: 'dim' },
+            `自动宏（不用填，装配时现算）：${(autoMacros ?? []).map((n) => `{{${n}}}`).join(' ')}`),
+        ], 'config'),
+
+        // ══ 图像 ══ 出图相关的全部设置：地址、风格、负面词、尺寸 ───────────────
+        section('图像', '本地 ComfyUI 生图', [
+          h('div', { key: 'kv', className: 'kv' }, [
+            h('span', { key: 'c1' }, 'ComfyUI 地址'),
+            h('input', {
+              key: 'c2', type: 'text', value: draft.comfyui?.baseUrl ?? '',
+              onChange: (e) => setDraft({ ...draft, comfyui: { ...(draft.comfyui ?? {}), baseUrl: e.target.value } }),
+            }),
+            h('span', { key: 'g1' }, '全局默认风格'),
+            h('select', {
+              key: 'g2', value: draft.defaultStyle,
+              onChange: (e) => setDraft({ ...draft, defaultStyle: e.target.value }),
+            }, Object.keys(draft.styles).map((k) => h('option', { key: k, value: k }, draft.styles[k].label ?? k))),
+            h('span', { key: 'n1' }, '全局负面词'),
+            h('textarea', {
+              key: 'n2', rows: 2, value: draft.negative ?? '', placeholder: '反瑕疵词（已预置一套）',
+              onChange: (e) => setDraft({ ...draft, negative: e.target.value }),
+            }),
+            h('span', { key: 'z1' }, '图像尺寸'),
+            h('div', { key: 'z2', className: 'szblock' }, [
+              sizeRow('scene', '场景'),
+              sizeRow('portrait', '立绘'),
+              sizeRow('item', '道具'),
             ]),
           ]),
           h('div', { key: 'note', className: 'dim' },
-            '负面词对所有会话与风格生效；krea2 turbo 默认 CFG=1 时负向不参与计算 —— 想让负面真正起作用，把对应风格的 CFG 调到 1.5~2.5。'),
-          h('div', { key: 'note2', className: 'dim' },
-            '卡库目录是「导入 PNG 故事书」扫描角色卡的地方。留空 = 会话工作区下的 rp-cards（卡跟着战役走）；'
-            + '填绝对路径可指向共享卡库，填相对路径则按工作区解析。改完记得保存。'),
-          h('div', { key: 'note3', className: 'dim' },
-            '卡里用到的 {{宏}} 会在导入时列出来让你填（{{time}} / {{date}} 等自动宏由系统每轮现算，不用填）；'
-            + '值按会话保存，RP 面板里随时能改。'),
-          // 预览结果就放在这条配置里（卡片的「试出」按钮在风格库那边，滚过来即可见）
+            '尺寸对所有用途生效（场景/立绘/道具各一档）；krea2 风格 CFG=1 时负面词不参与计算。'),
+
+          h('div', { key: 'styles', className: 'row sechead' }, [
+            h('h4', { key: 't' }, `风格库（${state.styles.length}）`),
+            h('span', { key: 'd', className: 'dim' }, '名称与 key 固定；CFG / 步数 / LoRA / 触发词可改。要加风格改 styles.json'),
+          ]),
+          loraErr ? h('div', { key: 'le', className: 'dim' }, `LoRA 清单读取失败（${loraErr}）—— 确认 ComfyUI 已启动`) : null,
+          h('div', { key: 'list', className: 'stylegrid' }, styleRows),
+
           preview ? h('div', { key: 'prev', className: 'card', ref: previewRef }, [
             h('div', { key: 'l', className: 'row' }, [
               h('span', { key: 't', className: 'dim' }, `预览：${preview.key}（${(preview.elapsedMs / 1000).toFixed(1)}s）`),
               h('span', { key: 'sep', className: 'sep' }),
-              preview.url ? h('a', { key: 'o', className: 'dim', href: preview.url, target: '_blank', rel: 'noreferrer' }, '新标签打开大图') : null,
+              preview.url ? h('a', { key: 'o', className: 'dim', href: preview.url, target: '_blank', rel: 'noreferrer' }, '大图') : null,
             ]),
             preview.url ? h('img', { key: 'i', className: 'pv', src: preview.url, alt: preview.key }) : null,
           ]) : null,
-          h('div', { key: 'act', className: 'row' }, [
-            h('button', { key: 'save', className: 'primary', onClick: save, disabled: Boolean(busy) }, busy === 'save' ? '保存中…' : '保存'),
-            h('button', { key: 'reset', onClick: reset, disabled: Boolean(busy) }, '恢复默认'),
-          ]),
-        ]),
+        ], 'image'),
 
-        h('div', { key: 'styles', className: 'card' }, [
-          h('div', { key: 'h', className: 'row' }, [
-            h('h4', { key: 't' }, `风格库（${state.styles.length}）`),
-            h('span', { key: 'sep', className: 'sep' }),
-            h('button', { key: 'add', disabled: Boolean(busy), onClick: () => setShowNew((v) => !v) },
-              showNew ? '取消' : '＋ 新增风格'),
-          ]),
-          loraErr ? h('div', { key: 'le', className: 'dim' }, `LoRA 清单读取失败（${loraErr}）—— 请确认 ComfyUI 已启动；当前只能沿用已有 LoRA 名。`) : null,
-          // 新增风格表单：key + 名称 + 本地 LoRA 选取 + 触发词
-          showNew ? h('div', { key: 'new', className: 'card', style: { gap: 8 } }, [
-            h('div', { key: 'r1', className: 'row' }, [
-              h('input', {
-                key: 'k', type: 'text', value: newStyle.key, placeholder: 'key（英文，如 inkwash）', style: { flex: '1 1 140px' },
-                onChange: (e) => setNewStyle({ ...newStyle, key: e.target.value }),
-              }),
-              h('input', {
-                key: 'l', type: 'text', value: newStyle.label, placeholder: '显示名，如 水墨', style: { flex: '1 1 140px' },
-                onChange: (e) => setNewStyle({ ...newStyle, label: e.target.value }),
-              }),
-            ]),
-            h('div', { key: 'r2', className: 'row' }, [
-              h('span', { key: 't', className: 'dim mono', style: { flex: '0 0 34px' } }, 'LoRA'),
-              h('span', { key: 's', style: { flex: '1 1 220px' } },
-                loraSelect(newStyle.lora, (v) => setNewStyle({ ...newStyle, lora: v }), 'lora-new')),
-            ]),
-            h('input', {
-              key: 't', type: 'text', value: newStyle.trigger, placeholder: '触发词（可留空，之后再填）',
-              onChange: (e) => setNewStyle({ ...newStyle, trigger: e.target.value }),
-            }),
-            h('input', {
-              key: 'n', type: 'text', value: newStyle.notes, placeholder: '备注（给自己看的用途说明）',
-              onChange: (e) => setNewStyle({ ...newStyle, notes: e.target.value }),
-            }),
-            h('div', { key: 'r3', className: 'row' }, [
-              h('button', { key: 'ok', className: 'primary', onClick: addStyle }, '加入风格库'),
-              h('span', { key: 'd', className: 'dim' }, '加入后还要点「保存」才写入 styles.json；新风格的尺寸/CFG 沿用当前默认风格。'),
-            ]),
-          ]) : null,
-          ...styleCards,
-        ]),
-
-        h('div', { key: 'tools', className: 'card scroll' }, [
-          h('h4', { key: 't' }, `工具列表（${tools.length}）`),
-          h('div', { key: 'd', className: 'dim' }, 'rp_* 生图 / 会话 / 角色 / 场景 / 表格工具只在 DM 预设的会话里注册，其它会话不加载。'),
-          // 只列名字与一句话说明；参数清单太长，交给模型自己看工具 schema。
-          ...tools.map((tool) => h('div', { key: tool.name, className: 'tool' }, [
+        // ══ 工具 ══ 诊断与工具清单 ───────────────────────────────────────────
+        section('工具', `rp_* 只在 DM 预设的会话里注册（当前 ${tools.length} 个）`, [
+          h('div', { key: 'd', className: 'dim' }, '这些是 DM 能调用的工具；其它预设的会话不加载。'),
+          h('div', { key: 'list', className: 'toollist scroll' }, tools.map((tool) => h('div', { key: tool.name, className: 'tool' }, [
             h('span', { key: 'a', className: 'mono' }, tool.name),
             h('span', { key: 'b', className: 'dim' }, `  ${String(tool.description ?? '').split('\n')[0]}`),
-          ])),
-        ]),
+          ]))),
+          h('div', { key: 'file', className: 'dim mono' }, `配置文件：${state.file}`),
+        ], 'tools'),
       ]);
     }
 

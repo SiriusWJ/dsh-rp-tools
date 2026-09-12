@@ -1288,6 +1288,37 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('设置页：宿主给出自动宏名单', Array.isArray(st.json.autoMacros) && st.json.autoMacros.includes('year'), true);
 }
 
+// ── 全局图像尺寸（设置页「图像」里那三行）───────────────────────────────────
+// 用户要求：3 个图像尺寸开放全局编辑。以前尺寸藏在每个风格里（界面只能看不能改）。
+// 解析顺序：全局 imageSizes 优先 → 风格自己的 sizes（手写特例）→ 兜底。
+{
+  check('尺寸：没有全局值时用风格自己的',
+    mod.__debug.resolveImageSizes({ styles: { s: { sizes: { scene: [800, 600] } } } }, 's', 'scene'), [800, 600]);
+  const cfg1 = {
+    imageSizes: { scene: [1024, 576], portrait: [640, 896], item: [768, 768] },
+    styles: { s: { sizes: { scene: [800, 600] } } },
+  };
+  check('尺寸：全局优先于风格（界面改了就该生效）', mod.__debug.resolveImageSizes(cfg1, 's', 'scene'), [1024, 576]);
+  check('尺寸：按用途取（立绘）', mod.__debug.resolveImageSizes(cfg1, 's', 'portrait'), [640, 896]);
+  check('尺寸：按用途取（道具）', mod.__debug.resolveImageSizes(cfg1, 's', 'item'), [768, 768]);
+  check('尺寸：全局缺该用途时回落到全局 scene',
+    mod.__debug.resolveImageSizes({ imageSizes: { scene: [900, 500] } }, 's', 'portrait'), [900, 500]);
+  check('尺寸：全局值非法（<256）时不采信，退回风格',
+    mod.__debug.resolveImageSizes({ imageSizes: { scene: [10, 10] }, styles: { s: { sizes: { scene: [800, 600] } } } }, 's', 'scene'), [800, 600]);
+  check('尺寸：都没有时用兜底值', mod.__debug.resolveImageSizes({}, 's', 'portrait'), [768, 1024]);
+
+  // 保存接口：只收那三个槽位 + 合法宽高；非法值不动旧值
+  const saved = await callPost('/rp-tools/config', { imageSizes: { scene: [1200, 700], portrait: [640, 960], bogus: [100, 100] } });
+  check('尺寸：保存全局尺寸', saved.json.config?.imageSizes?.scene, [1200, 700]);
+  check('尺寸：保存立绘尺寸', saved.json.config?.imageSizes?.portrait, [640, 960]);
+  check('尺寸：未知槽位被忽略', Object.hasOwn(saved.json.config?.imageSizes ?? {}, 'bogus'), false);
+  check('尺寸：道具那档保持原值', saved.json.config?.imageSizes?.item, [768, 768]);
+  const bad = await callPost('/rp-tools/config', { imageSizes: { scene: [10, 10] } });
+  check('尺寸：非法宽高不改动旧值', bad.json.config?.imageSizes?.scene, [1200, 700]);
+  const kept = await callGet('/rp-tools/state');
+  check('尺寸：落盘后 state 里读得到', kept.json.config?.imageSizes?.scene, [1200, 700]);
+}
+
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 console.log(`数据目录（临时，即将删除）: ${TEST_HOME}`);
 rmSync(TEST_HOME, { recursive: true, force: true });
