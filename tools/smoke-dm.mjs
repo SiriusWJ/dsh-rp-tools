@@ -720,8 +720,11 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   const ws = join(TEST_HOME, 'ws-import');
   mkdirSync(ws, { recursive: true });
   const IMPORT_SID = crypto.randomUUID();
-  // 先写一份「用户自己写的」世界书，验证导入是**追加**而不是覆盖
+  // 老版本的世界书在**工作区根目录**（按工作区共享 → 同工作区的两个会话会串起来）。
+  // 这里故意先放一份旧文件，验证「一次性迁移到会话目录」这条路。
   writeFileSync(join(ws, 'rp-worldbook.md'), '# 我的手写世界书\n\n## 我自己的条目\n<!-- keys: 自有 -->\n别动我。\n', 'utf8');
+  // 世界书现在按会话隔离：<工作区>/rp-sessions/<会话 id>/rp-worldbook.md
+  const LORE_FILE = join(ws, 'rp-sessions', IMPORT_SID, 'rp-worldbook.md');
   await callPost('/rp-tools/dm-mark', { sessionId: IMPORT_SID, preset: 'dm' });
 
   const imported = await callPost('/rp-tools/card-import', { sessionId: IMPORT_SID, workspace: ws, path: rel });
@@ -729,15 +732,17 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('导入：ok', imported.json.ok, true);
   check('导入：角色名', imported.json.character?.name, '烟测卡');
   check('导入：世界书新增 1 条', imported.json.lore?.added, 1);
-  check('导入：世界书文件相对路径', imported.json.files?.world, 'rp-worldbook.md');
+  check('导入：世界书写进本会话自己的目录', imported.json.files?.world, `rp-sessions/${IMPORT_SID}/rp-worldbook.md`);
+  check('导入：世界书文件真的在会话目录里', existsSync(LORE_FILE), true);
+  check('导入：旧的共享世界书没被改写', readFileSync(join(ws, 'rp-worldbook.md'), 'utf8').includes('烟测条目'), false);
   check('导入：全文文件已写出', existsSync(join(ws, 'rp-cards', '烟测卡.card.md')), true);
   check('导入：卡 JSON 已写出', existsSync(join(ws, 'rp-cards', '烟测卡.card.json')), true);
   check('导入：卡面已复制（当立绘）', existsSync(join(ws, 'rp-cards', '烟测卡.card.png')), true);
   check('导入：立绘登记在会话里', imported.json.files?.image, 'rp-cards/烟测卡.card.png');
   check('导入：返回开场指令', String(imported.json.opening).includes('不要再问世界从哪来'), true);
 
-  const wbText = readFileSync(join(ws, 'rp-worldbook.md'), 'utf8');
-  check('导入：用户原有条目没被覆盖', wbText.includes('我自己的条目'), true);
+  const wbText = readFileSync(LORE_FILE, 'utf8');
+  check('导入：旧世界书被迁移过来（原有条目还在）', wbText.includes('我自己的条目'), true);
   check('导入：新条目被追加', wbText.includes('烟测条目'), true);
   check('导入：原有条目只出现一次', wbText.split('我自己的条目').length - 1, 1);
 
@@ -789,12 +794,13 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('lore：正文已展开占位符', String(loreEntry?.preview).includes('玩家来到烟测卡的门前'), true);
   check('lore：能列出用户手写的条目', loreRes.json.entries?.some((e) => e.title === '我自己的条目'), true);
   check('lore：给出文件绝对路径', typeof loreRes.json.file === 'string' && loreRes.json.file.endsWith('rp-worldbook.md'), true);
+  check('lore：文件在会话自己的目录里（不是工作区根）', String(loreRes.json.file).includes(IMPORT_SID), true);
   const loreMissing = await callGet('/rp-tools/lore', `?sessionId=${crypto.randomUUID()}`);
   check('lore：拿不到工作区时不报错、只说明', loreMissing.json.exists, false);
 
   // ── 世界书编辑（面板里的「编辑 / 常驻开关 / 新建 / 删除」走这条路由）──────
   {
-    const read = () => readFileSync(join(ws, 'rp-worldbook.md'), 'utf8');
+    const read = () => readFileSync(LORE_FILE, 'utf8');
     // ① 取单条完整正文（列表只给 160 字预览，编辑器要全文）
     const one = await callGet('/rp-tools/lore', `?sessionId=${IMPORT_SID}&title=${encodeURIComponent('烟测条目')}`);
     check('lore 详情：取到完整正文', String(one.json.entry?.body).includes('玩家来到烟测卡的门前'), true);
@@ -867,6 +873,43 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     // 再跑一次：没有可改的了，不许报错
     const loc2 = await callPost('/rp-tools/lore', { sessionId: IMPORT_SID, action: 'localize' });
     check('属性中文化：重复执行是幂等的', loc2.json.changed, 0);
+  }
+
+  // ── ★ 会话隔离回归：同工作区的两个会话绝不能共享世界书 ──────────────────
+  // 用户报过的事故：世界书原先放在**工作区根目录**，而工作区是按目录共享的，
+  // 于是 A 会话导入的卡组条目出现在了 B 会话的上下文里（两个会话混在一起）。
+  {
+    const sidB = crypto.randomUUID();
+    await callPost('/rp-tools/dm-mark', { sessionId: sidB, preset: 'dm' });
+    const loreB = await callGet('/rp-tools/lore', `?sessionId=${sidB}&workspace=${encodeURIComponent(ws)}`);
+    check('隔离：B 会话拿到的是自己的世界书文件', String(loreB.json.file).includes(sidB), true);
+    check('隔离：B 会话看不到 A 会话导入的条目', loreB.json.entries?.some((e) => e.title === '烟测条目'), false);
+    // 旧的工作区根世界书会被**一次性迁移**一份给每个会话（不丢数据，之后各自清理）；
+    // 但 A 在会话目录里的新增条目不会跟着过去。
+    check('隔离：B 只拿到旧共享文件的内容', loreB.json.total, 1);
+    check('隔离：B 拿到的是旧文件里那条', loreB.json.entries?.[0]?.title, '我自己的条目');
+    check('隔离：B 这次读取触发了迁移提示', loreB.json.migrated, true);
+    const loreB2 = await callGet('/rp-tools/lore', `?sessionId=${sidB}&workspace=${encodeURIComponent(ws)}`);
+    check('隔离：迁移只做一次', loreB2.json.migrated, false);
+
+    // B 自己建一条，A 那边不受影响
+    const addB = await callPost('/rp-tools/lore', {
+      sessionId: sidB, workspace: ws, action: 'add',
+      entry: { title: 'B会话的条目', keys: ['只有B'], body: 'B 的正文' },
+    });
+    check('隔离：B 能写自己的世界书', addB.json.ok, true);
+    check('隔离：B 的文件在自己的目录里', String(addB.json.file).includes(sidB), true);
+    const loreA = await callGet('/rp-tools/lore', `?sessionId=${IMPORT_SID}&workspace=${encodeURIComponent(ws)}`);
+    check('隔离：A 的条目列表里没有 B 的条目', loreA.json.entries?.some((e) => e.title === 'B会话的条目'), false);
+    check('隔离：A 的条目数没变', loreA.json.total, 2);
+
+    // 注入层也要隔离：B 的装配不该命中 A 的世界书
+    mod.__debug.setSessionCwd(sidB, ws);
+    const sessB = (await callGet('/rp-tools/session', `?sessionId=${sidB}`)).json.session;
+    const turnB = mod.__debug.buildTurnContext(sessB, '我们来聊聊烟测这件事', { sessionId: sidB, turn: 3 });
+    check('隔离：B 的本轮注入里没有 A 的世界书条目', turnB.includes('烟测'), false);
+    const standB = mod.__debug.buildStandingText(sessB, { loreFile: join(ws, 'rp-sessions', sidB, 'rp-worldbook.md') });
+    check('隔离：常驻段会给出本会话自己的世界书路径', standB.includes(sidB), true);
   }
 
   // 卡面路由：只服务卡库内的 png

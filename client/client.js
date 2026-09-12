@@ -953,6 +953,10 @@ window.__ModuleLoader__.load({
           lore && lore.exists === false
             ? h('div', { key: 'none', className: 'dim' }, '这个会话的工作区里还没有 rp-worldbook.md。用「📖 导入故事书」导入一张卡，或让 DM 用 rp_lore 生成模板。')
             : null,
+          lore && lore.migrated
+            ? h('div', { key: 'mig', className: 'dim' },
+              '本会话的世界书是刚从旧的共享文件（工作区根目录的 rp-worldbook.md）复制过来的 —— 老文件原样保留。以后各会话各自独立，不再互相串。')
+            : null,
           lore && lore.exists
             ? h('div', { key: 'stat', className: 'dim' },
               `${lore.total} 条（常驻 ${lore.constant}｜带触发词 ${lore.keyed}）· ${lore.chars} 字 · ${lore.relative ?? 'rp-worldbook.md'}`

@@ -29,7 +29,7 @@
 | GitHub | `https://github.com/SiriusWJ/dsh-rp-tools`（public，分支 `main`，topics 含 `dsh-plugin`） |
 | 安装位置（profile） | `~/.dsh/profiles/web/node_modules/dsh-rp-tools`（`file:` 依赖 = **安装期拷贝，不会自动跟随源码**） |
 | 数据目录 | `~/.dsh/data/dsh-rp-tools/`（`styles.json` / `sessions/<id>.json` / `dm-sessions.json` / `_agent-probe.json` / `_standing-probe.json`） |
-| 世界书（按会话） | `<会话工作区>/rp-worldbook.md` —— 工作区取自 `session.header.cwd`（如 `D:\Story`） |
+| 世界书（**按会话隔离**） | `<会话工作区>/rp-sessions/<会话 id>/rp-worldbook.md` —— 工作区取自 `session.header.cwd`（如 `D:\Story`）。老版本在工作区根目录，首次读取时会**一次性迁移**一份过来（旧文件保留） |
 | PNG 卡库（导入源） | `D:\Story\sillytavernassets`（3269 张，`cards/<分类>/*.png`）—— 设置页「卡库目录」可改，存 `styles.json` 的 `cards.root` |
 | 导入产物（按会话） | `<会话工作区>/rp-cards/<slug>.{md,json,png}`（卡全文 / 规范化结果 / 卡面） |
 | 私有卡索引（可选） | `lib/card-index.js`（**gitignore**，482KB，含卡名/作者/标签/条目数；缺失时自动退回目录扫描） |
@@ -391,6 +391,8 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen |
 | `schtasks` 的 `/TR` 超 261 字符 | 把命令写进 `.cmd`，`/TR` 指向该 cmd |
 | 从 pwsh 里 `Stop-Process` 匹配到自己 | 过滤 `CommandLine` 时别让当前命令自身的文本命中模式（用拼接绕过） |
 | 负面词"不起作用" | Krea-2 Turbo 默认 CFG=1，负向被 `(1-cfg)=0` 消掉；把该风格 `cfg` 调到 1.5~2.5 才生效 |
+| 两个会话的世界书混到一起 | 世界书原先放在**工作区根目录**的 p-worldbook.md，而工作区是**按目录共享**的 —— 同工作区的两个会话读到同一个文件，A 导入的卡组条目就出现在 B 的上下文里。现在世界书按会话隔离：<工作区>/rp-sessions/<会话 id>/rp-worldbook.md；老文件首次读取时一次性迁移一份（旧文件保留不删），之后各会话互不影响。回归测试：smoke-dm.mjs 的「隔离：」系列（两个会话同一个工作区，条目、注入、常驻段路径三处都要互不可见） |
+| 装了插件后**同工作区**会话互相串设定 | 见上一条。凡是「按会话」承诺的东西，路径里就必须有会话 id —— 别放在工作区根这种共享位置上 |
 | 换了卡库目录却列出 3269 张老卡 | 私有索引 `card-index.js` 里的相对路径是**相对内置默认根**生成的，换根之后完全不适用。只在 `resolve(root) === resolve(CARD_DEFAULT_ROOT)` 时才用索引，否则扫目录（踩过一次：测试用临时卡库，却列出真卡库的卡） |
 | 删掉 `lib/card-index.js` 后插件整个加载失败 | 那是**可选私有文件**（gitignore），不能静态 `import`（静态 import 失败连累整个模块）。用动态 `import()` + try 包住，没有就退回扫目录 |
 | 卡库路由变成任意文件读取 | 卡库路径来自浏览器，`resolve()` 之后必须**前缀比对**卡库根 + 只认 `.png`（`safeCardPath`）。逃逸、绝对路径、非 png、不存在 → 全部 400。这条路由会把文件内容交给浏览器，校验不是可选项 |
