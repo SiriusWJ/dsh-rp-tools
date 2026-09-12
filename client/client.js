@@ -165,18 +165,25 @@ window.__ModuleLoader__.load({
 .rpc .dim { opacity: .62; font-size: 12px; }
 .rpc .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
 .rpc .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* chip 的规格**照抄宿主那一行里的官方 chip**（DM 预设座位 / 工作区 chip）：
+   无边框、透明底、16px 圆角、min-height 28px、13px/500 字、hover 与展开态都用 interactive-bg-hover。
+   自己另写一套（细边框 + 小圆角 + 12px 字）就会跟旁边的 Story / DM 两枚明显不搭 —— 踩过两次。 */
 .rpc .chip {
-  box-sizing: border-box; align-self: flex-start; display: inline-flex; align-items: center; gap: 6px;
-  height: 26px; padding: 0 10px 0 8px; border-radius: 13px; cursor: pointer; font: inherit; font-size: 12px;
-  border: .5px solid var(--dsw-alias-border-l4, color-mix(in oklab, currentColor 20%, transparent));
-  background: transparent; color: inherit; white-space: nowrap;
+  box-sizing: border-box; display: inline-flex; align-items: center; gap: 4px; align-self: flex-start;
+  min-width: 0; max-width: min(100%, 240px); min-height: 28px; padding: 0 8px;
+  border: none; border-radius: 16px; background: 0 0;
+  color: var(--dsw-alias-label-primary, inherit);
+  font-family: inherit; font-size: 13px; font-weight: 500; line-height: 20px;
+  cursor: pointer; white-space: nowrap;
 }
-.rpc .chip:hover { background: var(--dsw-alias-interactive-bg-hover, color-mix(in oklab, currentColor 10%, transparent)); }
-.rpc .chip[data-open='true'] { border-color: var(--dsw-alias-label-secondary, currentColor); background: color-mix(in oklab, currentColor 10%, transparent); }
-/* 定位用的空占位（被 portal 送进「工作区 / DM 主持人」那一行时，这里不能占空间） */
+.rpc .chip:hover:not(:disabled), .rpc .chip[aria-expanded='true'] {
+  background: var(--dsw-alias-interactive-bg-hover, color-mix(in oklab, currentColor 10%, transparent));
+}
+/* 与旁边两枚 chip 一样的小箭头（颜色用 caption 级，与官方 chevron 对齐） */
+.rpc .chip .chev { flex: none; color: var(--dsw-alias-label-caption, currentColor); font-size: 9px; line-height: 1; }
+.rpc .chip .t { overflow: hidden; text-overflow: ellipsis; }
+/* 定位用的空占位（chip 被 portal 送进那一行时，这里不能占空间） */
 .rpc .rpc-holder { display: none; }
-/* 送进那一行之后：与旁边的 chip 同一套规格（28px 高、细边框、透明底），但要矮一点以免撑高整行 */
-.rpc .chip[data-row='true'] { height: 24px; border-radius: 12px; padding: 0 9px 0 7px; font-size: 12px; }
 .rpc .panel {
   display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 12px;
   border: 1px solid color-mix(in oklab, currentColor 14%, transparent);
@@ -1372,13 +1379,16 @@ window.__ModuleLoader__.load({
       const chip = h('button', {
         key: 'chip', type: 'button', className: 'chip',
         'data-open': open ? 'true' : 'false',
-        // 进那一行时用矮一号的规格（那边是 24~28px 的小 chip 行）
         'data-row': slot ? 'true' : 'false',
         'aria-expanded': open,
         style: slot?.kind === 'fixed' ? slot.style : undefined,
         onClick: () => setOpen((v) => !v),
         title: '从本地 PNG 角色卡库导入一本故事书：世界书写进工作区，自动开场（只在未开局的 DM 新会话上出现）',
-      }, [h('span', { key: 'g' }, '📖'), h('span', { key: 't' }, open ? '收起' : '导入故事书')]);
+      }, [
+        h('span', { key: 'g' }, '📖'),
+        h('span', { key: 't' }, open ? '收起' : '导入故事书'),
+        h('span', { key: 'c', className: 'chev' }, open ? '▴' : '▾'),
+      ]);
 
       // 定位用的空节点：chip 被送走之后，根元素里还得留个锚
       const holder = h('span', { key: 'holder', className: 'rpc-holder', 'aria-hidden': 'true' });

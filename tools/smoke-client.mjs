@@ -206,6 +206,14 @@ assert.ok(style.textContent.includes('.rpc'), '样式表里应含故事书导入
 // 导入面板的两列布局必须随窄视口塌成一列，否则小窗口里列表会被压没
 assert.ok(style.textContent.includes('.rpc .split'), '样式表里应含导入面板的 .split 两列布局');
 assert.ok(/@media[^{]*\{\s*\.rpc \.split/.test(style.textContent), '.split 应有窄视口的单列降级');
+// chip 必须与旁边 Story / DM 两枚官方 chip 同一套规格：无边框、16px 圆角、透明底、hover 用主题 token。
+// （曾经自己写细边框 + 小圆角 + 12px 字，用户一眼就看出「风格不对」。）
+const chipCss = /\.rpc \.chip \{([^}]*)\}/.exec(style.textContent)?.[1] ?? '';
+assert.ok(/border:\s*none/.test(chipCss), 'chip 不该有边框（官方 chip 是透明底无边框）');
+assert.ok(/border-radius:\s*16px/.test(chipCss), 'chip 圆角应与官方 chip 一致（16px）');
+assert.ok(/font-weight:\s*500/.test(chipCss), 'chip 字重应与官方 chip 一致（500）');
+assert.ok(/min-height:\s*28px/.test(chipCss), 'chip 高度应与官方 chip 一致（28px）');
+assert.ok(style.textContent.includes('--dsw-alias-interactive-bg-hover'), 'chip 的 hover 应使用官方主题 token');
 
 // 再调一次不能又插一份（幂等）
 plugin.apply(ctx);
