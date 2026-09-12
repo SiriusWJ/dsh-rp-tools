@@ -14,7 +14,7 @@ import { pathToFileURL } from 'node:url';
 const here = new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const mod = (p) => import(pathToFileURL(join(here, '..', 'lib', p)).href);
 const { readPngTextChunks, decodeCardPng } = await mod('card-png.js');
-const { buildImport, worldBookMarkdown, pickGreeting, isAdText, cardToCharacter, cardToMarkdown, buildOpeningPrompt, resolvePlaceholders, describePlaceholders } = await mod('card-import.js');
+const { buildImport, worldBookMarkdown, pickGreeting, isAdText, cardToCharacter, cardToMarkdown, buildOpeningPrompt, resolvePlaceholders, describePlaceholders, localizeAttributes } = await mod('card-import.js');
 
 let pass = 0; let fail = 0;
 const check = (name, got, want) => {
@@ -259,6 +259,44 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card } = await import(
   const md = cardToMarkdown(decoded, { userLabel: '阿岚' });
   check('导入展开：卡全文里也没有占位符', /\{\{/.test(md.text), false);
   check('导入展开：卡全文明说占位符已展开', md.text.includes('占位符已展开'), true);
+}
+
+// ── 属性标签中文化（name: → 名称：、gender: Female → 性别：女）────────────
+{
+  const r = localizeAttributes('name: 慕容嫣\nversion: 1\nage: 17\ngender: Female');
+  check('属性：name → 名称', r.text.startsWith('名称：慕容嫣'), true);
+  check('属性：version/age 换标签', r.text.includes('版本：1') && r.text.includes('年龄：17'), true);
+  check('属性：gender 的值也翻成中文', r.text.includes('性别：女'), true);
+  check('属性：统计改写行数', r.count, 4);
+
+  // 不该动的东西：中文冒号叙述、HTML 注释、白名单外的键
+  const safe = localizeAttributes('他说道：你好\n<!-- keys: 慕容嫣 | constant -->\nunknown_key: keep me');
+  check('属性：中文冒号叙述不碰', safe.text.includes('他说道：你好'), true);
+  check('属性：keys 注释行不碰', safe.text.includes('<!-- keys: 慕容嫣 | constant -->'), true);
+  check('属性：白名单外的键原样保留', safe.text.includes('unknown_key: keep me'), true);
+  check('属性：没命中就不计数', safe.count, 0);
+  check('属性：缩进与列表符号保留', localizeAttributes('  - gender: Male').text, '  - 性别：男');
+  check('属性：空输入不炸', localizeAttributes('').count, 0);
+
+  // 端到端：世界书正文里的属性行也要中文化（用户截图里就是这一屏）
+  const png = makePng([textChunk('ccv3', card({
+    name: '慕容嫣',
+    description: '',
+    scenario: '',
+    character_book: {
+      entries: [{
+        name: '慕容嫣',
+        keys: ['慕容嫣'],
+        content: 'name: 慕容嫣\nversion: 1\nage: 17\ngender: Female\nidentities:\n - 武林盟主的独生女',
+      }],
+    },
+  }, 'chara_card_v3'))]);
+  const imp2 = buildImport(decodeCardPng(png));
+  check('属性：世界书正文已中文化', imp2.worldBookMarkdown.includes('性别：女'), true);
+  check('属性：英文键不再出现', /^gender:/m.test(imp2.worldBookMarkdown), false);
+  check('属性：统计进 summary', imp2.summary.some((s) => s.includes('属性标签中文化')), true);
+  check('属性：返回 attributes.count', imp2.attributes.count >= 4, true);
+  check('属性：触发词没被翻译（仍是慕容嫣）', /keys: 慕容嫣/.test(imp2.worldBookMarkdown), true);
 }
 
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);

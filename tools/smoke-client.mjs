@@ -499,8 +499,11 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   const text = textOf(panel2);
   assert.ok(text.includes('世界书（2 条）'), '面板应显示世界书条目数（含导入进来的那些）');
   assert.ok(text.includes('长安城'), '面板应列出世界书条目标题');
-  assert.ok(text.includes('触发词：长安'), '面板应显示条目的触发词');
   assert.ok(text.includes('世界总纲') && text.includes('常驻'), '面板应标出常驻条目');
+  // 折叠态只留一行：名称 / 徽标 / 字数 + 常驻开关 + 详情按钮；触发词与正文都收进详情里
+  assert.equal(text.includes('触发词：长安'), false, '折叠态不该铺开触发词行');
+  assert.equal(text.includes('天宝年间的长安城，坊市分明。'), false, '折叠态不该铺开正文');
+  assert.ok(/\d+ 字/.test(text), '折叠态应显示字数');
   assert.ok(text.includes('rp-worldbook.md'), '面板应给出世界书文件路径');
   // 没有随机表时，那张「RP 表格 / 随机表（0）」卡片不该出现（用户要求去掉）
   assert.equal(text.includes('RP 表格'), false, '没有表时不应渲染「RP 表格 / 随机表（0）」');
@@ -526,7 +529,11 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.ok(formText.includes('常驻（不看触发词）'), '详情里应有常驻开关');
   assert.ok(formText.includes('order'), '详情里应有 order');
   assert.ok(formText.includes('概率'), '详情里应有概率');
-  assert.ok(formText.includes('天宝年间的长安城，坊市分明。'), '详情里应显示完整正文');
+  // 完整正文在正文输入框里（textarea 的 value 是 prop，textOf 看不到，得直接断言 value）
+  const bodyArea = findAll(withForm, (n) => n.type === 'textarea' && String(n.props.className ?? '').includes('lorebody'));
+  assert.equal(bodyArea.length, 1, '详情里应有正文输入框');
+  assert.equal(bodyArea[0].props.value, '天宝年间的长安城，坊市分明。', '详情里应带出完整正文（不是 160 字预览）');
+  assert.ok(formText.includes('触发词：长安'), '详情里应显示触发词');
   assert.ok(formText.includes('删除条目'), '详情里应有删除');
   // 「看不全」那次的教训：右侧栏很窄，正文框必须给足高度，列表也要按视口给高度
   assert.ok(/\.rpt \.loreform textarea\.lorebody \{[^}]*min-height:\s*2\d\dpx/.test(style.textContent),

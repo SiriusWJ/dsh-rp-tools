@@ -843,6 +843,26 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     const crossOrigin = await callPost('/rp-tools/lore', { sessionId: IMPORT_SID, action: 'delete', title: '我自己的条目' }, 'http://evil.example');
     check('lore 编辑：跨域写入被拒', crossOrigin.status, 403);
     check('lore 编辑：跨域那次没删掉', read().includes('我自己的条目'), true);
+
+    // ⑤ 属性中文化：把老世界书里的 name: / gender: Female 一次性改成中文
+    const twisted = await callPost('/rp-tools/lore', {
+      sessionId: IMPORT_SID, action: 'update', title: '烟测条目',
+      entry: { title: '烟测条目', keys: '烟测', body: 'name: 慕容嫣\ngender: Female\nage: 17' },
+    });
+    check('属性中文化：先造一条英文键的正文', twisted.json.ok, true);
+    const loc = await callPost('/rp-tools/lore', { sessionId: IMPORT_SID, action: 'localize' });
+    check('属性中文化：执行成功', loc.json.ok, true);
+    check('属性中文化：只动改了的那条', loc.json.changed, 1);
+    check('属性中文化：统计改写行数', loc.json.lines, 3);
+    const locText = read();
+    check('属性中文化：name → 名称', locText.includes('名称：慕容嫣'), true);
+    check('属性中文化：gender 值也翻了', locText.includes('性别：女'), true);
+    check('属性中文化：不再有英文键', /^gender:/m.test(locText), false);
+    check('属性中文化：触发词注释没被动', locText.includes('keys: 烟测'), true);
+    check('属性中文化：用户手写条目仍在', locText.includes('我自己的条目'), true);
+    // 再跑一次：没有可改的了，不许报错
+    const loc2 = await callPost('/rp-tools/lore', { sessionId: IMPORT_SID, action: 'localize' });
+    check('属性中文化：重复执行是幂等的', loc2.json.changed, 0);
   }
 
   // 卡面路由：只服务卡库内的 png

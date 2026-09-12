@@ -116,8 +116,9 @@ window.__ModuleLoader__.load({
 .rpt .loreitem { padding: 6px 0; border-top: 1px solid color-mix(in oklab, currentColor 9%, transparent); }
 .rpt .loreitem:first-child { border-top: none; }
 .rpt .loreitem .loretitle { font-weight: 600; }
-.rpt .loreitem .loreprev { font-size: 12px; opacity: .78; white-space: pre-wrap; word-break: break-word;
-  display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+.rpt .loreitem .loreprev { font-size: 12px; opacity: .78; white-space: pre-wrap; word-break: break-word; }
+/* 只有宿主那边截断的超大条目才收成 6 行（正常条目整条读完） */
+.rpt .loreitem .loreprev.clamp { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
 /* 条目详情 / 编辑表单：**标签在上、控件在下**（右侧栏窄，两列网格会把正文框挤成一条） */
 .rpt .loreconst { display: inline-flex; align-items: center; gap: 4px; }
 .rpt .loreform { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 4px; padding: 10px;
@@ -792,6 +793,26 @@ window.__ModuleLoader__.load({
         } finally { setBusy(''); }
       }
 
+      /** 整本书「属性中文化」（老世界书里的 name:/gender: 之类一键换成中文）。 */
+      async function localizeLoreAll() {
+        if (!window.confirm('把整本世界书里 YAML 风格的英文属性键换成中文？（name→名称、gender: Female→性别：女 …）\n只会改这类属性行，正文与触发词不动。')) return;
+        setBusy('lore-lz');
+        try {
+          const res = await API.loreSave({ sessionId, action: 'localize' });
+          if (!res?.ok) throw new Error(res?.error ?? '处理失败');
+          applyLoreResponse(res);
+          setLoreEdit(null);
+          setMsg({
+            kind: 'ok',
+            text: res.changed
+              ? `已把 ${res.changed} 条、共 ${res.lines} 行属性标签中文化`
+              : '没有需要中文化的属性行（这本世界书里没有 name:/gender: 这种英文键）',
+          });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
       async function deleteLoreEntry(title) {
         if (!window.confirm(`删除世界书条目「${title}」？（只删这一条，文件里其它内容不动）`)) return;
         setBusy('lore-del');
@@ -918,6 +939,12 @@ window.__ModuleLoader__.load({
               key: 'n', className: 'tiny', disabled: Boolean(busy),
               onClick: () => beginLore(null),
             }, '＋ 新建条目'),
+            // 老世界书（导入功能之前写的）里可能全是 name:/gender: Female 这种英文键，一键中文化
+            h('button', {
+              key: 'lz', className: 'tiny', disabled: Boolean(busy),
+              title: '把整本书里 YAML 风格的英文属性键换成中文（name→名称、gender: Female→性别：女 …）',
+              onClick: () => void localizeLoreAll(),
+            }, busy === 'lore-lz' ? '处理中…' : '属性中文化'),
             h('button', { key: 'r', className: 'tiny', onClick: () => void loadLore(), disabled: busy === 'lore' },
               busy === 'lore' ? '读取中…' : '刷新'),
           ]),
@@ -944,29 +971,36 @@ window.__ModuleLoader__.load({
                 e.order ? h('span', { key: 'o', className: 'badge' }, `order ${e.order}`) : null,
                 e.probability !== undefined && e.probability < 100 ? h('span', { key: 'p', className: 'badge warn' }, `${e.probability}%`) : null,
                 h('span', { key: 'n', className: 'dim' }, `${e.chars} 字`),
-                h('span', { key: 's', className: 'sep' }),
-                // 常驻开关**就地可改**（用户明确要的），改完立刻写回文件
-                h('label', { key: 'cc', className: 'dim loreconst', title: '常驻：不看触发词，每轮都注入' }, [
-                  h('input', {
-                    key: 'c', type: 'checkbox', checked: e.constant === true, disabled: Boolean(busy),
-                    onChange: (ev) => void toggleLoreConstant(e, ev.target.checked),
-                  }),
-                  '常驻',
-                ]),
-                h('button', { key: 'ed', className: 'tiny', disabled: Boolean(busy), onClick: () => void beginLore(e) },
-                  loreEdit && loreEdit.title === e.title ? '收起' : '详情 / 编辑'),
+              // 折叠态**只有这一行**：名称 / 常驻 / order / 字数 + 右侧的常驻开关与「详情 / 编辑」。
+              // 触发词与正文都收进详情里 —— 一屏能扫完十几条，比每条摊开几千字有用得多。
+              (Array.isArray(e.keys) && e.keys.length) || e.constant
+                ? null
+                : h('span', {
+                  key: 'warn', className: 'badge warn',
+                  title: '既没有触发词也不是常驻 → 这条永远不会被注入，建议补触发词或勾上「常驻」',
+                }, '⚠ 永不触发'),
+              h('span', { key: 's', className: 'sep' }),
+              // 常驻开关**就地可改**（用户明确要的），改完立刻写回文件
+              h('label', { key: 'cc', className: 'dim loreconst', title: '常驻：不看触发词，每轮都注入' }, [
+                h('input', {
+                  key: 'c', type: 'checkbox', checked: e.constant === true, disabled: Boolean(busy),
+                  onChange: (ev) => void toggleLoreConstant(e, ev.target.checked),
+                }),
+                '常驻',
               ]),
-              h('div', { key: 'k', className: 'dim' },
-                (Array.isArray(e.keys) && e.keys.length) ? `触发词：${e.keys.join('、')}` : '无触发词（非常驻 → 永远不会被触发，建议补 keys 或 constant）'),
-              h('div', { key: 'p', className: 'loreprev' }, e.preview),
-              // 详情 / 编辑表单：就地展开在这一条下面
-              loreEdit && loreEdit.title === e.title
-                ? h('div', { key: 'form', className: 'loreform' }, [
-                  h('label', { key: 'l1', className: 'dim' }, '标题'),
-                  h('input', { key: 'f1', type: 'text', value: loreEdit.title, onChange: (ev) => patchLoreEdit({ title: ev.target.value }) }),
-                  h('label', { key: 'l2', className: 'dim' }, '触发词（逗号分隔）'),
-                  h('input', {
-                    key: 'f2', type: 'text', value: loreEdit.keysText, placeholder: '命中这些词时注入；留空则必须勾「常驻」',
+              h('button', { key: 'ed', className: 'tiny', disabled: Boolean(busy), onClick: () => void beginLore(e) },
+                loreEdit && loreEdit.title === e.title ? '收起' : '详情 / 编辑'),
+            ]),
+            // 详情 / 编辑：就地展开在这一条下面（正文全文都在表单里，可读也可改）
+            loreEdit && loreEdit.title === e.title
+              ? h('div', { key: 'form', className: 'loreform' }, [
+                h('div', { key: 'meta', className: 'dim' },
+                  `触发词：${(Array.isArray(e.keys) && e.keys.length) ? e.keys.join('、') : '（无）'}`),
+                h('label', { key: 'l1', className: 'dim' }, '标题'),
+                h('input', { key: 'f1', type: 'text', value: loreEdit.title, onChange: (ev) => patchLoreEdit({ title: ev.target.value }) }),
+                h('label', { key: 'l2', className: 'dim' }, '触发词（逗号分隔）'),
+                h('input', {
+                  key: 'f2', type: 'text', value: loreEdit.keysText, placeholder: '命中这些词时注入；留空则必须勾「常驻」',
                     onChange: (ev) => patchLoreEdit({ keysText: ev.target.value }),
                   }),
                   h('div', { key: 'f5', className: 'row' }, [
@@ -1705,6 +1739,11 @@ window.__ModuleLoader__.load({
           ? h('div', { key: 'ph', className: 'dim' },
             `占位符：${Object.entries(preview.placeholders.counts ?? {}).map(([k, n]) => `${k}×${n}`).join('、')} → 导入时展开为玩家称呼与卡名`)
           : null,
+        // 英文属性键（name:/gender: Female）会在导入时中文化
+        preview.attributes?.count
+          ? h('div', { key: 'attr', className: 'dim' },
+            `属性标签：${preview.attributes.count} 行将中文化（name→名称、gender: Female→性别：女 …）`)
+          : null,
         preview.world ? h('div', { key: 'w', className: 'prevbox' }, preview.world) : null,
         preview.character?.personality ? h('div', { key: 'p', className: 'prevbox' }, preview.character.personality) : null,
         h('label', { key: 'auto', className: 'cb' }, [
@@ -1729,6 +1768,9 @@ window.__ModuleLoader__.load({
         result.placeholders?.total
           ? h('div', { key: 'ph', className: 'dim' },
             `已展开占位符 ${result.placeholders.total} 处：${Object.entries(result.placeholders.counts ?? {}).map(([k, n]) => `${k}×${n}`).join('、')}`)
+          : null,
+        result.attributes?.count
+          ? h('div', { key: 'at', className: 'dim' }, `已把 ${result.attributes.count} 行属性标签中文化（名称 / 性别 / 年龄 …）`)
           : null,
         result.previousWorldChars
           ? h('div', { key: 'w', className: 'dim' }, `注意：本会话原有的世界设定（${result.previousWorldChars} 字）已被这次的卡组设定覆盖；世界书文件是追加合并的，没动你手写的条目。`)
