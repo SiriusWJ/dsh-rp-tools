@@ -509,8 +509,8 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   const boxes = findAll(panel2, (n) => n.type === 'input' && n.props.type === 'checkbox');
   assert.ok(boxes.length >= 2, '每个条目应有「常驻」复选框');
   assert.ok(textOf(panel2).includes('＋ 新建条目'), '面板应有新建条目入口');
-  const editBtns = findAll(panel2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '编辑');
-  assert.equal(editBtns.length, 2, '每个条目应有「编辑」按钮');
+  const editBtns = findAll(panel2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '详情 / 编辑');
+  assert.equal(editBtns.length, 2, '每个条目应有「详情 / 编辑」按钮');
 
   // 点「编辑」→ 取回完整正文 → 展示表单（标题/触发词/常驻/order/概率/正文）
   await editBtns[0].props.onClick();
@@ -528,6 +528,11 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.ok(formText.includes('概率'), '详情里应有概率');
   assert.ok(formText.includes('天宝年间的长安城，坊市分明。'), '详情里应显示完整正文');
   assert.ok(formText.includes('删除条目'), '详情里应有删除');
+  // 「看不全」那次的教训：右侧栏很窄，正文框必须给足高度，列表也要按视口给高度
+  assert.ok(/\.rpt \.loreform textarea\.lorebody \{[^}]*min-height:\s*2\d\dpx/.test(style.textContent),
+    '正文输入框要有足够高度（≥200px）');
+  assert.ok(/\.rpt \.lorelist \{[^}]*max-height:\s*min\(/.test(style.textContent),
+    '条目列表要按视口给高度，不能压成固定 260px');
 
   // 改「常驻」→ 保存 → 应 PUT 回宿主（POST /rp-tools/lore，action=update）
   const form = findAll(withForm, (n) => n.type === 'input' && n.props.type === 'text'

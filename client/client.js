@@ -110,21 +110,21 @@ window.__ModuleLoader__.load({
 .rpt .tool { padding: 9px 0; border-top: 1px solid color-mix(in oklab, currentColor 9%, transparent); }
 .rpt .tool:first-child { border-top: none; }
 .rpt .scroll { max-height: 320px; overflow: auto; }
-/* 世界书条目列表：每条一行标题 + 触发词 + 正文预览，紧凑但不能糊成一团 */
-.rpt .lorelist { max-height: 260px; }
+/* 世界书条目列表：每条一行标题 + 触发词 + 正文预览。
+   列表要**高**（右侧栏本来就窄，再压到 260px 就真看不全了），预览给 6 行。 */
+.rpt .lorelist { max-height: min(62vh, 640px); overflow: auto; }
 .rpt .loreitem { padding: 6px 0; border-top: 1px solid color-mix(in oklab, currentColor 9%, transparent); }
 .rpt .loreitem:first-child { border-top: none; }
 .rpt .loreitem .loretitle { font-weight: 600; }
 .rpt .loreitem .loreprev { font-size: 12px; opacity: .78; white-space: pre-wrap; word-break: break-word;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-/* 条目详情 / 编辑表单：就地展开在那一条下面，两列（标签 / 控件）网格 */
+  display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+/* 条目详情 / 编辑表单：**标签在上、控件在下**（右侧栏窄，两列网格会把正文框挤成一条） */
 .rpt .loreconst { display: inline-flex; align-items: center; gap: 4px; }
-.rpt .loreform { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 6px 8px; align-items: center;
-  margin: 8px 0 4px; padding: 10px; border-radius: 8px;
-  background: color-mix(in oklab, currentColor 6%, transparent); }
-.rpt .loreform label { font-size: 12px; }
-.rpt .loreform .row, .rpt .loreform .dim { grid-column: 1 / -1; }
-.rpt .loreform textarea.lorebody { grid-column: 1 / -1; min-height: 120px; }
+.rpt .loreform { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 4px; padding: 10px;
+  border-radius: 8px; background: color-mix(in oklab, currentColor 6%, transparent); }
+.rpt .loreform label { font-size: 12px; opacity: .75; margin-top: 4px; }
+.rpt .loreform .row { flex-wrap: wrap; }
+.rpt .loreform textarea.lorebody { min-height: 220px; resize: vertical; font-size: 12.5px; line-height: 1.55; }
 .rpt .charline { display: grid; grid-template-columns: 118px minmax(0,1fr) auto auto; gap: 6px; align-items: center; }
 /* 一个角色的整块（一行输入 + 可选立绘）：立绘落在这块里面，紧挨该角色 */
 .rpt .charbox { padding: 8px 0; border-top: 1px solid color-mix(in oklab, currentColor 9%, transparent); }
@@ -717,12 +717,18 @@ window.__ModuleLoader__.load({
       async function beginLore(entry) {
         if (!entry) {
           setLoreEdit({ title: '', keysText: '', constant: false, order: 0, probability: 100, body: '', isNew: true });
+          setMsg({ kind: 'ok', text: '新建条目：填好标题与正文后点「保存」写入世界书。' });
           return;
         }
         setBusy('lore-det');
         try {
           const res = await API.loreEntry(sessionId, entry.title);
+          // 老宿主不认识 ?title=，会把**整个列表**回给我们（没有 entry 字段）。
+          // 这时绝不能拿列表里的 160 字预览去当正文编辑 —— 一保存就把正文截没了。
           if (!res?.ok) throw new Error(res?.error ?? '读取条目失败');
+          if (!res.entry || typeof res.entry.body !== 'string') {
+            throw new Error('宿主没有返回条目正文 —— 多半是 DSH 还在跑旧代码，重启后再试（列表能看到、编辑要新路由）');
+          }
           const e = res.entry;
           setLoreEdit({
             title: e.title,
@@ -733,6 +739,7 @@ window.__ModuleLoader__.load({
             body: e.body ?? '',
             isNew: false,
           });
+          setMsg({ kind: 'ok', text: `正在编辑「${e.title}」（${String(e.body ?? '').length} 字）` });
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }
@@ -946,7 +953,8 @@ window.__ModuleLoader__.load({
                   }),
                   '常驻',
                 ]),
-                h('button', { key: 'ed', className: 'tiny', disabled: Boolean(busy), onClick: () => void beginLore(e) }, '编辑'),
+                h('button', { key: 'ed', className: 'tiny', disabled: Boolean(busy), onClick: () => void beginLore(e) },
+                  loreEdit && loreEdit.title === e.title ? '收起' : '详情 / 编辑'),
               ]),
               h('div', { key: 'k', className: 'dim' },
                 (Array.isArray(e.keys) && e.keys.length) ? `触发词：${e.keys.join('、')}` : '无触发词（非常驻 → 永远不会被触发，建议补 keys 或 constant）'),
