@@ -60,12 +60,14 @@ const emit = (evt, ...args) => {
 // 这个会话 id 会被 agentCtx.agent.id 引用（注入按作用域自带的身份定位本会话）
 const SMOKE_AGENT_SESSION = crypto.randomUUID();
 
-// systemPrompt 桩：记录注册的段，并让我们能手动触发一次装配，验证注入真的落进 assembly
+// systemPrompt 桩：记录注册的段 / context / 变量，并让我们能手动触发一次装配，验证注入真的落进 assembly
 const promptSections = new Map();
 const promptContexts = new Map();
+const promptVars = new Map();
 const systemPromptStub = {
   section: (s) => { promptSections.set(s.name, s); return () => {}; },
   context: (c) => { promptContexts.set(c.name, c); return () => {}; },
+  variable: (name, provider) => { promptVars.set(name, provider); return () => {}; },
 };
 
 // 全局作用域：故意**不给** systemPrompt stub —— 用来证明全局 apply() 不做提示词注入。
@@ -225,6 +227,13 @@ if (onSessionCreated) {
   // 证据链：全局 apply() 那次故意没给 systemPrompt 桩，所以段与通道只可能由 registerRpTools 注册。
   check('注入只由 agent 作用域注册（全局不注册）', promptSections.has('rp:standing'), true);
   check('turn 通道也只由 agent 作用域注册', promptContexts.has('rp:turn'), true);
+  // 身份宏：{{user}} 注册成宿主变量（DSH 原生插值），未注册的宏仍然中性化
+  check('注册了 {{user}} 宿主变量', promptVars.has('user'), true);
+  check('{{user}} 变量返回玩家称呼', promptVars.get('user')?.({}), '玩家');
+  const nm = mod.__debug.neutralizeMustache('{{user}} 拉着 {{char}} 的手，还有 {{unknown}}');
+  check('{{user}} 原样留给宿主插值', nm.includes('{{user}}'), true);
+  check('其它宏仍被中和（不会让装配抛错）', nm.includes('{{char}}') || nm.includes('{{unknown}}'), false);
+  check('中文冒号与普通文本不受影响', mod.__debug.neutralizeMustache('他说道：你好').includes('他说道：你好'), true);
   const sec = promptSections.get('rp:standing');
   check('standing 段序为 210（工具说明 100–199 之后）', sec?.order, 210);
   check('未配置时注入固定短文案而非空段', typeof sec?.text === 'string' && sec.text.length > 0, true);
@@ -268,10 +277,13 @@ if (onSessionCreated) {
     // 双花括号必须被中和，否则宿主插值会把 {{宏}} 当变量而抛错。
     // 这里直接走纯函数：loadSession 依赖模块加载时定下的数据目录（真实 ~/.dsh），
     // 在临时 DSH_HOME 下用不了 —— 纯函数既避开这个陷阱，也正是要断言的逻辑。
-    const t2 = mod.__debug.injectFor({ world: '她轻声说 {{user}} 你来了', characters: [], tables: [] });
-    check('{{ }} 被中和（不残留半角双花括号）', t2.includes('{{'), false);
+    const t2 = mod.__debug.injectFor({ world: '她轻声说 {{user}} 你来了，还提到 {{mystery}}', characters: [], tables: [] });
+    // ⚠️ 语义变了：{{user}} 现在是**我们注册过的宿主变量**，要原样留给宿主插值（见 neutralizeMustache）；
+    // 只有没注册的宏才需要中和 —— 否则 renderPrompt 会因为未知变量直接抛错。
+    check('未注册的宏被中和（不残留半角双花括号）', t2.includes('{{mystery}}'), false);
+    check('注册过的 {{user}} 原样保留', t2.includes('{{user}}'), true);
     check('中和后内容仍可读', t2.includes('你来了'), true);
-    check('中和只动花括号、不动其它字符', t2.includes('｛｛user｝｝'), true);
+    check('中和只动花括号、不动其它字符', t2.includes('｛｛mystery｝｝'), true);
 
     // 未配置世界设定的会话 → 回落固定短文案，不应把上一个会话的内容泄露过去
     onSessionCreated({ id: SID2, header: { id: SID2 } });
