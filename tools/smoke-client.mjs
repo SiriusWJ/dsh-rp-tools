@@ -151,13 +151,22 @@ globalThis.fetch = async (url, options = {}) => {
       opening: '【开局】已导入卡组《长安》，不要再问世界从哪来，直接开团。',
     });
   }
-  // ── 下面是 RP 面板（右侧栏页签）要用的三条 ──────────────────────────
+  // ── 下面是 RP 面板（右侧栏页签）要用的几条 ──────────────────────────
   if (target.startsWith('/rp-tools/lore')) {
+    const wanted = new URL(target, 'http://x').searchParams.get('title');
+    // ?title= 取单条完整正文（编辑器展开时才要）
+    if (wanted === '长安城') {
+      return reply({
+        ok: true,
+        entry: { title: '长安城', keys: ['长安'], constant: false, order: 0, probability: 100, chars: 22, body: '天宝年间的长安城，坊市分明。' },
+      });
+    }
+    if (wanted) return reply({ ok: false, error: `找不到条目：${wanted}` });
     return reply({
       ok: true, exists: true, file: 'D:\\Story\\rp-worldbook.md', relative: 'rp-worldbook.md',
       chars: 1234, total: 2, constant: 1, keyed: 1,
       entries: [
-        { title: '长安城', keys: ['长安'], constant: false, order: 0, probability: 100, chars: 40, preview: '天宝年间的长安城，坊市分明。' },
+        { title: '长安城', keys: ['长安'], constant: false, order: 0, probability: 100, chars: 22, preview: '天宝年间的长安城，坊市分明。' },
         { title: '世界总纲', keys: [], constant: true, order: 0, probability: 100, chars: 30, preview: '盛唐末年，边镇不稳。' },
       ],
       note: '只有命中的条目才进每轮上下文。',
@@ -493,6 +502,50 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.ok(text.includes('触发词：长安'), '面板应显示条目的触发词');
   assert.ok(text.includes('世界总纲') && text.includes('常驻'), '面板应标出常驻条目');
   assert.ok(text.includes('rp-worldbook.md'), '面板应给出世界书文件路径');
+  // 没有随机表时，那张「RP 表格 / 随机表（0）」卡片不该出现（用户要求去掉）
+  assert.equal(text.includes('RP 表格'), false, '没有表时不应渲染「RP 表格 / 随机表（0）」');
+
+  // 每条都要能就地改「常驻」、能打开详情编辑、能新建
+  const boxes = findAll(panel2, (n) => n.type === 'input' && n.props.type === 'checkbox');
+  assert.ok(boxes.length >= 2, '每个条目应有「常驻」复选框');
+  assert.ok(textOf(panel2).includes('＋ 新建条目'), '面板应有新建条目入口');
+  const editBtns = findAll(panel2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '编辑');
+  assert.equal(editBtns.length, 2, '每个条目应有「编辑」按钮');
+
+  // 点「编辑」→ 取回完整正文 → 展示表单（标题/触发词/常驻/order/概率/正文）
+  await editBtns[0].props.onClick();
+  await tick(60);
+  const withForm = render({
+    sessionId: SID,
+    useSessions: (sel) => sel(store),
+    useInput: (sel) => sel({ draft: '' }),
+    inputActions,
+  }, tab.component);
+  const formText = textOf(withForm);
+  assert.ok(formText.includes('触发词（逗号分隔）'), '详情里应有触发词输入');
+  assert.ok(formText.includes('常驻（不看触发词）'), '详情里应有常驻开关');
+  assert.ok(formText.includes('order'), '详情里应有 order');
+  assert.ok(formText.includes('概率'), '详情里应有概率');
+  assert.ok(formText.includes('天宝年间的长安城，坊市分明。'), '详情里应显示完整正文');
+  assert.ok(formText.includes('删除条目'), '详情里应有删除');
+
+  // 改「常驻」→ 保存 → 应 PUT 回宿主（POST /rp-tools/lore，action=update）
+  const form = findAll(withForm, (n) => n.type === 'input' && n.props.type === 'text'
+    && n.props.value === '长安城');
+  assert.equal(form.length, 1, '详情里应能改标题');
+  const boxes2 = findAll(withForm, (n) => n.type === 'input' && n.props.type === 'checkbox');
+  boxes2[0].props.onChange({ target: { checked: true } });      // 勾上常驻
+  // 注意：面板顶部还有一个「保存」（保存会话配置），要按 class 区分出表单里的那个
+  const saveBtn = findAll(withForm, (n) => typeof n.props?.onClick === 'function'
+    && textOf(n) === '保存' && String(n.props.className ?? '').includes('tiny'));
+  assert.equal(saveBtn.length, 1, '详情里应有保存按钮');
+  await saveBtn[0].props.onClick();
+  await tick(60);
+  const lorePost = calls.filter((c) => c.url === '/rp-tools/lore' && c.method === 'POST').pop();
+  assert.ok(lorePost, '保存应向 /rp-tools/lore 发 POST');
+  assert.equal(lorePost.body.action, 'update', '编辑已有条目应走 update');
+  assert.equal(lorePost.body.title, '长安城', 'update 应带上原名（改名时用它定位）');
+  assert.equal(lorePost.body.entry.constant, true, '勾选状态应写进 constant');
 }
 
 console.log('客户端冒烟测试通过：');

@@ -788,6 +788,63 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   const loreMissing = await callGet('/rp-tools/lore', `?sessionId=${crypto.randomUUID()}`);
   check('lore：拿不到工作区时不报错、只说明', loreMissing.json.exists, false);
 
+  // ── 世界书编辑（面板里的「编辑 / 常驻开关 / 新建 / 删除」走这条路由）──────
+  {
+    const read = () => readFileSync(join(ws, 'rp-worldbook.md'), 'utf8');
+    // ① 取单条完整正文（列表只给 160 字预览，编辑器要全文）
+    const one = await callGet('/rp-tools/lore', `?sessionId=${IMPORT_SID}&title=${encodeURIComponent('烟测条目')}`);
+    check('lore 详情：取到完整正文', String(one.json.entry?.body).includes('玩家来到烟测卡的门前'), true);
+    check('lore 详情：带触发词', one.json.entry?.keys?.[0], '烟测');
+    const notFound = await callGet('/rp-tools/lore', `?sessionId=${IMPORT_SID}&title=${encodeURIComponent('不存在的条目')}`);
+    check('lore 详情：找不到时报 404', notFound.status, 404);
+
+    // ② 改「常驻」+ 触发词 + order + 概率 + 正文（就地开关走的就是这条路径）
+    const upd = await callPost('/rp-tools/lore', {
+      sessionId: IMPORT_SID, action: 'update', title: '烟测条目',
+      entry: { title: '烟测条目', keys: '烟测、烟测别名', constant: true, order: 5, probability: 60, body: '改过的正文。' },
+    });
+    check('lore 编辑：update 成功', upd.json.ok, true);
+    check('lore 编辑：回传最新条目数', upd.json.total, 2);
+    const after = mod.__debug.parseLoreMarkdown(read()).find((e) => e.title === '烟测条目');
+    check('lore 编辑：常驻已写入', after?.constant, true);
+    check('lore 编辑：触发词已写入（顿号分隔也认）', after?.keys, ['烟测', '烟测别名']);
+    check('lore 编辑：order 已写入', after?.order, 5);
+    check('lore 编辑：概率已写入', after?.probability, 60);
+    check('lore 编辑：正文已写入', after?.body, '改过的正文。');
+    check('lore 编辑：用户手写的条目还在', read().includes('别动我。'), true);
+    check('lore 编辑：手写条目的注释头原样保留', read().includes('<!-- keys: 自有 -->'), true);
+
+    // ③ 新建 / 重名挡住 / 改名
+    const add = await callPost('/rp-tools/lore', {
+      sessionId: IMPORT_SID, action: 'add',
+      entry: { title: '新增条目', keys: [], constant: false, body: '新正文' },
+    });
+    check('lore 编辑：add 成功', add.json.ok, true);
+    check('lore 编辑：条目数 +1', add.json.total, 3);
+    const dup = await callPost('/rp-tools/lore', { sessionId: IMPORT_SID, action: 'add', entry: { title: '新增条目', body: 'x' } });
+    check('lore 编辑：重名 add 被拒', dup.status, 400);
+    const noTitle = await callPost('/rp-tools/lore', { sessionId: IMPORT_SID, action: 'add', entry: { body: 'x' } });
+    check('lore 编辑：无标题 add 被拒', noTitle.status, 400);
+    const rename = await callPost('/rp-tools/lore', {
+      sessionId: IMPORT_SID, action: 'update', title: '新增条目',
+      entry: { title: '改名后的条目', body: '新正文' },
+    });
+    check('lore 编辑：改名成功', rename.json.ok, true);
+    check('lore 编辑：旧名已消失', read().includes('## 新增条目'), false);
+    check('lore 编辑：新名已就位', read().includes('## 改名后的条目'), true);
+
+    // ④ 删除只删这一条；跨域写入必须被挡
+    const del = await callPost('/rp-tools/lore', { sessionId: IMPORT_SID, action: 'delete', title: '改名后的条目' });
+    check('lore 编辑：delete 成功', del.json.ok, true);
+    check('lore 编辑：条目数回到 2', del.json.total, 2);
+    check('lore 编辑：正文里也没有残留', read().includes('新正文'), false);
+    const delMissing = await callPost('/rp-tools/lore', { sessionId: IMPORT_SID, action: 'delete', title: '早就不在了' });
+    check('lore 编辑：删不存在的条目报 400', delMissing.status, 400);
+    const crossOrigin = await callPost('/rp-tools/lore', { sessionId: IMPORT_SID, action: 'delete', title: '我自己的条目' }, 'http://evil.example');
+    check('lore 编辑：跨域写入被拒', crossOrigin.status, 403);
+    check('lore 编辑：跨域那次没删掉', read().includes('我自己的条目'), true);
+  }
+
   // 卡面路由：只服务卡库内的 png
   const imgRoute = routes.get('/rp-tools/card-image');
   const imgRes = mkRes();

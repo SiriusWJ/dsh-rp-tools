@@ -46,6 +46,8 @@ window.__ModuleLoader__.load({
       card: (path) => jget(`/rp-tools/card?path=${encodeURIComponent(path)}`),
       cardImport: (body) => jpost('/rp-tools/card-import', body),
       lore: (sessionId) => jget(`/rp-tools/lore?sessionId=${encodeURIComponent(sessionId)}`),
+      loreEntry: (sessionId, title) => jget(`/rp-tools/lore?sessionId=${encodeURIComponent(sessionId)}&title=${encodeURIComponent(title)}`),
+      loreSave: (body) => jpost('/rp-tools/lore', body),
     };
 
     /** 卡面图（导入时复制到工作区的那张）走卡库只读路由。 */
@@ -115,6 +117,14 @@ window.__ModuleLoader__.load({
 .rpt .loreitem .loretitle { font-weight: 600; }
 .rpt .loreitem .loreprev { font-size: 12px; opacity: .78; white-space: pre-wrap; word-break: break-word;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+/* 条目详情 / 编辑表单：就地展开在那一条下面，两列（标签 / 控件）网格 */
+.rpt .loreconst { display: inline-flex; align-items: center; gap: 4px; }
+.rpt .loreform { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 6px 8px; align-items: center;
+  margin: 8px 0 4px; padding: 10px; border-radius: 8px;
+  background: color-mix(in oklab, currentColor 6%, transparent); }
+.rpt .loreform label { font-size: 12px; }
+.rpt .loreform .row, .rpt .loreform .dim { grid-column: 1 / -1; }
+.rpt .loreform textarea.lorebody { grid-column: 1 / -1; min-height: 120px; }
 .rpt .charline { display: grid; grid-template-columns: 118px minmax(0,1fr) auto auto; gap: 6px; align-items: center; }
 /* 一个角色的整块（一行输入 + 可选立绘）：立绘落在这块里面，紧挨该角色 */
 .rpt .charbox { padding: 8px 0; border-top: 1px solid color-mix(in oklab, currentColor 9%, transparent); }
@@ -617,6 +627,9 @@ window.__ModuleLoader__.load({
       const [rolls, setRolls] = React.useState([]);
       // 世界书条目（面板上要能看见导入进来的条目）
       const [lore, setLore] = React.useState(null);
+      /** 正在编辑的世界书条目草稿：{ title(原值), keysText, constant, order, probability, body, isNew } */
+      const [loreEdit, setLoreEdit] = React.useState(null);
+      const [loreQuery, setLoreQuery] = React.useState('');
       const [tableDraft, setTableDraft] = React.useState({ name: '', dice: '', entries: '' });
       // 每个角色自己的立绘：{ [角色名]: { url, style, elapsedMs } }
       const [portraits, setPortraits] = React.useState({});
@@ -683,6 +696,124 @@ window.__ModuleLoader__.load({
         } catch (error) {
           setLore({ exists: false, total: 0, entries: [], error: String(error?.message ?? error) });
         } finally { setBusy(''); }
+      }
+
+      /** 搜索过滤（标题 / 触发词 / 正文预览都搜，与 liketavern 的搜索框一致）。 */
+      function visibleLoreEntries() {
+        const all = lore?.entries ?? [];
+        const q = loreQuery.trim().toLowerCase();
+        if (!q) return all;
+        return all.filter((e) => [e.title, ...(e.keys ?? []), e.preview]
+          .some((v) => String(v ?? '').toLowerCase().includes(q)));
+      }
+
+      function patchLoreEdit(p) { setLoreEdit((d) => (d ? { ...d, ...p } : d)); }
+
+      /**
+       * 打开某一条的详情/编辑器。列表里只有 160 字预览，所以正文要**单独取一次**
+       * （整本世界书可能几十万字，不能指望列表响应背着它）。
+       * `entry` 传 null 就是「新建」。
+       */
+      async function beginLore(entry) {
+        if (!entry) {
+          setLoreEdit({ title: '', keysText: '', constant: false, order: 0, probability: 100, body: '', isNew: true });
+          return;
+        }
+        setBusy('lore-det');
+        try {
+          const res = await API.loreEntry(sessionId, entry.title);
+          if (!res?.ok) throw new Error(res?.error ?? '读取条目失败');
+          const e = res.entry;
+          setLoreEdit({
+            title: e.title,
+            keysText: (e.keys ?? []).join('、'),
+            constant: e.constant === true,
+            order: e.order ?? 0,
+            probability: e.probability ?? 100,
+            body: e.body ?? '',
+            isNew: false,
+          });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
+      /** 保存编辑器内容（新建走 add，其余走 update）。 */
+      async function saveLoreEdit() {
+        if (!loreEdit) return;
+        setBusy('lore-save');
+        try {
+          const res = await API.loreSave({
+            sessionId,
+            action: loreEdit.isNew ? 'add' : 'update',
+            title: loreEdit.title,                     // add 时无意义；update 时是**原名**
+            entry: {
+              title: loreEdit.title,
+              keys: loreEdit.keysText,
+              constant: loreEdit.constant,
+              order: Number(loreEdit.order) || 0,
+              probability: Number(loreEdit.probability),
+              body: loreEdit.body,
+            },
+          });
+          if (!res?.ok) throw new Error(res?.error ?? '保存失败');
+          applyLoreResponse(res);
+          setLoreEdit(null);
+          setMsg({ kind: 'ok', text: `已写入世界书：${res.title}（下一轮装配即生效）` });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
+      /** 就地切换「常驻」（列表里的复选框，最常用的那一个开关）。 */
+      async function toggleLoreConstant(entry, constant) {
+        setBusy(`lore-c:${entry.title}`);
+        try {
+          const full = await API.loreEntry(sessionId, entry.title);
+          if (!full?.ok) throw new Error(full?.error ?? '读取条目失败');
+          const res = await API.loreSave({
+            sessionId,
+            action: 'update',
+            title: entry.title,
+            entry: { ...full.entry, constant },
+          });
+          if (!res?.ok) throw new Error(res?.error ?? '保存失败');
+          applyLoreResponse(res);
+          setMsg({ kind: 'ok', text: `「${entry.title}」${constant ? '改为常驻' : '取消常驻'}` });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
+      async function deleteLoreEntry(title) {
+        if (!window.confirm(`删除世界书条目「${title}」？（只删这一条，文件里其它内容不动）`)) return;
+        setBusy('lore-del');
+        try {
+          const res = await API.loreSave({ sessionId, action: 'delete', title });
+          if (!res?.ok) throw new Error(res?.error ?? '删除失败');
+          applyLoreResponse(res);
+          setLoreEdit(null);
+          setMsg({ kind: 'ok', text: `已删除条目「${title}」` });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
+      /** 写操作返回的就是最新条目清单，直接拿来更新界面（省掉一次刷新往返）。 */
+      function applyLoreResponse(res) {
+        setLore({
+          ok: true,
+          exists: true,
+          file: res.file,
+          relative: res.relative,
+          chars: res.chars,
+          total: res.total,
+          constant: res.constant,
+          keyed: res.keyed,
+          entries: res.entries ?? [],
+          truncated: res.truncated,
+          note: res.note,
+        });
       }
 
       async function roll(table) {
@@ -770,11 +901,16 @@ window.__ModuleLoader__.load({
         ]),
 
         // 世界书：条目都在工作区的 rp-worldbook.md 里，只有命中的才进每轮上下文。
-        // 之前面板看不到它，导入完一本故事书后完全不知道「条目到底进没进」（用户提的）。
+        // 面板里可以直接**查看详情 / 编辑 / 新建 / 删除**，并就地切换「常驻」
+        // （参考 dsh-liketavern 的 lorebookEditor：列表 + 详情表单 + 常驻开关 + 概率/顺序）。
         h('div', { key: 'lore', className: 'card' }, [
           h('div', { key: 'h', className: 'row' }, [
             h('h4', { key: 't' }, `世界书（${lore?.total ?? '…'} 条）`),
             h('span', { key: 'sep', className: 'sep' }),
+            h('button', {
+              key: 'n', className: 'tiny', disabled: Boolean(busy),
+              onClick: () => beginLore(null),
+            }, '＋ 新建条目'),
             h('button', { key: 'r', className: 'tiny', onClick: () => void loadLore(), disabled: busy === 'lore' },
               busy === 'lore' ? '读取中…' : '刷新'),
           ]),
@@ -783,20 +919,84 @@ window.__ModuleLoader__.load({
             : null,
           lore && lore.exists
             ? h('div', { key: 'stat', className: 'dim' },
-              `${lore.total} 条（常驻 ${lore.constant}｜带触发词 ${lore.keyed}）· ${lore.chars} 字 · ${lore.relative ?? 'rp-worldbook.md'}`)
+              `${lore.total} 条（常驻 ${lore.constant}｜带触发词 ${lore.keyed}）· ${lore.chars} 字 · ${lore.relative ?? 'rp-worldbook.md'}`
+              + `${lore.truncated ? '（条目过多，只列出前 400 条）' : ''}`)
+            : null,
+          // 搜索：条目一多就得能筛（标题 / 触发词 / 正文预览）
+          lore && lore.exists && (lore.entries ?? []).length > 6
+            ? h('input', {
+              key: 'q', type: 'search', value: loreQuery, placeholder: '搜索条目名、触发词或正文…',
+              onChange: (e) => setLoreQuery(e.target.value),
+            })
             : null,
           lore && lore.exists
-            ? h('div', { key: 'list', className: 'scroll lorelist' }, (lore.entries ?? []).map((e, i) => h('div', { key: `e${i}`, className: 'loreitem' }, [
+            ? h('div', { key: 'list', className: 'scroll lorelist' }, visibleLoreEntries().map((e, i) => h('div', { key: `e${i}`, className: 'loreitem' }, [
               h('div', { key: 'h', className: 'row' }, [
                 h('span', { key: 't', className: 'loretitle' }, e.title),
                 e.constant ? h('span', { key: 'c', className: 'badge ok' }, '常驻') : null,
                 e.order ? h('span', { key: 'o', className: 'badge' }, `order ${e.order}`) : null,
                 e.probability !== undefined && e.probability < 100 ? h('span', { key: 'p', className: 'badge warn' }, `${e.probability}%`) : null,
                 h('span', { key: 'n', className: 'dim' }, `${e.chars} 字`),
+                h('span', { key: 's', className: 'sep' }),
+                // 常驻开关**就地可改**（用户明确要的），改完立刻写回文件
+                h('label', { key: 'cc', className: 'dim loreconst', title: '常驻：不看触发词，每轮都注入' }, [
+                  h('input', {
+                    key: 'c', type: 'checkbox', checked: e.constant === true, disabled: Boolean(busy),
+                    onChange: (ev) => void toggleLoreConstant(e, ev.target.checked),
+                  }),
+                  '常驻',
+                ]),
+                h('button', { key: 'ed', className: 'tiny', disabled: Boolean(busy), onClick: () => void beginLore(e) }, '编辑'),
               ]),
               h('div', { key: 'k', className: 'dim' },
                 (Array.isArray(e.keys) && e.keys.length) ? `触发词：${e.keys.join('、')}` : '无触发词（非常驻 → 永远不会被触发，建议补 keys 或 constant）'),
               h('div', { key: 'p', className: 'loreprev' }, e.preview),
+              // 详情 / 编辑表单：就地展开在这一条下面
+              loreEdit && loreEdit.title === e.title
+                ? h('div', { key: 'form', className: 'loreform' }, [
+                  h('label', { key: 'l1', className: 'dim' }, '标题'),
+                  h('input', { key: 'f1', type: 'text', value: loreEdit.title, onChange: (ev) => patchLoreEdit({ title: ev.target.value }) }),
+                  h('label', { key: 'l2', className: 'dim' }, '触发词（逗号分隔）'),
+                  h('input', {
+                    key: 'f2', type: 'text', value: loreEdit.keysText, placeholder: '命中这些词时注入；留空则必须勾「常驻」',
+                    onChange: (ev) => patchLoreEdit({ keysText: ev.target.value }),
+                  }),
+                  h('div', { key: 'f5', className: 'row' }, [
+                    h('label', { key: 'c1', className: 'dim' }, [
+                      h('input', { key: 'c2', type: 'checkbox', checked: loreEdit.constant, onChange: (ev) => patchLoreEdit({ constant: ev.target.checked }) }),
+                      ' 常驻（不看触发词）',
+                    ]),
+                    h('label', { key: 'o1', className: 'dim' }, [
+                      'order ',
+                      h('input', {
+                        key: 'o2', type: 'number', value: loreEdit.order, style: { width: 64 },
+                        onChange: (ev) => patchLoreEdit({ order: ev.target.value }),
+                      }),
+                    ]),
+                    h('label', { key: 'p1', className: 'dim' }, [
+                      '概率 ',
+                      h('input', {
+                        key: 'p2', type: 'number', min: 0, max: 100, value: loreEdit.probability, style: { width: 64 },
+                        onChange: (ev) => patchLoreEdit({ probability: ev.target.value }),
+                      }),
+                    ]),
+                  ]),
+                  h('label', { key: 'l3', className: 'dim' }, `正文（${String(loreEdit.body ?? '').length} 字）`),
+                  h('textarea', {
+                    key: 'f3', className: 'lorebody', value: loreEdit.body,
+                    placeholder: '写进提示词的正文', onChange: (ev) => patchLoreEdit({ body: ev.target.value }),
+                  }),
+                  h('div', { key: 'f4', className: 'row' }, [
+                    h('button', { key: 'sv', className: 'primary tiny', disabled: Boolean(busy), onClick: () => void saveLoreEdit() },
+                      busy === 'lore-save' ? '保存中…' : '保存'),
+                    h('button', { key: 'ca', className: 'tiny', onClick: () => setLoreEdit(null) }, '取消'),
+                    h('span', { key: 'sep', className: 'sep' }),
+                    h('button', { key: 'rm', className: 'tiny', disabled: Boolean(busy), onClick: () => void deleteLoreEntry(loreEdit.title) }, '删除条目'),
+                  ]),
+                  h('div', { key: 'w', className: 'dim' },
+                    '改动只重写这一条；文件里其它条目与你手写的注释都不会被动。保存后下一轮装配即生效。'),
+                ])
+                : null,
             ])))
             : null,
           lore && lore.exists
@@ -933,7 +1133,9 @@ window.__ModuleLoader__.load({
           h('button', { key: 'add', className: 'tiny', onClick: () => patch({ characters: [...chars, { name: '', appearance: '' }] }) }, '+ 添加角色'),
         ]),
 
-        h('div', { key: 'tables', className: 'card' }, [
+        // 随机表：**没有表时整张卡片不渲染**（一张「RP 表格 / 随机表（0）」摆在面板里
+        // 只是噪音）；真建了表才出现，掷表入口也随之回来。
+        tables.length ? h('div', { key: 'tables', className: 'card' }, [
           h('h4', { key: 't' }, `RP 表格 / 随机表（${tables.length}）`),
           h('div', { key: 'd', className: 'dim' }, '遭遇表 / 掉落表 / 情绪表…… 也可以让 DM 掷：「掷<表名>」（走 rp_table 工具）。'),
           ...tables.map((t, i) => h('div', { key: `t${i}`, className: 'tbl' }, [
@@ -961,7 +1163,7 @@ window.__ModuleLoader__.load({
               },
             }, '+ 添加表'),
           ]),
-        ]),
+        ]) : null,
 
         h('div', { key: 'state', className: 'card' }, [
           h('div', { key: 'h', className: 'row' }, [
