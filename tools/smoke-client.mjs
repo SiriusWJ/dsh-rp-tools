@@ -123,6 +123,14 @@ globalThis.window = {
 
 // fetch 桩：按 URL 回应并记录调用，让导入流程能真的走完
 const calls = [];
+/** 立绘持久化的 POST 记录（面板里点「立绘」/「收起」时写会话配置）。 */
+const portraitPosts = [];
+/** `/rp-tools/session` 返回的会话配置：立绘用例会临时往里面塞角色与已持久化的立绘。 */
+const sessionStub = {
+  sessionId: 'session-abc', preset: 'dm', defaultStyle: null,
+  campaign: { name: '长安', prompt_prefix: '' }, characters: [], characterIndex: [],
+  tables: [], world: '天宝年间。', state: {}, styleNotes: '', portraits: {},
+};
 /**
  * 宿主对「会话闸门」的回答（是不是 dm / 有没有开局）。
  *
@@ -197,11 +205,26 @@ globalThis.fetch = async (url, options = {}) => {
       ok: true, isDm: true, preset: 'dm',
       // 界面 ensureCwd 的兜底来源：会话工作区（真机上是 resolveWorkspaceDir 那四级链的结果）
       cwd: 'D:\\Story',
-      session: {
-        sessionId: 'session-abc', preset: 'dm', defaultStyle: null,
-        campaign: { name: '长安', prompt_prefix: '' }, characters: [], characterIndex: [],
-        tables: [], world: '天宝年间。', state: {}, styleNotes: '', portraits: {},
+      session: sessionStub,
+    });
+  }
+  if (target === '/rp-tools/portrait') {
+    const body = JSON.parse(options.body ?? '{}');
+    portraitPosts.push(body);
+    const portraits = body.action === 'clear' ? {} : {
+      [body.name]: {
+        generated: { file: body.file, subfolder: body.subfolder ?? '', type: body.type ?? 'output' },
+        style: body.style ?? '', elapsedMs: body.elapsedMs ?? 0,
       },
+    };
+    return reply({ ok: true, sessionId: body.sessionId, portraits });
+  }
+  if (target === '/rp-tools/preview') {
+    return reply({
+      ok: true, styleKey: 'uncensored_anime', styleLabel: '二次元', elapsedMs: 18300,
+      media: ['http://127.0.0.1:3080/rp-tools/media?file=rp-portrait-9.png'],
+      // 宿主新增：原始三要素，界面据此把立绘记进会话配置（只存 URL 的话换 origin 就失效）
+      files: [{ file: 'rp-portrait-9.png', subfolder: '', type: 'output' }],
     });
   }
   if (target.startsWith('/rp-tools/state')) {
@@ -690,6 +713,68 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     }
     assert.ok(textOf(picked).includes('导入并开始') || textOf(picked).includes('新建会话并导入'),
       '面板里选完卡也要有导入按钮');
+  }
+
+  // ★ 立绘持久化（用户报的「角色卡生成的立绘下次打开就消失了」）：
+  //   会话配置里记着的生成图，面板**重新打开**时必须装回来；出图后也必须写回会话配置，
+  //   否则下次打开又没了（原先它只活在面板组件的 state 里）。
+  {
+    const asPanel = () => render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+
+    // 往会话配置里放「一个角色 + 一张已持久化的立绘」，然后重新挂载面板 —— 模拟下次打开
+    sessionStub.characters = [{ name: '阿岚', appearance: '白衣长剑' }];
+    sessionStub.portraits = {
+      阿岚: {
+        generated: { file: 'rp-portrait-1.png', subfolder: 'rp', type: 'output' },
+        style: '二次元', elapsedMs: 18300, at: '2026-09-12T01:00:00.000Z',
+      },
+    };
+    resetHooks();
+    let reopened = asPanel();
+    for (let i = 0; i < 14 && !textOf(reopened).includes('立绘：阿岚'); i++) {
+      await tick(30);
+      reopened = asPanel();
+    }
+    const imgs = findAll(reopened, (n) => n.type === 'img');
+    const portraitImg = imgs.find((n) => String(n.props.src ?? '').includes('/rp-tools/media?'));
+    assert.ok(portraitImg, `重新打开面板应显示会话配置里那张立绘（实际 imgs=${JSON.stringify(imgs.map((n) => n.props.src))}）`);
+    assert.ok(String(portraitImg.props.src).includes('file=rp-portrait-1.png'), '立绘图 URL 要用记下的三要素拼');
+    assert.ok(String(portraitImg.props.src).includes('subfolder=rp'), 'subfolder 也要带上');
+
+    // 出图 → 必须把三要素 POST 回宿主（否则下次打开又没了）
+    const portraitBtn = findAll(reopened, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '立绘');
+    assert.equal(portraitBtn.length, 1, '角色卡应有「立绘」按钮');
+    await portraitBtn[0].props.onClick();
+    let afterGen = asPanel();
+    for (let i = 0; i < 14 && portraitPosts.length === 0; i++) { await tick(30); afterGen = asPanel(); }
+    assert.equal(portraitPosts.length, 1, '出图后应把立绘记进会话配置（POST /rp-tools/portrait）');
+    assert.equal(portraitPosts[0].file, 'rp-portrait-9.png', '要记的是 ComfyUI 的文件名，不是完整 URL');
+    assert.equal(portraitPosts[0].name, '阿岚', '要记在角色名下');
+    assert.equal(portraitPosts[0].style, '二次元', '风格一起记下来');
+
+    // 点「收起」→ 会话配置那份也要清（否则下次打开又装回来）
+    let hidden = afterGen;
+    for (let i = 0; i < 14 && !findAll(hidden, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '收起').length; i++) {
+      await tick(30);
+      hidden = asPanel();
+    }
+    const hideBtn = findAll(hidden, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '收起');
+    assert.ok(hideBtn.length >= 1, '出图后应有「收起」按钮');
+    hideBtn[hideBtn.length - 1].props.onClick();
+    for (let i = 0; i < 14 && !portraitPosts.some((p) => p.action === 'clear'); i++) await tick(30);
+    const clearPost = portraitPosts.find((p) => p.action === 'clear');
+    assert.ok(clearPost, '「收起」要同时清掉会话配置里那份立绘');
+    assert.equal(clearPost.name, '阿岚', '清除要指名道姓（按角色名）');
+
+    // 还原，免得影响后面的用例
+    sessionStub.characters = [];
+    sessionStub.portraits = {};
+    resetHooks();
   }
 }
 // ── 关键断言 ⑤：会话工作区「界面不知道」时必须回宿主问 ──────────────────────

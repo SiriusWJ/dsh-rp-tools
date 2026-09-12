@@ -867,6 +867,46 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     check('gate：缺 sessionId → 400', noId.status, 400);
   }
 
+  // ── 立绘持久化：生成结果记进会话配置 ─────────────────────────────────
+  // ★ 用户报的「角色卡生成的立绘下次打开面板就消失」：立绘原先只活在面板组件的 state 里。
+  //   现在把 (file, subfolder, type) 三要素记进会话配置（不记 URL：origin 会变），
+  //   下次打开面板用同样的三要素重新拼出媒体 URL。
+  {
+    const sid = crypto.randomUUID();
+    const saved = await callPost('/rp-tools/portrait', {
+      sessionId: sid, name: '阿岚', action: 'save',
+      file: 'rp-portrait-1.png', subfolder: 'rp', type: 'output',
+      style: '二次元', elapsedMs: 18300,
+    });
+    check('portrait：保存成功', saved.status, 200);
+    check('portrait：会话配置里记下了三要素', saved.json.portraits?.['阿岚']?.generated?.file, 'rp-portrait-1.png');
+    check('portrait：subfolder 也记下', saved.json.portraits?.['阿岚']?.generated?.subfolder, 'rp');
+    check('portrait：风格与耗时一起记', saved.json.portraits?.['阿岚']?.style, '二次元');
+
+    // 落盘了才算数（重启后 / 下次打开面板靠它）
+    const file = join(TEST_HOME, 'data', 'dsh-rp-tools', 'sessions', `${sid}.json`);
+    const onDisk = JSON.parse(readFileSync(file, 'utf8'));
+    check('portrait：确实写进了会话配置文件', onDisk.portraits?.['阿岚']?.generated?.file, 'rp-portrait-1.png');
+
+    // 再存一次不能把卡面（导入卡时登记的 card）冲掉 —— 两者是并存的
+    await callPost('/rp-tools/portrait', {
+      sessionId: sid, name: '阿岚', action: 'save', file: 'rp-portrait-2.png',
+    });
+    const second = await callGet('/rp-tools/session', `?sessionId=${sid}`);
+    check('portrait：重复保存覆盖生成图', second.json.session?.portraits?.['阿岚']?.generated?.file, 'rp-portrait-2.png');
+
+    // 清掉生成图（面板里点「收起」/删角色）
+    const cleared = await callPost('/rp-tools/portrait', { sessionId: sid, name: '阿岚', action: 'clear' });
+    check('portrait：清除后没有 generated', cleared.json.portraits?.['阿岚']?.generated, undefined);
+    const afterClear = await callGet('/rp-tools/session', `?sessionId=${sid}`);
+    check('portrait：清除已落盘', afterClear.json.session?.portraits?.['阿岚'], undefined);
+
+    // 参数缺失要明确报错，别静默当成功
+    check('portrait：缺 sessionId → 400', (await callPost('/rp-tools/portrait', { name: 'x', file: 'a.png' })).status, 400);
+    check('portrait：缺 name → 400', (await callPost('/rp-tools/portrait', { sessionId: sid, file: 'a.png' })).status, 400);
+    check('portrait：缺 file → 400', (await callPost('/rp-tools/portrait', { sessionId: sid, name: 'x' })).status, 400);
+  }
+
   const rel = 'cards/测试分类/烟测卡.card.png';
   const searched = await callGet('/rp-tools/cards', `?q=${encodeURIComponent('烟测')}&limit=10`);
   check('cards：搜索命中', searched.json.total, 1);

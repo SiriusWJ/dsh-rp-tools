@@ -48,6 +48,33 @@ window.__ModuleLoader__.load({
       return sp.toString();
     };
 
+    /**
+     * 生成图的媒体 URL（同源相对路径即可，img/link 会按页面 origin 解析）。
+     *
+     * 为什么存三要素而不是 URL：`/rp-tools/media` 是 ComfyUI `/view` 的代理，
+     * 只要 (file, subfolder, type) 还在就永远能取回同一张图 —— 而 URL 里带的 origin
+     * 换个访问方式（局域网 IP / 改端口）就失效，所以会话配置里只记三要素。
+     */
+    const mediaUrlOf = (ref) => (ref && ref.file
+      ? `/rp-tools/media?${qs({ file: ref.file, subfolder: ref.subfolder, type: ref.type })}`
+      : '');
+
+    /** 会话配置里的 portraits → 面板用的立绘表（生成图优先，卡面另存）。 */
+    const portraitsFromSession = (raw) => {
+      const out = {};
+      for (const [name, entry] of Object.entries(raw ?? {})) {
+        const ref = entry?.generated;
+        if (!ref || !ref.file) continue;
+        out[name] = {
+          url: mediaUrlOf(ref),
+          style: String(entry?.style ?? ''),
+          elapsedMs: Number(entry?.elapsedMs) || 0,
+          persisted: true,
+        };
+      }
+      return out;
+    };
+
     const API = {
       state: () => jget('/rp-tools/state'),
       save: (body) => jpost('/rp-tools/config', body),
@@ -62,6 +89,8 @@ window.__ModuleLoader__.load({
       cards: (params) => jget(`/rp-tools/cards?${qs(params)}`),
       card: (path, params) => jget(`/rp-tools/card?${qs({ path, ...(params ?? {}) })}`),
       cardImport: (body) => jpost('/rp-tools/card-import', body),
+      // 立绘：把生成结果的 (file, subfolder, type) 记进会话配置，下次打开面板还在
+      portraitSave: (body) => jpost('/rp-tools/portrait', body),
       // 会话闸门：宿主回答「现在是不是 dm」「有没有真的开局」。
       // 为什么不能只信客户端投影：切预设会重建投影基线、把基线里没有的键**清掉**，
       // 于是 `projectionValues.agentPreset` 变空 → 判定「不是 DM」→ 入口永久消失。
@@ -705,6 +734,9 @@ window.__ModuleLoader__.load({
           setStyles(global);
           setGlobalUserLabel(String(global?.config?.cards?.userLabel ?? ''));
           setDraft(JSON.parse(JSON.stringify(data.session)));
+          // 立绘：会话配置里记着的生成图要**装回面板状态** —— 原先它只活在组件 state 里，
+          // 关面板/刷新就没了（用户报的「下次打开就消失」）。
+          setPortraits(portraitsFromSession(data.session?.portraits));
           setMsg(null);
           // 诊断：把「界面看到的预设」和「宿主说的预设/是否开局」都记下来。
           // 导入入口的可见性一度只依赖客户端投影，而它会被切预设清空 —— 这一行是为了
@@ -969,8 +1001,36 @@ window.__ModuleLoader__.load({
           });
           if (!res?.ok) throw new Error(res?.error ?? '出图失败');
           const label = res.styleLabel || res.styleKey || '';
-          setPortraits((p) => ({ ...p, [name]: { url: res.media?.[0], style: label, elapsedMs: res.elapsedMs } }));
-          setMsg({ kind: 'ok', text: `「${name}」立绘完成（${label}，${(res.elapsedMs / 1000).toFixed(1)}s）—— 图在该角色的卡片下方` });
+          const ref = res.files?.[0];
+          // 先本地显示（同源的相对 URL 与宿主给的绝对 URL 等价），再**记进会话配置**：
+          // 下次打开面板 / 刷新页面时用同一张三要素拼回来（见 portraitsFromSession）。
+          setPortraits((p) => ({
+            ...p,
+            [name]: { url: ref ? mediaUrlOf(ref) : res.media?.[0], style: label, elapsedMs: res.elapsedMs },
+          }));
+          let saved = false;
+          if (ref) {
+            try {
+              const put = await API.portraitSave({
+                sessionId, name, action: 'save',
+                file: ref.file, subfolder: ref.subfolder, type: ref.type,
+                style: label, elapsedMs: res.elapsedMs,
+              });
+              saved = put?.ok === true;
+              if (saved) {
+                // 会话配置也同步一份，免得下次「保存」把刚写的立绘覆盖掉（保存是整份覆盖）
+                setDraft((d) => (d ? {
+                  ...d,
+                  portraits: { ...(d.portraits ?? {}), [name]: (put.portraits ?? {})[name] ?? d.portraits?.[name] },
+                } : d));
+              }
+            } catch { /* 存不下不影响这次显示 */ }
+          }
+          setMsg({
+            kind: saved ? 'ok' : 'warn',
+            text: `「${name}」立绘完成（${label}，${(res.elapsedMs / 1000).toFixed(1)}s）—— 图在该角色的卡片下方`
+              + (saved ? '，已记进本会话' : '，但**没能记进会话**（下次打开会消失）'),
+          });
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }
@@ -1262,7 +1322,16 @@ window.__ModuleLoader__.load({
                 h('button', {
                   key: 'd', className: 'tiny',
                   onClick: () => {
-                    if (pkey) setPortraits((p) => { const n = { ...p }; delete n[pkey]; return n; });
+                    if (pkey) {
+                      setPortraits((p) => { const n = { ...p }; delete n[pkey]; return n; });
+                      // 会话配置里那份也要清（否则重开面板又被装回来）
+                      API.portraitSave({ sessionId, name: pkey, action: 'clear' })
+                        .then((res) => {
+                          if (!res?.ok) return;
+                          setDraft((d) => (d ? { ...d, portraits: res.portraits ?? {} } : d));
+                        })
+                        .catch(() => { /* 清不掉也只是下次还看得到，不打断 */ });
+                    }
                     patch({ characters: chars.filter((_, j) => j !== i) });
                   },
                 }, '删'),
@@ -1334,7 +1403,19 @@ window.__ModuleLoader__.load({
                       : `卡面：${pkey}（导入 PNG 卡时带进来的）`),
                   portrait?.url ? h('a', { key: 'o', className: 'dim', href: portrait.url, target: '_blank', rel: 'noreferrer' }, '大图') : null,
                   portrait
-                    ? h('button', { key: 'x', className: 'tiny', onClick: () => setPortraits((p) => { const n = { ...p }; delete n[pkey]; return n; }) }, '收起')
+                    ? h('button', {
+                      key: 'x', className: 'tiny',
+                      onClick: () => {
+                        setPortraits((p) => { const n = { ...p }; delete n[pkey]; return n; });
+                        // 只收起显示是不够的：会话配置里那份还得清，否则下次打开又装回来
+                        API.portraitSave({ sessionId, name: pkey, action: 'clear' })
+                          .then((res) => {
+                            if (!res?.ok) return;
+                            setDraft((d) => (d ? { ...d, portraits: res.portraits ?? {} } : d));
+                          })
+                          .catch(() => { /* 清不掉也只是下次还看得到，不打断 */ });
+                      },
+                    }, '收起')
                     : (cardUrl ? h('a', { key: 'co', className: 'dim', href: cardUrl, target: '_blank', rel: 'noreferrer' }, '原图') : null),
                 ]),
               ]) : null,
