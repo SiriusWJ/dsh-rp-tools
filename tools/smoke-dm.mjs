@@ -1210,6 +1210,153 @@ if (rpTable) {
   }
 }
 
+// ── 轻量 DM 地图：一行摘要 + 格式诊断 + 进备份 ─────────────────────────────
+// 设计依据见 docs/STATUS.md 1.14.1。两条纪律来自实测踩坑：
+//   ① 文件坏了 ≠ 还没建（否则 DM 会覆盖一份本可救回的文件）
+//   ② 坏数据不渲染摘要（拿 node="nope" 画出一行正常地图比什么都不显示更危险）
+{
+  const D = mod.__debug;
+  const MAPMOD = await import(pathToFileURL(join(here, '..', 'lib', 'rp-map.js')).href);
+  const sid = crypto.randomUUID();
+  const ws = join(TEST_HOME, 'ws-map');
+  mkdirSync(ws, { recursive: true });
+  D.setSessionCwd(sid, ws);
+  const dir = join(ws, 'rp-sessions', sid);
+  mkdirSync(dir, { recursive: true });
+  const loreFile = join(dir, 'rp-worldbook.md');
+  const MAP = {
+    version: 1, id: 'old_inn', name: '旧钟旅店', start: 'hall',
+    nodes: [
+      { id: 'hall', label: '大堂', public: true },
+      { id: 'kitchen', label: '厨房', public: true },
+      { id: 'rooms', label: '二楼客房', public: true },
+      { id: 'cellar', label: '地窖', public: false },
+      { id: 'yard', label: '后院', public: true },
+    ],
+    edges: [
+      { id: 'hall_kitchen', a: 'hall', b: 'kitchen', label: '木门', state: 'open' },
+      { id: 'hall_rooms', a: 'hall', b: 'rooms', label: '楼梯', state: 'open' },
+      { id: 'hall_cellar', a: 'hall', b: 'cellar', label: '暗门', state: 'locked' },
+      { id: 'kitchen_yard', a: 'kitchen', b: 'yard', label: '后门', state: 'open' },
+    ],
+  };
+  const writeMap = () => writeFileSync(join(dir, 'rp-map.json'), `${JSON.stringify(MAP, null, 1)}\n`);
+  const writeState = (s) => writeFileSync(join(dir, 'rp-map-state.json'), typeof s === 'string' ? s : `${JSON.stringify(s, null, 1)}\n`);
+  const ctx = () => D.buildTurnContext({ ...D.loadSession(sid), sessionId: sid }, '', { sessionId: sid, turn: 1, loreFile });
+  const mapLines = (text) => text.split('\n').filter((l) => l.startsWith('【地图】'));
+
+  // ① 没有地图 → 一个字都不注入（绝大多数会话不该被地图打扰）
+  check('地图：没有地图时不注入任何内容', D.mapContextForDir(dir), '');
+  check('地图：没有地图时 turn context 里也没有地图行', mapLines(ctx()).length, 0);
+
+  // ② 有图、状态还没建 → 给出**可直接抄**的初始化 JSON
+  writeMap();
+  const hint = D.mapContextForDir(dir);
+  check('地图：未初始化时明确说「还没建状态文件」', hint.includes('还没有 rp-map-state.json'), true);
+  check('地图：未初始化时给出建议 JSON', hint.includes('"tokens":{"party":"hall"}'), true);
+  check('地图：建议里把 public 节点作为初始已揭示', hint.includes('"revealed":["hall","kitchen","rooms","yard"]'), true);
+
+  // ③ 正常：一行说清「我在哪 / 能去哪 / 哪条不通」
+  writeState({ map_id: 'old_inn', node: 'hall', revealed: ['hall', 'kitchen', 'rooms'], edges: {}, tokens: { party: 'hall', innkeeper: 'hall' } });
+  const atHall = D.mapContextForDir(dir);
+  check('地图：报当前位置', atHall.includes('旧钟旅店·大堂'), true);
+  check('地图：报已揭示数', atHall.includes('已揭示 3/5'), true);
+  check('地图：报可走方向（带路名）', atHall.includes('可走：厨房（木门）、二楼客房（楼梯）'), true);
+  check('地图：报**本端**不通的路', atHall.includes('此端不通：🔒地窖（暗门）'), true);
+  check('地图：报标记位置', atHall.includes('队伍@大堂'), true);
+  check('地图：一行装完（不换行）', atHall.split('\n').length, 1);
+  check('地图：长度可控（<160 字）', atHall.length < 160, true);
+
+  // ④ 站在厨房时不该报「大堂的暗门锁着」——那是噪音
+  writeState({ map_id: 'old_inn', node: 'kitchen', revealed: ['hall', 'kitchen', 'rooms'], edges: {}, tokens: { party: 'kitchen' } });
+  const atKitchen = D.mapContextForDir(dir);
+  check('地图：只报当前节点这一端不通的路', atKitchen.includes('此端不通'), false);
+
+  // ⑤ 未揭示的目标不算「可走」
+  writeState({ map_id: 'old_inn', node: 'kitchen', revealed: ['hall', 'kitchen'], edges: {}, tokens: { party: 'kitchen' } });
+  check('地图：未揭示的后院不算可走', D.mapContextForDir(dir).includes('后院'), false);
+  check('地图：walkableFrom 也排除未揭示', MAPMOD.walkableFrom(MAP, { node: 'kitchen', revealed: ['hall', 'kitchen'] }).join(','), 'hall');
+  check('地图：锁着的边不算可走', MAPMOD.walkableFrom(MAP, { node: 'hall', revealed: ['hall', 'cellar'] }).includes('cellar'), false);
+  check('地图：开锁后就算可走', MAPMOD.walkableFrom(MAP, { node: 'hall', revealed: ['hall', 'cellar'], edges: { hall_cellar: 'open' } }).includes('cellar'), true);
+
+  // ⑥ 文件坏了 ≠ 还没建（这条差点写错：两种情况的 state 都是 null）
+  writeState('{ 坏掉的 json');
+  const broken = D.mapContextForDir(dir);
+  check('地图：状态文件坏掉时报 JSON 错误', broken.includes('不是合法 JSON'), true);
+  check('地图：坏掉时**不**说「还没初始化」（否则 DM 会覆盖它）', broken.includes('还没初始化'), false);
+  writeMap();
+  writeFileSync(join(dir, 'rp-map.json'), '{ 也坏掉');
+  check('地图：静态图坏掉时也不静默成「没有地图」', D.mapContextForDir(dir).includes('rp-map.json 不是合法 JSON'), true);
+
+  // ⑦ 状态与静态图不自洽 → **不渲染基于垃圾的摘要**
+  writeMap();
+  writeState({ map_id: 'other_map', node: 'nope', revealed: ['hall', 'ghost'], edges: { no_such_edge: 'open', hall_rooms: 'nailed' }, tokens: { party: 'nowhere' } });
+  const bad = D.mapContextForDir(dir);
+  check('地图：node 不认识时不画摘要（只报警）', bad.includes('旧钟旅店·'), false);
+  check('地图：报 map_id 不一致', bad.includes('map_id="other_map"'), true);
+  check('地图：报 node 不认识', bad.includes('node="nope"'), true);
+  check('地图：报 revealed 里的幽灵节点', bad.includes('revealed 里的 "ghost"'), true);
+  check('地图：报不存在的连接', bad.includes('edges 里的 "no_such_edge"'), true);
+  check('地图：报不认识的边状态', bad.includes('"nailed"'), true);
+  check('地图：报不认识的标记位置', bad.includes('tokens["party"]="nowhere"'), true);
+
+  // ⑧ 小毛病（只缺 tokens.party）仍给摘要 + 一条警告
+  writeState({ map_id: 'old_inn', node: 'hall', revealed: ['hall', 'kitchen'], edges: {} });
+  const minor = D.mapContextForDir(dir);
+  check('地图：小毛病时仍给摘要', minor.includes('旧钟旅店·大堂'), true);
+  check('地图：小毛病时附一条警告', minor.includes('tokens 里缺 party'), true);
+
+  // ⑨ 静态图校验：引用完整性
+  check('地图校验：id 非法', MAPMOD.validateMap({ id: '带中文', nodes: [{ id: 'a', label: 'A' }] })[0].includes('不合法'), true);
+  check('地图校验：节点 id 重复', MAPMOD.validateMap({ id: 'm', nodes: [{ id: 'a' }, { id: 'a' }] }).some((p) => p.includes('重复')), true);
+  check('地图校验：边的端点不存在', MAPMOD.validateMap({ id: 'm', nodes: [{ id: 'a' }], edges: [{ id: 'e', a: 'a', b: 'zz' }] }).some((p) => p.includes('b="zz"')), true);
+  check('地图校验：边状态不认识', MAPMOD.validateMap({ id: 'm', nodes: [{ id: 'a' }, { id: 'b' }], edges: [{ id: 'e', a: 'a', b: 'b', state: '半开' }] }).some((p) => p.includes('半开')), true);
+  check('地图校验：start 不在 nodes 里', MAPMOD.validateMap({ id: 'm', start: 'zz', nodes: [{ id: 'a' }] }).some((p) => p.includes('start="zz"')), true);
+  check('地图校验：没有 nodes', MAPMOD.validateMap({ id: 'm' }).some((p) => p.includes('没有 nodes')), true);
+  check('地图校验：public 与 revealed 的关系**不报**（合法用法）',
+    MAPMOD.validateMap({ id: 'm', start: 'a', nodes: [{ id: 'a', public: true }, { id: 'b', public: true }], edges: [] }).length, 0);
+
+  // ⑩ 注入接线：standing 给文件指针、turn 给摘要
+  writeMap();
+  writeState({ map_id: 'old_inn', node: 'hall', revealed: ['hall', 'kitchen'], edges: {}, tokens: { party: 'hall' } });
+  const standing = D.buildStandingText({ ...D.loadSession(sid), sessionId: sid }, { loreFile });
+  check('地图：standing 里给出静态图路径', standing.includes(join(dir, 'rp-map.json')), true);
+  check('地图：standing 里给出状态文件路径', standing.includes(join(dir, 'rp-map-state.json')), true);
+  check('地图：standing 里说明「不要写回静态图」', standing.includes('不要写回静态图'), true);
+  check('地图：standing 里说明位置每轮自动注入', standing.includes('每轮自动注入'), true);
+  check('地图：turn context 里排在状态之后', (() => {
+    const s2 = { ...D.loadSession(sid), sessionId: sid, state: { scene: '旧钟旅店大堂' } };
+    const text = D.buildTurnContext(s2, '', { sessionId: sid, turn: 1, loreFile });
+    return text.indexOf('本场当前状态') < text.indexOf('【地图】');
+  })(), true);
+  // 没有地图的会话，standing 里不该冒出【地图】
+  {
+    const sid2 = crypto.randomUUID();
+    const ws2 = join(TEST_HOME, 'ws-map-none');
+    mkdirSync(ws2, { recursive: true });
+    D.setSessionCwd(sid2, ws2);
+    const lore2 = join(ws2, 'rp-sessions', sid2, 'rp-worldbook.md');
+    const st2 = D.buildStandingText({ ...D.loadSession(sid2), sessionId: sid2 }, { loreFile: lore2 });
+    check('地图：没有地图的会话，standing 里没有【地图】', st2.includes('【地图】'), false);
+    check('地图：没有地图的会话，turn context 里没有【地图】',
+      D.buildTurnContext({ ...D.loadSession(sid2), sessionId: sid2 }, '', { sessionId: sid2, turn: 1, loreFile: lore2 }).includes('【地图】'), false);
+  }
+
+  // ⑪ 进备份：两个文件都要进包、也要能还原
+  {
+    const bundleMod = await import(pathToFileURL(join(here, '..', 'lib', 'session-bundle.js')).href);
+    const built = bundleMod.buildBundle({ sessionId: sid, sessionDir: dir, sessionConfig: { sessionId: sid }, now: new Date() });
+    check('地图：rp-map.json 进备份', built.manifest.files.some((f) => f.name === 'rp-map.json'), true);
+    check('地图：rp-map-state.json 进备份', built.manifest.files.some((f) => f.name === 'rp-map-state.json'), true);
+    const parsed = bundleMod.parseBundle(built.buffer);
+    const dir2 = join(ws, 'rp-sessions', 'restored');
+    bundleMod.restoreBundleEntries(parsed.entries, dir2);
+    check('地图：还原后静态图在位', existsSync(join(dir2, 'rp-map.json')), true);
+    check('地图：还原后状态文件在位', existsSync(join(dir2, 'rp-map-state.json')), true);
+    check('地图：还原内容一致', D.mapContextForDir(dir2), D.mapContextForDir(dir));
+  }
+}
+
 // agent/created：宿主侧能否直接识别预设并自动登记
 const onCreated = (payload) => emit('agent/created', payload);
 if (onCreated) {
@@ -3019,6 +3166,15 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
       prefix.includes('读了就会拿别人的世界观开团，而且不会报错'), true);
     check('预设：说明宿主已经把两行事实印在系统提示里',
       prefix.includes('宿主已经把该给的两行都印在系统提示里了'), true);
+    // 地图（可选功能）：约定的每一条都是为了不再犯已经犯过的错
+    check('预设：有「地图」小节', prefix.includes('## 地图（**可选**'), true);
+    check('预设：强调没地图就别硬造', prefix.includes('不要给每个场景临时造一张图'), true);
+    check('预设：运行时变化不写回静态图', prefix.includes('运行时变化绝不写回 rp-map.json'), true);
+    check('预设：mermaid 节点 ID 必须 ASCII', prefix.includes('**必须 ASCII**'), true);
+    check('预设：按钮只从当前节点的邻接边生成', prefix.includes('按钮只从「当前节点的邻接边」生成'), true);
+    check('预设：点明跨端生成按钮会被判相邻失败', prefix.includes('点了必然被判「两点不相邻」而失败'), true);
+    check('预设：地图走面板原地更新', prefix.includes('地图走面板'), true);
+    check('预设：收到地图 action 先校验再写状态', prefix.includes('非法就说明原因并重绘当前地图，**不要写状态**'), true);
     // 约定 ≠ 状态（报告 BUG-01/02 的种子）
     check('预设：说明「常驻条目 / 已有可用图」是规则而不是已有状态',
       prefix.includes('是**规则说明**；本会话真的有没有，看它下面列的东西'), true);
