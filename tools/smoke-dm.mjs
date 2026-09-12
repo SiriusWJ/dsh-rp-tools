@@ -746,6 +746,10 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('导入：会话世界已写入', String(sess.json.session?.world).includes('情境正文'), true);
   check('导入：会话世界里的占位符已展开', String(sess.json.session?.world).includes('玩家站在门外'), true);
   check('导入：返回占位符统计', (imported.json.placeholders?.total ?? 0) >= 2, true);
+  // 开场白引导文件：全部开场白都写进去（不截断），DM 需要时自己 read
+  check('导入：写出开场白引导文件', existsSync(join(ws, 'rp-cards', '烟测卡.card.opening.md')), true);
+  check('导入：结果里有引导文件路径', imported.json.files?.opening, 'rp-cards/烟测卡.card.opening.md');
+  check('导入：开场指令指向引导文件', String(imported.json.opening).includes('rp-cards/烟测卡.card.opening.md'), true);
   check('导入：会话立绘已登记', sess.json.session?.portraits?.['烟测卡']?.card, rel);
   check('导入：战役名补成卡名', sess.json.session?.campaign?.name, '烟测卡');
 

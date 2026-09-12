@@ -217,12 +217,25 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card } = await import(
 
   // ⚠️ 回归：截断绝不能往引用正文里插「（已截断）」这类元信息
   // —— 模型会把它当叙事照念（用户实测：DM 第一条回复里原样出现了那行字）。
-  const long = '第一段。'.repeat(1200);   // 6000 字，超过开场白的引用上限
-  const cutPrompt = buildOpeningPrompt({ character: { name: '长卡', first_mes: '短版' }, stats: {} }, { greeting: long });
+  const long = '第一段。'.repeat(1200);   // 6000 字，超过内联引用上限
+  const cutPrompt = buildOpeningPrompt(
+    { character: { name: '长卡', first_mes: '短版' }, stats: {} },
+    { greeting: long, greetingFile: 'rp-cards/长卡.opening.md', greetingCount: 4 },
+  );
   check('开场指令：引用里不出现「已截断」', cutPrompt.includes('已截断'), false);
   check('开场指令：引用里不出现「全文见导出的 JSON」', cutPrompt.includes('全文见导出的 JSON'), false);
-  check('开场指令：超长时说明放在引用之外', cutPrompt.includes('这里给的是节选'), true);
-  check('开场指令：截断处落在句末', cutPrompt.includes('。…'), true);
+  check('开场指令：超长时不内联，改指向引导文件', cutPrompt.includes('开场前先 read 这个文件'), true);
+  check('开场指令：给出引导文件路径', cutPrompt.includes('rp-cards/长卡.opening.md'), true);
+  check('开场指令：说明有几条可选', cutPrompt.includes('共 4 条可选'), true);
+  check('开场指令：超长时不把原文塞进指令里', cutPrompt.includes('第一段。第一段。'), false);
+
+  // 短开场白仍然直接内联（省掉一次工具往返）
+  const shortPrompt = buildOpeningPrompt(
+    { character: { name: '短卡' }, stats: {} },
+    { greeting: '天宝年间，长安城。', greetingFile: 'rp-cards/短卡.opening.md' },
+  );
+  check('开场指令：短开场白直接内联', shortPrompt.includes('天宝年间，长安城。'), true);
+  check('开场指令：内联时也附引导文件路径', shortPrompt.includes('卡组开场白：rp-cards/短卡.opening.md'), true);
 
   // 角色字段被截断时，也只在数据里标记，不污染文本
   const longPng = makePng([textChunk('ccv3', card({

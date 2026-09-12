@@ -233,6 +233,8 @@ window.__ModuleLoader__.load({
 .rpc .item .nm { font-size: 12.5px; }
 .rpc .item .mt { font-size: 11px; opacity: .6; }
 .rpc .prev { display: flex; flex-direction: column; gap: 8px; }
+.rpc .greet { display: flex; flex-direction: column; gap: 4px; }
+.rpc .greet select { font-size: 12px; }
 .rpc .prevbox { max-height: 190px; overflow: auto; white-space: pre-wrap; word-break: break-word;
   font-size: 12px; padding: 8px; border-radius: 8px; background: color-mix(in oklab, currentColor 6%, transparent); }
 .rpc .msg { padding: 6px 9px; border-radius: 6px; font-size: 12px; background: color-mix(in oklab, currentColor 8%, transparent); }
@@ -1514,6 +1516,8 @@ window.__ModuleLoader__.load({
       const [msg, setMsg] = React.useState(null);
       const [result, setResult] = React.useState(null);
       const [autoStart, setAutoStart] = React.useState(true);
+      // 用第几条开场白（导入时随请求发给宿主）
+      const [greetingIndex, setGreetingIndex] = React.useState(0);
       // 待办导入**放在模块级**：新建会话会让会话作用域的槽位子树重新挂载，
       // 那时组件 state 会被重置，任务就永远等不到接手的那次渲染（这条踩过一次）。
       const [pendingTick, setPendingTick] = React.useState(0);
@@ -1631,6 +1635,7 @@ window.__ModuleLoader__.load({
             sessionId: targetId,
             workspace: live.current.cwd || undefined,
             path: opts.path,
+            greetingIndex: opts.greetingIndex ?? greetingIndex,
           });
           if (!res?.ok) throw new Error(res?.error ?? '导入失败');
           setResult({ ...res, preset });
@@ -1638,8 +1643,9 @@ window.__ModuleLoader__.load({
             `已导入《${res.name}》`,
             `世界书 +${res.lore.added} 条${res.lore.skipped ? `（跳过重名 ${res.lore.skipped} 条）` : ''}`,
             `全文 ${res.files.markdown}`,
+            res.files.opening ? `开场白引导 ${res.files.opening}` : '',
             preset.ok ? '预设已切到 dm' : (preset.note ?? '预设未切换'),
-          ];
+          ].filter(Boolean);
           setMsg({ kind: preset.ok ? 'ok' : 'warn', text: bits.join(' · ') });
           if (opts.autoStart && res.opening) sendOpening(res.opening);
           // 导入成功就把面板收起来：这一刻开团已经开始（开场指令发出去了），
@@ -1655,7 +1661,7 @@ window.__ModuleLoader__.load({
         setMsg(null);
         setResult(null);
         const target = live.current.sessionId;
-        if (target && live.current.blank) { await runImport(target, { path: sel, autoStart }); return; }
+        if (target && live.current.blank) { await runImport(target, { path: sel, autoStart, greetingIndex }); return; }
         // 已经开过局的会话改不了预设（宿主 agent-preset/locked）→ 新建一个空白会话再来
         let ws;
         try { ws = ctxRef.current?.get?.('uiWorkspace'); } catch { ws = undefined; }
@@ -1663,7 +1669,7 @@ window.__ModuleLoader__.load({
           setMsg({ kind: 'err', text: '当前会话已经开始（预设已固定），且拿不到「新建会话」接口 —— 请手动新建一个会话再导入。' });
           return;
         }
-        pendingImport = { path: sel, autoStart };
+        pendingImport = { path: sel, autoStart, greetingIndex };
         setPendingTick((t) => t + 1);
         setMsg({ kind: 'ok', text: '当前会话已经开始（预设固定），正在新建一个会话用于开团…' });
         try { ws.startSession(); } catch (error) {
@@ -1744,6 +1750,18 @@ window.__ModuleLoader__.load({
           ? h('div', { key: 'attr', className: 'dim' },
             `属性标签：${preview.attributes.count} 行将中文化（name→名称、gender: Female→性别：女 …）`)
           : null,
+        // 开场白可以挑（卡常带好几条），选中的那条会内联进「开局」指令、
+        // 全部开场白另存一份引导文件，DM 长开白时自己去 read（不截断）
+        (preview.greetings ?? []).length
+          ? h('div', { key: 'greet', className: 'greet' }, [
+            h('div', { key: 'l', className: 'dim' }, `开场白（${preview.greetings.length} 条可选，会写进 rp-cards/*.opening.md 引导文件）`),
+            h('select', {
+              key: 's', value: String(greetingIndex),
+              onChange: (e) => setGreetingIndex(Number(e.target.value)),
+            }, preview.greetings.map((g) => h('option', { key: g.index, value: String(g.index) },
+              `#${g.index + 1}${g.source === 'first_mes' ? '（first_mes）' : ''} · ${g.chars} 字 · ${String(g.preview ?? '').slice(0, 40)}…`))),
+          ])
+          : null,
         preview.world ? h('div', { key: 'w', className: 'prevbox' }, preview.world) : null,
         preview.character?.personality ? h('div', { key: 'p', className: 'prevbox' }, preview.character.personality) : null,
         h('label', { key: 'auto', className: 'cb' }, [
@@ -1764,7 +1782,10 @@ window.__ModuleLoader__.load({
 
       const resultCard = result ? h('div', { key: 'res', className: 'prev' }, [
         h('div', { key: 'h', className: 'row' }, [h('strong', { key: 't' }, '导入完成'), h('span', { key: 'b', className: 'badge' }, result.name)]),
-        h('div', { key: 'f', className: 'mono dim' }, `世界书 ${result.files?.world}（+${result.lore?.added ?? 0} 条）｜全文 ${result.files?.markdown}｜卡面 ${result.files?.image ?? '—'}`),
+        h('div', { key: 'f', className: 'mono dim' },
+          `世界书 ${result.files?.world}（+${result.lore?.added ?? 0} 条）｜全文 ${result.files?.markdown}`
+          + (result.files?.opening ? `｜开场白引导 ${result.files.opening}` : '')
+          + `｜卡面 ${result.files?.image ?? '—'}`),
         result.placeholders?.total
           ? h('div', { key: 'ph', className: 'dim' },
             `已展开占位符 ${result.placeholders.total} 处：${Object.entries(result.placeholders.counts ?? {}).map(([k, n]) => `${k}×${n}`).join('、')}`)
