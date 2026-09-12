@@ -65,18 +65,19 @@ models/loras/krea2_*.safetensors                               ← 9 个风格 L
 
 ## 工具
 
-10 个工具，全部以 `rp_` 开头，**全部只在 `dm` 预设作用域注册**。设置页「RP工具 → 工具列表」会实时展示同款清单（含每个参数的说明）。
+11 个工具，全部以 `rp_` 开头，**全部只在 `dm` 预设作用域注册**。设置页「RP工具 → 工具列表」会实时展示同款清单（含每个参数的说明）。
 
 | 工具 | 作用 | 主要参数 |
 |---|---|---|
 | `rp_random` | 中立随机裁决（骰子 / 区间 / 抽取 / 布尔） | `kind?` `dice?` `choices?` `weights?` `min?` `max?` `count?` `seed?` |
 | `rp_styles` | 列出风格（触发词 / CFG / 步数 / 尺寸预设） | — |
-| `rp_illustrate` | 按风格生成一张图 | `prompt`* `style?` `seed?` `aspect?` `width?` `height?` |
+| `rp_illustrate` | 按风格生成一张图（并自动存进资源库） | `prompt`* `style?` `seed?` `aspect?` `width?` `height?` `label?` `tags?` `kind?` |
+| `rp_assets` | **浏览资源库**（找回来复用，不必重出） | `action?` `kind?` `characters?` `tags?` `q?` `limit?` `id?` `label?` |
 | `rp_character` | 角色卡增删查 + 出立绘 | `action`* `name?` `appearance?` `portrait?` `style?` |
 | `rp_state` | 状态追踪（场景 / 时间 / 地点 / 在场 / 线索 + 队伍 + 旗标） | `action`* `field?` `value?` `party?` `flags?` |
 | `rp_lore` | 世界书按条读取 / 生成模板 | `action`* `query?` `limit?` |
 | `rp_session` | 本会话设置（世界 / 前缀 / 会话默认风格 / 风格备注 / 战役名） | `action`* `world?` `prompt_prefix?` `default_style?` `style_notes?` `campaign_name?` |
-| `rp_scenes` | 按场景文件逐格批量出图 | `scenesFile`* `sceneId?` `style?` `limit?` |
+| `rp_scenes` | 按场景文件逐格批量出图（整幕共享一个组存进资源库） | `scenesFile`* `sceneId?` `style?` `limit?` `label?` `tags?` |
 | `rp_config` | **全局**配置（负面词 / 全局默认风格 / ComfyUI 地址 / 单个风格的触发词·步数·CFG） | `action`* `negative?` `default_style?` `base_url?` `style_key?` `trigger?` `steps?` `cfg?` |
 | `rp_table` | 随机表定义与掷表 | `action`* `name?` `dice?` `entries?` `count?` `seed?` |
 
@@ -145,6 +146,36 @@ DM 出的第一张单人图会**自动记成那个角色的立绘**（已有立�
 角色卡编辑器里可以：**生成立绘 / 重新生成**（覆盖，纵向）、**导入图片**（png / jpeg / webp，≤8MB，
 存进 `<工作区>/rp-sessions/<会话 id>/portraits/`）、或直接删掉这个角色（会顺手清掉它的立绘记录）。
 
+### 资源库：出过的图都留下来，能找回来
+
+**只记引用会在几周后变成一堆死链**，所以出图后插件会把图**真抓一份**存进会话目录，并按分类分文件夹：
+
+```
+<工作区>/rp-sessions/<会话 id>/
+├── assets.json                    索引：一张图一条（id / 分类 / 标签 / 角色 / 尺寸 / 风格 / 提示词 / 时间）
+└── assets/
+    ├── portraits/<id>.png         角色
+    ├── scenes/<id>.png            场景
+    ├── items/<id>.png             道具
+    └── other/<id>.png             其他
+```
+
+入库的四个入口：`rp_illustrate` 出图、`rp_scenes` 每格（整幕共享一个 `group`）、
+`rp_character(portrait:true)`、面板「导入图片」。导入卡的卡面**不入库** —— 它属于卡库。
+
+**DM 侧**用 `rp_assets` 按 `kind` / `characters` / `tags` / `q` 查，返回的每行都带能直接放进
+`dsh-ui` image 组件的地址；常驻段里**只报条数**（`资源库：本会话已有 23 张图（角色 6、场景 14、道具 3）`）
+—— 常驻内容是每轮都发的，把上百条列进来会白白吃掉几千字。**DM 不能删图**，删除是玩家在面板里做的事。
+
+**玩家侧**面板有一张「资源」卡片：分类筛选 + 搜索 + 图墙（服务端降采样缩略图）+ 点开看原图，
+能改名称/标签、**显示到对话**（拼成 `dsh-ui` 围栏填进输入框，不自动发送）、
+**设为某角色的立绘**（不复制文件，只改引用；会清掉该角色旧的生成立绘，否则读取端会优先显示旧的）、
+**删除**（连磁盘文件一起删，并自动解除指向它的立绘引用，不留死链）。
+
+> ⚠️ 索引是 read-modify-write，而 `rp_illustrate` 是**并发安全**的（宿主并行池最多 10 个在飞）——
+> 所以所有写索引的路径都过一把**按会话串行的写队列**。没有它，同时出 5 张图可能只入库 2 张，
+> 而且不报错。
+
 需要一次出多张时，DM 会在**同一步**里并发发出多个 `rp_illustrate`（插件已把这两个工具声明为
 并发安全，宿主才会真的并行调度）。ComfyUI 是单卡队列，**GPU 总时长不变** —— 省掉的是每张图
 之间那几轮模型往返（长局里一步就是几万 input token）。
@@ -166,7 +197,10 @@ DM 出的第一张单人图会**自动记成那个角色的立绘**（已有立�
 
 <会话工作区>/
 ├── rp-worldbook.md             世界书（可手写；导入的故事书条目也追加在这里）
-└── rp-sessions/<会话 id>/cards/<slug>.{md,json,png}   导入产物：卡全文 / 规范化结果 / 卡面
+└── rp-sessions/<会话 id>/
+    ├── cards/<slug>.{md,json,png}      导入产物：卡全文 / 规范化结果 / 卡面
+    ├── assets.json                     资源库索引（一张图一条）
+    └── assets/<分类>/<id>.<ext>        出过的图与导入的图（portraits / scenes / items / other）
 ```
 
 `styles.json` 关键字段：
@@ -254,9 +288,12 @@ dsh-rp-tools/
 | `/rp-tools/tools` | GET | 工具清单 + 参数说明（设置页用） |
 | `/rp-tools/roll` | POST | 掷随机表（面板用） |
 | `/rp-tools/media` | GET | **同源媒体代理**：把 ComfyUI `/view` 转成同源，图片才能在聊天里渲染 |
-| `/rp-tools/portrait` | POST | 登记/清除某个角色的立绘（只存 ComfyUI 三要素，媒体仍走 `/rp-tools/media`） |
-| `/rp-tools/portrait-upload` | POST | 导入外部立绘（data URL → 落到 `<工作区>/rp-sessions/<id>/portraits/`，只收 png/jpeg/webp） |
+| `/rp-tools/portrait` | POST | 登记/清除某个角色的立绘（只存 ComfyUI 三要素，媒体仍走 `/rp-tools/media`；保存时也会归档进资源库） |
+| `/rp-tools/portrait-upload` | POST | 导入外部立绘（`/rp-tools/asset-upload` 的别名，等价于 `kind=portrait` + 角色名） |
 | `/rp-tools/portrait-image` | GET | 把**登记过**的导入立绘发回浏览器（只认会话配置里的相对路径 + 会话目录前缀校验） |
+| `/rp-tools/assets` | GET/POST | 资源库：列出（可筛分类/角色/标签/关键词）/ 改名称与标签 / 删除 / 设为某角色的立绘 |
+| `/rp-tools/asset-upload` | POST | 导入外部图进资源库（data URL → `assets/<分类>/<id>.<ext>`，只收 png/jpeg/webp、≤8MB） |
+| `/rp-tools/asset-image` | GET | 发资源图（按 `id`；`thumb=1&width=N` 走服务端降采样，图墙用它） |
 | `/rp-tools/preview` | POST | 试出一张（设置页 / 面板用，可带 sessionId；`sizeKey` 选场景/立绘/道具档） |
 | `/rp-tools/cards` | GET | 列卡库（服务端搜索 / 分类 / 分页） |
 | `/rp-tools/card` | GET | 解析单张卡 → 摘要与预览（不落盘） |

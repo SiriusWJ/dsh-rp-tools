@@ -151,6 +151,10 @@ const calls = [];
 const portraitPosts = [];
 /** 外部导入立绘的 POST 记录（`/rp-tools/portrait-upload`）。 */
 const portraitUploads = [];
+/** 资源库的写操作记录（改标签 / 删除 / 提成立绘）。 */
+const assetWrites = [];
+/** 资源库列表桩（`/rp-tools/assets`）：用例可临时替换，测筛选/图墙/详情。 */
+let assetStub = [];
 /**
  * FileReader 桩：真实浏览器里「选文件 → data URL」就是这一步。
  * 测试造的 File 上带一个 `__dataUrl`，读出来即用它（这样断言能对上具体内容）。
@@ -299,22 +303,74 @@ globalThis.fetch = async (url, options = {}) => {
       files: [{ file: 'rp-portrait-9.png', subfolder: '', type: 'output' }],
     });
   }
-  // 外部导入立绘：界面读成 data URL 后 POST 上来，宿主落盘并回一个同源地址
-  if (target === '/rp-tools/portrait-upload') {
+  // 外部导入：界面读成 data URL 后 POST 上来，宿主落盘并回一个同源地址。
+  // 1.13.0 起统一走 /rp-tools/asset-upload（角色立绘的 kind=portrait + name 会顺带登记成立绘）。
+  if (target === '/rp-tools/asset-upload' || target === '/rp-tools/portrait-upload') {
     const body = JSON.parse(options.body ?? '{}');
     portraitUploads.push(body);
+    const kind = body.kind ?? 'portrait';
+    const dir = kind === 'item' ? 'items' : (kind === 'scene' ? 'scenes' : (kind === 'other' ? 'other' : 'portraits'));
+    const assetId = `a${portraitUploads.length}`;
     return reply({
-      ok: true, sessionId: body.sessionId, name: body.name,
-      file: `portraits/${body.name}.png`, bytes: 5,
-      url: `/rp-tools/portrait-image?sessionId=${encodeURIComponent(body.sessionId)}&name=${encodeURIComponent(body.name)}&v=2026`,
-      portraits: {
-        ...sessionStub.portraits,
-        [body.name]: {
-          ...(sessionStub.portraits?.[body.name] ?? {}),
-          imported: { file: `portraits/${body.name}.png`, bytes: 5, at: '2026-01-01T00:00:00.000Z' },
-        },
-      },
+      ok: true, sessionId: body.sessionId, name: body.name, kind,
+      file: `assets/${dir}/${assetId}.png`, bytes: 5,
+      asset: { id: assetId, kind, label: body.label ?? body.name ?? '', tags: [], characters: body.name ? [body.name] : [] },
+      url: `/rp-tools/asset-image?sessionId=${encodeURIComponent(body.sessionId)}&id=${assetId}`,
+      portraits: body.name
+        ? {
+          ...sessionStub.portraits,
+          [body.name]: {
+            ...(sessionStub.portraits?.[body.name] ?? {}),
+            imported: { file: `assets/portraits/${assetId}.png`, bytes: 5, at: '2026-01-01T00:00:00.000Z' },
+          },
+        }
+        : sessionStub.portraits,
     });
+  }
+  // 资源库列表：面板图墙用它。assetStub 可被用例临时替换。
+  if (target.startsWith('/rp-tools/assets?')) {
+    const u = new URL(target, 'http://127.0.0.1:3080');
+    const kind = u.searchParams.get('kind') ?? '';
+    const q = (u.searchParams.get('q') ?? '').toLowerCase();
+    const list = assetStub.filter((a) => (!kind || a.kind === kind)
+      && (!q || `${a.label} ${(a.tags ?? []).join(' ')} ${(a.characters ?? []).join(' ')}`.toLowerCase().includes(q)));
+    const counts = { portrait: 0, scene: 0, item: 0, other: 0 };
+    for (const a of assetStub) counts[a.kind] += 1;
+    return reply({
+      ok: true, sessionId: sessionStub.sessionId, total: list.length, counts,
+      // 分类清单由宿主给（界面不自己维护一份映射）
+      kinds: [
+        { key: 'portrait', label: '角色', count: counts.portrait },
+        { key: 'scene', label: '场景', count: counts.scene },
+        { key: 'item', label: '道具', count: counts.item },
+        { key: 'other', label: '其他', count: counts.other },
+      ],
+      assets: list.map((a) => ({
+        ...a,
+        url: `/rp-tools/asset-image?sessionId=${sessionStub.sessionId}&id=${a.id}`,
+        previewUrl: `/rp-tools/asset-image?sessionId=${sessionStub.sessionId}&id=${a.id}&thumb=1&width=480`,
+      })),
+    });
+  }
+  // 资源库写操作：改标签 / 删除 / 提成某角色的立绘
+  if (target === '/rp-tools/assets') {
+    const body = JSON.parse(options.body ?? '{}');
+    assetWrites.push(body);
+    if (body.action === 'delete') {
+      assetStub = assetStub.filter((a) => a.id !== body.id);
+      return reply({ ok: true, sessionId: body.sessionId, action: 'delete', id: body.id, fileGone: true, droppedPortraits: ['阿岚'] });
+    }
+    if (body.action === 'useAsPortrait') {
+      const one = assetStub.find((a) => a.id === body.id) ?? {};
+      return reply({
+        ok: true, sessionId: body.sessionId, name: body.name, assetId: body.id,
+        portraits: { [body.name]: { imported: { file: one.file ?? 'x.png', bytes: 5, at: '2026-01-01T00:00:00.000Z' } } },
+      });
+    }
+    assetStub = assetStub.map((a) => (a.id === body.id
+      ? { ...a, label: body.label ?? a.label, tags: String(body.tags ?? '').split(/[,，、;；\s]+/).filter(Boolean) }
+      : a));
+    return reply({ ok: true, sessionId: body.sessionId, action: 'update', asset: assetStub.find((a) => a.id === body.id) });
   }
   if (target.startsWith('/rp-tools/state')) {
     return reply({
@@ -1125,6 +1181,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     for (let i = 0; i < 12 && portraitUploads.length === beforeUploads; i++) await tick(30);
     assert.equal(portraitUploads.length, beforeUploads + 1, '选完文件应 POST 一次 portrait-upload');
     assert.equal(portraitUploads.at(-1).name, '阿岚', '导入的图要挂在角色名下');
+    assert.equal(portraitUploads.at(-1).kind, 'portrait', '角色编辑器导入走 kind=portrait（顺带登记成立绘）');
     assert.equal(portraitUploads.at(-1).dataUrl, 'data:image/png;base64,QUJD', '传的是 FileReader 读出的 data URL');
     assert.equal(portraitUploads.at(-1).sessionId, SID, '带上会话 id');
     // 出图按钮：点「重新生成」→ POST /rp-tools/preview 且**要纵向档**
@@ -1434,6 +1491,168 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     resetHooks();
   }
 }
+  // ★ 资源库（1.13.0）：DM 出过的图与导入的图都在图墙里 —— 可筛选、可搜、可显示到对话、
+  //   可提成某角色的立绘、可删。**DM 侧不能删**（那是玩家的事），所以删除只出现在这里。
+  {
+    // 自己拿一次面板页签与 store（上一块的 tab 已经出了作用域）
+    const tab = slotRegs.find((r) => r.name === 'sidebar.right.pane.tab');
+    const store = { current: SID, byId: { [SID]: { blank: false, cwd: 'D:\\Story', projectionValues: { agentPreset: 'dm' } } } };
+    const asPanel = () => render({
+      sessionId: SID,
+      useSessions: (sel) => sel(store),
+      useInput: (sel) => sel({ draft: '' }),
+      inputActions,
+    }, tab.component);
+    const savedAssets = assetStub;
+    const savedChars = sessionStub.characters;
+    sessionStub.characters = [{ name: '阿岚', appearance: '白衣长剑' }];
+    assetStub = [
+      {
+        id: 's1', kind: 'scene', label: '雨夜客栈大堂', tags: ['客栈', '雨夜'], characters: ['祁俊'],
+        width: 768, height: 432, bytes: 409600, source: 'generated',
+        prompt: '雨夜里的客栈大堂', at: '2026-09-13T01:00:00Z',
+      },
+      {
+        id: 'p1', kind: 'portrait', label: '祁俊立绘', tags: ['立绘'], characters: ['祁俊'],
+        width: 512, height: 768, bytes: 204800, source: 'generated', at: '2026-09-13T00:00:00Z',
+      },
+      { id: 'i1', kind: 'item', label: '青铜钥匙', tags: ['道具'], characters: [], bytes: 1024, source: 'imported', at: '2026-09-12T00:00:00Z' },
+    ];
+    resetHooks();
+    let p = asPanel();
+    for (let i = 0; i < 16 && byClass(p, 'assettile').length === 0; i++) { await tick(30); p = asPanel(); }
+    const card = byClass(p, 'card').find((c) => textOf(c).includes('资源库'));
+    assert.ok(card, '面板要有「资源库」卡片');
+    const cardText = textOf(card);
+    assert.ok(cardText.includes('资源库（3）'), '标题报库里的总数');
+    assert.equal(byClass(card, 'assettile').length, 3, '图墙里三张图都要出来');
+    // 缩略图必须走服务端降采样：原图直出（一张几百 KB × 上百张）会拖死面板
+    const firstImg = findAll(byClass(card, 'assettile')[0], (n) => n.type === 'img')[0];
+    assert.ok(String(firstImg.props.src).includes('thumb=1'), '图墙用缩略图地址，不原图直出');
+    assert.ok(String(firstImg.props.src).includes('/rp-tools/asset-image?'), '缩略图也走资源库路由');
+    assert.equal(firstImg.props.loading, 'lazy', '图墙要懒加载');
+    // 筛选条由**宿主给的分类**渲染（界面不自己维护一份映射），带条数
+    assert.ok(cardText.includes('全部 3'), '要有「全部」与总数');
+    assert.ok(cardText.includes('角色 1') && cardText.includes('场景 1') && cardText.includes('道具 1'),
+      `分类按宿主给的 label/count 渲染（实际 ${cardText}）`);
+    // 点「场景」→ 只显示那一类；「全部」的计数**不跟着变**（否则看着像图丢了）
+    const sceneBtn = findAll(card, (n) => n.type === 'button' && textOf(n) === '场景 1')[0];
+    assert.ok(sceneBtn, '分类要是可点的按钮');
+    await sceneBtn.props.onClick();
+    for (let i = 0; i < 8; i++) await tick(30);
+    const filtered = asPanel();
+    assert.equal(byClass(filtered, 'assettile').length, 1, '点「场景」后只剩场景图');
+    assert.ok(textOf(filtered).includes('全部 3'), '「全部」报的是库里总数，不随筛选变化');
+    // 回到「全部」再搜（分类筛选是**持久**的：点过「场景」之后搜「钥匙」当然是 0 条）
+    const allBtn = findAll(filtered, (n) => n.type === 'button' && textOf(n) === '全部 3')[0];
+    await allBtn.props.onClick();
+    for (let i = 0; i < 8; i++) await tick(30);
+    const reset = asPanel();
+    assert.equal(byClass(reset, 'assettile').length, 3, '点「全部」后三张都回来');
+    // 搜索框：输入即按关键词过滤（宿主侧的 q 参数）
+    const searchInput = findAll(reset, (n) => n.type === 'input' && n.props.type === 'search')[0];
+    assert.ok(searchInput, '资源库要有搜索框');
+    searchInput.props.onChange({ target: { value: '钥匙' } });
+    for (let i = 0; i < 8; i++) await tick(30);
+    const searched = asPanel();
+    assert.equal(byClass(searched, 'assettile').length, 1, '搜索「钥匙」只剩道具那张');
+    // 关键词也要能命中标签（不只是名字）
+    const searchInput2 = findAll(searched, (n) => n.type === 'input' && n.props.type === 'search')[0];
+    searchInput2.props.onChange({ target: { value: '雨夜' } });
+    for (let i = 0; i < 8; i++) await tick(30);
+    assert.equal(byClass(asPanel(), 'assettile').length, 1, '按标签也能搜到');
+    const searchInput3 = findAll(asPanel(), (n) => n.type === 'input' && n.props.type === 'search')[0];
+    searchInput3.props.onChange({ target: { value: '' } });
+    for (let i = 0; i < 8; i++) await tick(30);
+    const back = asPanel();
+    assert.equal(byClass(back, 'assettile').length, 3, '清空搜索后回到全部');
+    // 导入：分类下拉 + file input（选完走 FileReader → POST /rp-tools/asset-upload）
+    const kindSel = findAll(back, (n) => n.type === 'select' && String(n.props.className ?? '').includes('assetkindsel'))[0];
+    assert.ok(kindSel, '导入要能选分类');
+    kindSel.props.onChange({ target: { value: 'item' } });
+    const reRendered = asPanel();
+    const assetFile = findAll(reRendered, (n) => n.type === 'input' && n.props.type === 'file'
+      && String(n.props.className ?? '') !== 'charfile')[0];
+    const fileInputs = findAll(reRendered, (n) => n.type === 'input' && n.props.type === 'file');
+    assert.ok(fileInputs.length >= 1, '资源库要有导入图片的 file input');
+    const importInput = fileInputs[fileInputs.length - 1];
+    assert.equal(importInput.props.accept, 'image/png,image/jpeg,image/webp', '导入只收 png/jpeg/webp');
+    const beforeImports = portraitUploads.length;
+    importInput.props.onChange({
+      target: { value: 'x.png', files: [{ name: '掉落图.png', __dataUrl: 'data:image/png;base64,QUJD' }] },
+    });
+    for (let i = 0; i < 12 && portraitUploads.length === beforeImports; i++) await tick(30);
+    assert.equal(portraitUploads.length, beforeImports + 1, '选完文件要 POST 一次');
+    assert.equal(portraitUploads.at(-1).kind, 'item', '导入时选中的分类要传上去');
+    assert.equal(portraitUploads.at(-1).dataUrl, 'data:image/png;base64,QUJD', '传的是 data URL');
+    assert.ok(assetFile === undefined || assetFile !== null, '（file input 定位兜底）');
+
+    // 点一张图 → 详情浮窗：大图 + 名称/标签 + 三个动作
+    resetHooks();
+    let withGrid = asPanel();
+    for (let i = 0; i < 16 && byClass(withGrid, 'assettile').length === 0; i++) { await tick(30); withGrid = asPanel(); }
+    const tile = byClass(withGrid, 'assettile')[0];
+    await tile.props.onClick();
+    await tick(30);
+    const modal = asPanel();
+    assert.equal(findAll(modal, (n) => n.type === 'Portal').length, 1, '资源详情要 portal 到页面根级');
+    const view = byClass(modal, 'assetview')[0];
+    assert.ok(view, '详情里要有 assetview');
+    const big = findAll(view, (n) => n.type === 'img')[0];
+    assert.ok(String(big.props.src).includes('/rp-tools/asset-image?'), '大图走资源库路由');
+    assert.equal(String(big.props.src).includes('thumb=1'), false, '详情看的是原图，不是缩略图');
+    const labelInput = findAll(view, (n) => n.type === 'input' && n.props.value === '雨夜客栈大堂')[0];
+    assert.ok(labelInput, '名称框要带出当前名字');
+    const tagInput = findAll(view, (n) => n.type === 'input' && n.props.value === '客栈,雨夜')[0];
+    assert.ok(tagInput, '标签框要带出当前标签（逗号分隔）');
+    assert.ok(textOf(view).includes('提示词'), '详情要能看到提示词原文');
+    // 「显示到对话」：拼一段 dsh-ui 围栏填进输入框（**不自动发送**，和「整理设定」一个路子）
+    const draftsBefore = actions.drafts.length;
+    const submittedBefore = actions.submitted;
+    const showBtn = findAll(view, (n) => n.type === 'button' && textOf(n) === '显示到对话')[0];
+    assert.ok(showBtn, '详情里要有「显示到对话」');
+    showBtn.props.onClick();
+    assert.equal(actions.drafts.length, draftsBefore + 1, '「显示到对话」要把内容填进输入框');
+    const fence = String(actions.drafts.at(-1));
+    assert.ok(fence.includes('```dsh-ui'), '填进去的是一段 dsh-ui 围栏');
+    assert.ok(fence.includes('"image"') && fence.includes('/rp-tools/asset-image?'), '围栏里是这张图的 image 组件');
+    assert.equal(actions.submitted, submittedBefore, '**不自动发送** —— 由用户确认');
+    // 「设为立绘」：选角色 → POST useAsPortrait → 面板立绘立刻换掉
+    const useSel = findAll(view, (n) => n.type === 'select')[0];
+    assert.ok(useSel, '详情里要有「设为某角色的立绘」下拉');
+    assert.equal(useSel.props.value, '', '默认不预选角色');
+    useSel.props.onChange({ target: { value: '阿岚' } });
+    const withSel = asPanel();
+    const useBtn = findAll(byClass(withSel, 'assetview')[0], (n) => n.type === 'button' && textOf(n) === '设为立绘')[0];
+    assert.ok(useBtn, '要有「设为立绘」按钮');
+    const writesBefore = assetWrites.length;
+    await useBtn.props.onClick();
+    await tick(30);
+    assert.equal(assetWrites.length, writesBefore + 1, '「设为立绘」要 POST 一次');
+    assert.equal(assetWrites.at(-1).action, 'useAsPortrait', '动作要对');
+    assert.equal(assetWrites.at(-1).name, '阿岚', '要指名道姓');
+    assert.equal(assetWrites.at(-1).id, 's1', '要带资源 id');
+    // 「删除」：confirm 后 POST delete；指向它的立绘引用由宿主解除，界面同步抹掉
+    const delBtn = findAll(byClass(asPanel(), 'assetview')[0], (n) => n.type === 'button' && textOf(n) === '删除这张图')[0];
+    assert.ok(delBtn, '详情里要有「删除这张图」');
+    const writesBefore2 = assetWrites.length;
+    await delBtn.props.onClick();
+    for (let i = 0; i < 12 && assetWrites.length === writesBefore2; i++) await tick(30);
+    assert.equal(assetWrites.at(-1).action, 'delete', '删除动作要对');
+    assert.equal(assetWrites.at(-1).id, 's1', '删的是当前这张');
+    // 没有资源时整张卡片不渲染（空图墙只是噪音）
+    assetStub = [];
+    resetHooks();
+    let empty = asPanel();
+    for (let i = 0; i < 10; i++) { await tick(30); empty = asPanel(); }
+    assert.equal(byClass(empty, 'card').some((c) => textOf(c).includes('资源库')), false,
+      '没有图时不该渲染空的「资源库」卡片');
+
+    assetStub = savedAssets;
+    sessionStub.characters = savedChars;
+    resetHooks();
+  }
+
 // ── 关键断言 ⑤：会话工作区「界面不知道」时必须回宿主问 ──────────────────────
 // 真机上就是这么没的：会话列表投影里没有 cwd（刚新建 / 列表还没回来 / 重启后恢复），
 // 而宿主那边也只记内存。两处都不知道 → 卡库根落空。这里钉住界面这一半的兜底：

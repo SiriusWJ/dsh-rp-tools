@@ -333,9 +333,20 @@ if (rpTable) {
   const png = imagePng(6, 6, (x, y) => [x * 40, y * 40, 90, 255]);
   const dataUrl = `data:image/png;base64,${png.toString('base64')}`;
 
-  // 文件名由宿主生成，用户给的名字只当 slug 的原料 —— 路径分隔符必须被替换掉
-  check('导入立绘：文件名的路径分隔符被替换', D.portraitFileSlug('a/b\\c:d*e'), 'a_b_c_d_e');
-  check('导入立绘：名字全是非法字符时兜底', D.portraitFileSlug('///'), '___');
+  // 文件名由宿主生成（`newAssetId`），**用户给的名字永不进路径** —— 早期那个 slug 函数
+  // 已经删掉（留着会让人误以为路径里还有用户输入）。用一个带路径分隔符的角色名钉住新约定。
+  {
+    const sidEvil = crypto.randomUUID();
+    const wsEvil = join(TEST_HOME, 'ws-portrait-evil');
+    mkdirSync(wsEvil, { recursive: true });
+    D.setSessionCwd(sidEvil, wsEvil);
+    const evil = await callPost('/rp-tools/portrait-upload', { sessionId: sidEvil, name: '../../evil/名', dataUrl });
+    check('导入立绘：恶意角色名不会进路径',
+      /^assets\/portraits\/[0-9a-f]{10}\.png$/.test(String(evil.json.file)), true);
+    check('导入立绘：恶意名字只当索引字段（读得回来）',
+      D.loadSession(sidEvil).portraits?.['../../evil/名']?.imported?.file, evil.json.file);
+    check('导入立绘：没在磁盘上按那个名字造出目录', existsSync(join(wsEvil, 'evil')), false);
+  }
 
   check('导入立绘：只收 png/jpeg/webp',
     (await callPost('/rp-tools/portrait-upload', { sessionId: sid, name: '祁俊', dataUrl: 'data:image/gif;base64,R0lGODlh' })).status, 400);
@@ -350,15 +361,18 @@ if (rpTable) {
 
   const up = await callPost('/rp-tools/portrait-upload', { sessionId: sid, name: '祁俊', dataUrl });
   check('导入立绘：写入成功', up.status, 200);
-  check('导入立绘：落盘在 portraits/ 下、扩展名跟着 MIME', up.json.file, 'portraits/祁俊.png');
-  check('导入立绘：返回同源地址（带 v 防缓存）',
-    String(up.json.url).startsWith('/rp-tools/portrait-image?') && String(up.json.url).includes('v='), true);
+  // 1.13.0 起导入走**资源库**：文件名是宿主生成的 id，放在 assets/<分类>/ 下（用户要求分文件夹）。
+  // 「重导同名立绘」再也不会撞缓存，所以 1.12.10 那套 `v=` 补丁不需要了。
+  check('导入立绘：落进 assets/portraits/、文件名是宿主生成的 id',
+    up.json.file, `assets/portraits/${up.json.asset?.id}.png`);
+  check('导入立绘：返回资源库地址（按 id 取）',
+    String(up.json.url).startsWith('/rp-tools/asset-image?') && String(up.json.url).includes(`id=${up.json.asset?.id}`), true);
   const sessionDir = join(ws4, 'rp-sessions', sid);
-  const onDisk = join(sessionDir, 'portraits', '祁俊.png');
+  const onDisk = join(sessionDir, up.json.file);
   check('导入立绘：文件真的落盘了', existsSync(onDisk), true);
   check('导入立绘：字节与原图一致', readFileSync(onDisk).equals(png), true);
   check('导入立绘：会话配置里记的是相对路径（可整体搬走）',
-    D.loadSession(sid).portraits?.祁俊?.imported?.file, 'portraits/祁俊.png');
+    D.loadSession(sid).portraits?.祁俊?.imported?.file, up.json.file);
   check('导入立绘：没有顺手编一张 generated（两件事分开）',
     D.loadSession(sid).portraits?.祁俊?.generated, undefined);
 
@@ -396,6 +410,263 @@ if (rpTable) {
     check('导入立绘：常驻段里给了可复用地址', standing.includes('/rp-tools/portrait-image?'), true);
     check('导入立绘：常驻段标注了「导入的立绘」', standing.includes('（导入的立绘）'), true);
     check('导入立绘：常驻段仍写明「有就直接展示」', standing.includes('有就直接展示，不要再生成'), true);
+  }
+}
+
+// ── 资源库（1.13.0）────────────────────────────────────────────────────────
+// 以前**只有立绘**留档：场景图/群像图/道具图/整幕多格出完就只在当轮消息里，宿主侧没有索引 ——
+// 想让「雨夜客栈」再出现一次只能重新抽卡。现在：真存一份字节 + 按分类分文件夹 + 可检索。
+{
+  const D = mod.__debug;
+  const { imagePng } = await import(pathToFileURL(join(here, 'png-fixture.mjs')).href);
+  const sid = crypto.randomUUID();
+  const ws = join(TEST_HOME, 'ws-assets');
+  mkdirSync(ws, { recursive: true });
+  D.setSessionCwd(sid, ws);
+  const sessionDir = join(ws, 'rp-sessions', sid);
+  // 用 128×128 的真图：缩略图那几条要能真的降到更小。注意 `width` 有 **48 的下限**
+  // （和卡面缩略图同一套参数），所以请求 16 会被夹到 48 —— 想断言「变小」得让原图足够大。
+  const png = imagePng(128, 128, (x, y) => [x * 2, y * 2, 120, 255]);
+
+  // 分类 → 目录名：用户要求「按场景、角色、道具等分内部文件夹」
+  check('资源库：有四个分类', D.ASSET_KINDS.join(','), 'portrait,scene,item,other');
+  check('资源库：分类各自一个子目录',
+    ['portrait', 'scene', 'item', 'other'].map((k) => D.ASSET_KIND_DIR[k]).join(','),
+    'portraits,scenes,items,other');
+  check('资源库：路径按分类分目录', D.assetRelPath('scene', 'abc123', 'png'), 'assets/scenes/abc123.png');
+  check('资源库：非法分类落到 other', D.assetRelPath('乱写', 'abc123', 'png'), 'assets/other/abc123.png');
+  check('资源库：未知分类归一成 other', D.assetKindOf('???'), 'other');
+  // 标签解析：模型更常给「逗号分隔的字符串」而不是数组，两种都要收
+  check('资源库：标签能吃数组', D.parseAssetTags(['客栈', '雨夜']).join(','), '客栈,雨夜');
+  check('资源库：标签也能吃逗号/顿号/空格分隔的字符串',
+    D.parseAssetTags('客栈, 雨夜、室内 黄昏').join(','), '客栈,雨夜,室内,黄昏');
+  check('资源库：标签去重', D.parseAssetTags('a,a,b').join(','), 'a,b');
+
+  // 归档：写盘 + 追加索引
+  const one = await D.archiveAsset(sid, {
+    bytes: png, kind: 'scene', ext: 'png', width: 768, height: 432,
+    label: '雨夜客栈大堂', tags: '客栈,雨夜', characters: ['祁俊'], style: 'manga', styleLabel: '黑白漫画',
+    source: 'generated', group: 'g1', prompt: '雨夜里的客栈大堂',
+  });
+  check('资源库：归档返回一条记录', Boolean(one?.id), true);
+  check('资源库：文件落在 scenes/ 下', one.file, `assets/scenes/${one.id}.png`);
+  check('资源库：字节真的写进磁盘了', readFileSync(join(sessionDir, one.file)).equals(png), true);
+  check('资源库：索引读得回来', D.loadAssets(sid).assets.length, 1);
+  check('资源库：标签存下来了', (one.tags ?? []).join(','), '客栈,雨夜');
+  check('资源库：分类计数', JSON.stringify(D.assetCounts(D.loadAssets(sid))),
+    JSON.stringify({ portrait: 0, scene: 1, item: 0, other: 0 }));
+
+  // 再放两张（不同分类），测过滤
+  const two = await D.archiveAsset(sid, { bytes: png, kind: 'portrait', ext: 'png', label: '祁俊立绘', characters: ['祁俊'], tags: '立绘' });
+  const three = await D.archiveAsset(sid, { bytes: png, kind: 'item', ext: 'png', label: '青铜钥匙', tags: '道具,钥匙' });
+  check('资源库：三次归档都在', D.loadAssets(sid).assets.length, 3);
+  check('资源库：id 不重复', new Set([one.id, two.id, three.id]).size, 3);
+
+  check('资源库：按分类筛', D.queryAssets(sid, { kind: 'portrait' }).total, 1);
+  check('资源库：按角色筛', D.queryAssets(sid, { characters: ['祁俊'] }).total, 2);
+  check('资源库：按标签筛（要全部命中）', D.queryAssets(sid, { tags: '客栈,雨夜' }).total, 1);
+  check('资源库：按关键词搜名字', D.queryAssets(sid, { q: '钥匙' }).total, 1);
+  check('资源库：关键词也搜标签', D.queryAssets(sid, { q: '客栈' }).total, 1);
+  check('资源库：搜不到就是 0', D.queryAssets(sid, { q: '不存在的东西' }).total, 0);
+  check('资源库：新图排在前面（最近出的更可能想复用）',
+    D.queryAssets(sid, { limit: 1 }).assets[0].id, three.id);
+  check('资源库：limit 生效', D.queryAssets(sid, { limit: 2 }).assets.length, 2);
+  check('资源库：分类计数跟着变', JSON.stringify(D.queryAssets(sid, {}).counts),
+    JSON.stringify({ portrait: 1, scene: 1, item: 1, other: 0 }));
+
+  // **并发写**：出图是并发的（宿主并行池最多 10 个在飞），索引 read-modify-write 会丢记录 ——
+  // 「出了 20 张，库里只有 2 张」这种丢法不报错，只能靠这条断言钉住那把写队列。
+  {
+    const sid2 = crypto.randomUUID();
+    const ws2 = join(TEST_HOME, 'ws-assets-concurrent');
+    mkdirSync(ws2, { recursive: true });
+    D.setSessionCwd(sid2, ws2);
+    await Promise.all(Array.from({ length: 20 }, (_, i) => D.archiveAsset(sid2, {
+      bytes: png, kind: 'scene', ext: 'png', label: `并发 ${i}`,
+    })));
+    check('资源库：20 个并发归档一条都不丢', D.loadAssets(sid2).assets.length, 20);
+    check('资源库：20 条 id 互不相同', new Set(D.loadAssets(sid2).assets.map((a) => a.id)).size, 20);
+  }
+
+  // 归档的**触发路径**：出图后要从 ComfyUI `/view` 抓一份字节再入库（不是只记引用）。
+  // 这一段直接打桩 globalThis.fetch 把这条路走通 —— 否则它只在真机上跑到，回归时看不见。
+  {
+    const sid4 = crypto.randomUUID();
+    const ws4b = join(TEST_HOME, 'ws-assets-archive');
+    mkdirSync(ws4b, { recursive: true });
+    D.setSessionCwd(sid4, ws4b);
+    const realFetch = globalThis.fetch;
+    const cfg = { comfyui: { baseUrl: 'http://127.0.0.1:8188' } };
+    const result = {
+      files: [{ file: 'rp_00007_.png', subfolder: '', type: 'output' }],
+      styleKey: 'manga', styleLabel: '黑白漫画', width: 768, height: 432, prompt: '雨夜里的客栈前台',
+    };
+    try {
+      // ① 正常：抓到字节 → 入库
+      globalThis.fetch = async () => ({
+        ok: true, status: 200,
+        arrayBuffer: async () => png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength),
+      });
+      const made = await D.archiveGeneratedImages(cfg, sid4, result, {
+        kind: 'scene', label: '雨夜客栈前台', tags: '客栈,雨夜', characters: ['祁俊'], group: 'g9',
+      });
+      check('资源库：出图后自动入库一张', made.length, 1);
+      check('资源库：入库的分类来自调用方', made[0]?.kind, 'scene');
+      check('资源库：入库带上风格与尺寸', `${made[0]?.styleLabel}|${made[0]?.width}×${made[0]?.height}`, '黑白漫画|768×432');
+      check('资源库：入库带上提示词原文（事后能补救标签）', made[0]?.prompt, '雨夜里的客栈前台');
+      check('资源库：入库落在 scenes/ 下', String(made[0]?.file).startsWith('assets/scenes/'), true);
+      check('资源库：入库的 source 是 generated', made[0]?.source, 'generated');
+      check('资源库：入库带上 group（整幕多格归一组）', made[0]?.group, 'g9');
+
+      // ② ComfyUI 抓不到（/view 报错）→ **不抛**、只是没入库。
+      //    这条很重要：归档失败不该让一次成功的出图变成失败（模型会以为图没出来，可能重出）。
+      globalThis.fetch = async () => ({ ok: false, status: 500, arrayBuffer: async () => new ArrayBuffer(0) });
+      const failed = await D.archiveGeneratedImages(cfg, sid4, result, { kind: 'scene' });
+      check('资源库：抓不到字节时不入库、也不抛错', failed.length, 0);
+      check('资源库：抓不到时库里没有多出来的条目', D.loadAssets(sid4).assets.length, 1);
+
+      // ③ 网络直接抛异常 → 同样吞掉
+      globalThis.fetch = async () => { throw new Error('ECONNREFUSED'); };
+      check('资源库：抓图抛异常时也吞掉', (await D.archiveGeneratedImages(cfg, sid4, result, { kind: 'scene' })).length, 0);
+
+      // ④ 没有文件描述符（宿主没回 files）→ 直接跳过，不发请求
+      let called = 0;
+      globalThis.fetch = async () => { called += 1; return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(0) }; };
+      check('资源库：没有文件描述符时不发请求', (await D.archiveGeneratedImages(cfg, sid4, { files: [] }, { kind: 'scene' })).length, 0);
+      check('资源库：真的没发请求', called, 0);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  // HTTP：列表接口（面板图墙用它）
+  {
+    const list = await callGet('/rp-tools/assets', `?sessionId=${sid}`);
+    check('资源库：列表 200', list.status, 200);
+    check('资源库：列表总数', list.json.total, 3);
+    check('资源库：列表按分类给了中文名与条数',
+      (list.json.kinds ?? []).map((k) => `${k.key}=${k.label}:${k.count}`).join(','),
+      'portrait=角色:1,scene=场景:1,item=道具:1,other=其他:0');
+    check('资源库：每条都带展示地址与缩略图地址',
+      String(list.json.assets[0].url).startsWith('/rp-tools/asset-image?')
+      && String(list.json.assets[0].previewUrl).includes('thumb=1'), true);
+    check('资源库：列表按分类过滤', (await callGet('/rp-tools/assets', `?sessionId=${sid}&kind=item`)).json.total, 1);
+    check('资源库：列表按关键词过滤', (await callGet('/rp-tools/assets', `?sessionId=${sid}&q=${encodeURIComponent('钥匙')}`)).json.total, 1);
+    check('资源库：缺 sessionId 400', (await callGet('/rp-tools/assets')).status, 400);
+  }
+
+  // HTTP：取图（含服务端降采样）+ 路径穿越
+  {
+    const img = await callGetRaw(`/rp-tools/asset-image?sessionId=${sid}&id=${one.id}`);
+    check('资源库：取图 200', img.status, 200);
+    check('资源库：取回的字节一致', img.bytes.equals(png), true);
+    const thumb = await callGetRaw(`/rp-tools/asset-image?sessionId=${sid}&id=${one.id}&thumb=1&width=48`);
+    check('资源库：缩略图也是 200', thumb.status, 200);
+    check('资源库：缩略图比原图小（真的降采样了）', thumb.bytes.length < png.length, true);
+    // 面板图墙必须走缩略图地址，不能原图直出（一张几百 KB × 上百张会拖死面板）
+    check('资源库：列表给的是缩略图地址（thumb=1）',
+      String((await callGet('/rp-tools/assets', `?sessionId=${sid}`)).json.assets[0].previewUrl).includes('thumb=1'), true);
+    check('资源库：不存在的 id 404',
+      (await callGetRaw(`/rp-tools/asset-image?sessionId=${sid}&id=deadbeef`)).status, 404);
+    check('资源库：缺 id 400', (await callGetRaw(`/rp-tools/asset-image?sessionId=${sid}`)).status, 400);
+    check('资源库：只认 GET',
+      (await callPost('/rp-tools/asset-image', { sessionId: sid, id: one.id })).status, 405);
+    // 把索引里的相对路径改成往外跳 —— 前缀校验必须挡住（第二道锁）
+    const idx = D.loadAssets(sid);
+    idx.assets.find((a) => a.id === one.id).file = 'assets/scenes/../../../../outside.png';
+    D.saveAssets(sid, idx);
+    const esc = await callGet('/rp-tools/asset-image', `?sessionId=${sid}&id=${one.id}`);
+    check('资源库：越界路径被拒', esc.status, 400);
+    check('资源库：拒绝理由是路径越界', esc.json.error, '路径越界');
+    // 改回去，后面还要用它
+    const idx2 = D.loadAssets(sid);
+    idx2.assets.find((a) => a.id === one.id).file = one.file;
+    D.saveAssets(sid, idx2);
+  }
+
+  // HTTP：改标签 / 设为立绘 / 删除
+  {
+    const upd = await callPost('/rp-tools/assets', { sessionId: sid, action: 'update', id: three.id, label: '青铜钥匙·改', tags: '道具,钥匙,要紧' });
+    check('资源库：改标签成功', upd.status, 200);
+    check('资源库：改后的名字读得回来', D.loadAssets(sid).assets.find((a) => a.id === three.id).label, '青铜钥匙·改');
+    check('资源库：改后的标签读得回来',
+      (D.loadAssets(sid).assets.find((a) => a.id === three.id).tags ?? []).join(','), '道具,钥匙,要紧');
+    check('资源库：改不存在的 id 404',
+      (await callPost('/rp-tools/assets', { sessionId: sid, action: 'update', id: 'nope' })).status, 404);
+    check('资源库：跨源写被拒',
+      (await callPost('/rp-tools/assets', { sessionId: sid, action: 'update', id: three.id }, 'http://evil.example', '127.0.0.1:3080')).status, 403);
+    check('资源库：缺 id 400',
+      (await callPost('/rp-tools/assets', { sessionId: sid, action: 'update' })).status, 400);
+
+    // 设为立绘：必须**清掉旧的 generated**，否则读取端优先用 generated，用户点了没反应（静默失效）
+    const legacy = D.loadSession(sid);
+    legacy.portraits = { ...(legacy.portraits ?? {}), 祁俊: { generated: { file: 'old.png', subfolder: '', type: 'output' } } };
+    D.saveSession(legacy);
+    const use = await callPost('/rp-tools/assets', { sessionId: sid, action: 'useAsPortrait', id: two.id, name: '祁俊' });
+    check('资源库：设为立绘成功', use.status, 200);
+    check('资源库：立绘指向资源文件', D.loadSession(sid).portraits?.祁俊?.imported?.file, two.file);
+    check('资源库：设为立绘会清掉旧的生成立绘（否则永远显示旧那张）',
+      D.loadSession(sid).portraits?.祁俊?.generated, undefined);
+    check('资源库：设为立绘时缺 name 被拒',
+      (await callPost('/rp-tools/assets', { sessionId: sid, action: 'useAsPortrait', id: two.id })).status, 400);
+
+    // 删除：连磁盘文件一起删，并解除指向它的立绘引用
+    const del = await callPost('/rp-tools/assets', { sessionId: sid, action: 'delete', id: two.id });
+    check('资源库：删除成功', del.status, 200);
+    check('资源库：磁盘文件也没了', del.json.fileGone, true);
+    check('资源库：索引里也删了', D.loadAssets(sid).assets.some((a) => a.id === two.id), false);
+    check('资源库：删掉的图不再有立绘引用（不留死链）', (del.json.droppedPortraits ?? []).join(','), '祁俊');
+    check('资源库：那条立绘真的被解除了', D.loadSession(sid).portraits?.祁俊, undefined);
+  }
+
+  // 通用导入：外部图也能进任意分类（用户要求「外部图片都保存下来」）
+  {
+    const sid3 = crypto.randomUUID();
+    const ws3 = join(TEST_HOME, 'ws-assets-import');
+    mkdirSync(ws3, { recursive: true });
+    D.setSessionCwd(sid3, ws3);
+    const imp = await callPost('/rp-tools/asset-upload', {
+      sessionId: sid3, kind: 'item', dataUrl: `data:image/png;base64,${png.toString('base64')}`, label: '外部掉落图', tags: '道具',
+    });
+    check('资源库：通用导入成功', imp.status, 200);
+    check('资源库：导入的分类生效', imp.json.asset.kind, 'item');
+    check('资源库：导入落进 items/', String(imp.json.file).startsWith('assets/items/'), true);
+    check('资源库：导入的 source 标成 imported', imp.json.asset.source, 'imported');
+    check('资源库：导入也能列出来', (await callGet('/rp-tools/assets', `?sessionId=${sid3}&kind=item`)).json.total, 1);
+    check('资源库：导入角色图缺 name 被拒',
+      (await callPost('/rp-tools/asset-upload', {
+        sessionId: sid3, kind: 'portrait', dataUrl: `data:image/png;base64,${png.toString('base64')}`,
+      })).status, 400);
+  }
+
+  // 工具：rp_assets（DM 侧的浏览入口）
+  {
+    const tool = tools.get('rp_assets');
+    check('资源库：注册了 rp_assets 工具', Boolean(tool), true);
+    check('资源库：rp_assets 不声明并发安全（tag 要写索引，read-modify-write）',
+      typeof tool?.isConcurrencySafe === 'function' ? tool.isConcurrencySafe({}) : false, false);
+    const ctx = { agent: { id: sid } };
+    const listed = await tool.execute({ action: 'list' }, ctx);
+    check('资源库：工具列出条数', listed.total, 2);
+    check('资源库：工具的行里带 id', listed.lines.join('\n').includes(`id=${one.id}`), true);
+    check('资源库：工具的行里带可直接展示的地址', listed.lines.join('\n').includes('/rp-tools/asset-image?'), true);
+    check('资源库：工具的行里带中文分类', listed.lines.join('\n').includes('[场景]'), true);
+    check('资源库：工具按分类过滤', (await tool.execute({ action: 'list', kind: 'scene' }, ctx)).total, 1);
+    const tagged = await tool.execute({ action: 'tag', id: one.id, label: '雨夜客栈（改）', tags: '客栈' }, ctx);
+    check('资源库：工具能补标签', tagged.ok, true);
+    check('资源库：补的标签落盘了', D.loadAssets(sid).assets.find((a) => a.id === one.id).label, '雨夜客栈（改）');
+    check('资源库：工具 get 单张给出提示词原文',
+      (await tool.execute({ action: 'get', id: one.id }, ctx)).lines.join('\n').includes('提示词原文'), true);
+  }
+
+  // 常驻段：只报条数 + 指向 rp_assets（**不能**把上百条列进来，那是每轮都发的）
+  {
+    const standing = D.buildStandingText({ ...D.loadSession(sid), sessionId: sid, characters: [] }, {});
+    check('资源库：常驻段有摘要行', standing.includes('资源库：本会话已有'), true);
+    check('资源库：摘要里报的是「张图」', standing.includes('张图'), true);
+    check('资源库：摘要指向 rp_assets', standing.includes('先用 `rp_assets` 按标签或角色查一遍'), true);
+    check('资源库：摘要里**没有**逐张清单（否则每轮白烧几千字）',
+      standing.includes('/rp-tools/asset-image?'), false);
   }
 }
 
@@ -2187,6 +2458,12 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     // 叙事里可以直接用已有立绘（玩家要求；零成本，不用重新生图）
     check('预设：允许叙事时直接摆角色立绘', prefix.includes('叙事时也可以把角色立绘直接摆进回复里'), true);
     check('预设：可复用的图包含玩家导入的', prefix.includes('玩家自己导入的都算'), true);
+    // 资源库：出图必须留 label/tags，否则以后找不到（只有一处提醒是不够的，persona 每轮都在）
+    check('预设：要求出图时填 label 和 tags', prefix.includes('出图时一定带上 `label` 和 `tags`'), true);
+    check('预设：说明不填标签就等于找不到', prefix.includes('不填就等于这张图以后找不到'), true);
+    check('预设：指向 rp_assets 复用同一张图', prefix.includes('调 `rp_assets`'), true);
+    check('预设：说明 rp_assets 能按 kind/characters/tags/q 查',
+      prefix.includes('按 `kind` / `characters` / `tags` / `q` 查'), true);
     // 围栏必须成对：奇数个三反引号会让模型把后文当代码块（persona 里踩过）
     const ticks = prefix.split('```').length - 1;
     check('预设：三反引号成对出现（不留未闭合围栏）', ticks % 2, 0);

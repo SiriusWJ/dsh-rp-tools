@@ -108,6 +108,11 @@ window.__ModuleLoader__.load({
       portraitSave: (body) => jpost('/rp-tools/portrait', body),
       // 外部立绘：用户在编辑器里选一张本地图，转成 data URL 传给宿主落盘（宿主只收 png/jpeg/webp）
       portraitUpload: (body) => jpost('/rp-tools/portrait-upload', body),
+      // 资源库：列出（可按分类/角色/标签/关键词过滤）/ 改标签 / 删除 / 提取成某角色的立绘
+      assets: (params) => jget(`/rp-tools/assets?${qs(params)}`),
+      assetSave: (body) => jpost('/rp-tools/assets', body),
+      // 通用导入：kind=portrait 且带 name 时同步登记成那个角色的立绘
+      assetUpload: (body) => jpost('/rp-tools/asset-upload', body),
       // 会话闸门：宿主回答「现在是不是 dm」「有没有真的开局」。
       // 为什么不能只信客户端投影：切预设会重建投影基线、把基线里没有的键**清掉**，
       // 于是 `projectionValues.agentPreset` 变空 → 判定「不是 DM」→ 入口永久消失。
@@ -319,6 +324,38 @@ window.__ModuleLoader__.load({
   opacity: 0; pointer-events: none; }
 .rpt .chareditform .charfields { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px 10px; align-items: start; }
 .rpt .chareditform .charfields > label { padding-top: 6px; }
+/* ── 资源库：筛选条 + 图墙 ─────────────────────────────────────────────────
+   图墙用 auto-fill 的最小宽度而不是固定列数 —— 面板宽度会随侧栏变化，固定列数在窄面板下会挤压。
+   缩略图统一走服务端降采样（previewUrl），**不能原图直出**：一张几百 KB × 上百张会拖死面板。 */
+.rpt .assetbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.rpt .assetbar .assetq { flex: 1 1 120px; min-width: 100px; height: 28px; font-size: 12px; }
+.rpt .assetbar .assetkindsel { height: 28px; font-size: 12px; }
+.rpt .assetbar button.on {
+  background: var(--dsw-alias-brand-primary, #4D6BFE);
+  color: var(--dsw-alias-label-primary-foreground, #fff); border-color: transparent;
+}
+.rpt .assetgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.rpt .assettile {
+  padding: 0; border-radius: 10px; overflow: hidden; background: transparent; cursor: pointer;
+  display: flex; flex-direction: column; gap: 0; border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 14%, transparent));
+}
+.rpt .assettile img { display: block; width: 100%; height: 96px; object-fit: cover; }
+.rpt .assettile-label {
+  font-size: 11px; line-height: 1.4; padding: 3px 5px; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+/* 资源详情：左大图 + 右信息（窄屏落成单列） */
+.rpt .assetview { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(240px, 1fr); gap: 16px; align-items: start; }
+.rpt .assetview .assetpic img {
+  display: block; width: auto; height: auto; max-width: 100%; max-height: calc(80vh - 200px);
+  margin: 0 auto; border-radius: 12px;
+  border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent));
+}
+.rpt .assetview .assetmeta { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.rpt .assetview .assetmeta label { font-size: 12px; opacity: .78; }
+.rpt .assetview .assetmeta input[type=text] { width: 100%; }
+.rpt .assetview .assetprompt { font-size: 12px; line-height: 1.5; opacity: .62; word-break: break-word; }
+@media (max-width: 720px) { .rpt .assetview { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 860px) {
   .rpt .chareditform { grid-template-columns: minmax(0, 1fr); }
   .rpt .chareditform .facepreview { position: static; }
@@ -985,6 +1022,22 @@ window.__ModuleLoader__.load({
       /** 角色与 DM 也复用同一只 portal 编辑器；列表里只留单行摘要。 */
       const [charEdit, setCharEdit] = React.useState(null);
       const [dmEdit, setDmEdit] = React.useState(null);
+      // 资源库：列表（含每个分类的条数）、当前筛选、详情浮窗里那条
+      const [assets, setAssets] = React.useState(null);
+      const [assetKind, setAssetKind] = React.useState('');
+      const [assetQuery, setAssetQuery] = React.useState('');
+      const [assetEdit, setAssetEdit] = React.useState(null);
+      const [assetImportKind, setAssetImportKind] = React.useState('scene');
+      // 详情浮窗里的可编辑副本（**打开时**从那条资源铺一次，不在打字过程中被外部刷新冲掉）
+      const [assetMetaDraft, setAssetMetaDraft] = React.useState({ label: '', tags: '' });
+      const [assetPortraitTarget, setAssetPortraitTarget] = React.useState('');
+      const assetEditId = assetEdit?.id ?? '';
+      React.useEffect(() => {
+        if (!assetEdit) return;
+        setAssetMetaDraft({ label: String(assetEdit.label ?? ''), tags: (assetEdit.tags ?? []).join(',') });
+        setAssetPortraitTarget('');
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [assetEditId]);
       const [loreQuery, setLoreQuery] = React.useState('');
       /** 是否把「空条目」（正文只有模板残留，永不注入）也列出来 —— 默认藏起来 */
       const [showEmptyLore, setShowEmptyLore] = React.useState(false);
@@ -1105,9 +1158,34 @@ window.__ModuleLoader__.load({
             const l = await API.lore(sessionId);
             setLore(l?.ok ? l : { exists: false, total: 0, entries: [], error: l?.error });
           } catch { setLore({ exists: false, total: 0, entries: [] }); }
+          void refreshAssets();
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }
+      }
+
+      /**
+       * 拉资源库。**失败不打断面板其它部分**：图墙拉不到只是看不到图，不该让整个世界书都报错。
+       * 每次都用宿主给的 `kinds` 渲染筛选条（不在界面里再抄一份分类映射）。
+       */
+      async function refreshAssets(kind = assetKind, q = assetQuery) {
+        try {
+          const res = await API.assets({
+            sessionId,
+            kind: kind || undefined,
+            q: String(q ?? '').trim() || undefined,
+            limit: 200,
+          });
+          if (res?.ok) setAssets(res);
+        } catch { /* 图墙拉不到就保持原样 */ }
+      }
+
+      /** 改完资源（导入/删除/改标签）后重新拉一次 —— 索引是由宿主维护的，界面不自己算。 */
+      async function mutateAsset(body) {
+        const res = await API.assetSave({ sessionId, ...body });
+        if (!res?.ok) throw new Error(res?.error ?? '操作失败');
+        await refreshAssets();
+        return res;
       }
 
       function patch(p) { dirtyRef.current = true; setDraft((d) => (d ? { ...d, ...p } : d)); }
@@ -1531,6 +1609,7 @@ window.__ModuleLoader__.load({
       /**
        * 外部立绘：用户自己选的图交给宿主落盘（宿主只认 png/jpeg/webp，上限 8MB）。
        * 用户要求「也支持用户用外部导入立绘」—— 生图不满意时不必反复抽卡，直接用现成的图。
+       * 走通用导入（kind=portrait + name）：既登记成这个角色的立绘，也进资源库。
        */
       async function importPortrait(character, file) {
         const name = String(character?.name ?? '').trim();
@@ -1539,15 +1618,101 @@ window.__ModuleLoader__.load({
         setBusy(`portrait:${name}`);
         try {
           const dataUrl = await readAsDataUrl(file);
-          const res = await API.portraitUpload({ sessionId, name, dataUrl });
+          const res = await API.assetUpload({ sessionId, kind: 'portrait', name, dataUrl });
           if (!res?.ok) throw new Error(res?.error ?? '导入失败');
           const url = String(res.url ?? '');
           setPortraits((p) => ({ ...p, [name]: { url, style: '导入' } }));
           setDraft((d) => (d ? { ...d, portraits: res.portraits ?? d.portraits } : d));
-          setMsg({ kind: 'ok', text: `已把这张图记成「${name}」的立绘（${Math.round(Number(res.bytes ?? 0) / 1024)}KB）` });
+          await refreshAssets();
+          setMsg({ kind: 'ok', text: `已把这张图记成「${name}」的立绘（${Math.round(Number(res.bytes ?? 0) / 1024)}KB），也进了资源库` });
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }
+      }
+
+      /** 通用导入：给资源库加一张外部图（角色 / 场景 / 道具）。 */
+      async function importAsset(kind, file) {
+        if (!file) return;
+        setBusy(`asset-import:${kind}`);
+        try {
+          const dataUrl = await readAsDataUrl(file);
+          const res = await API.assetUpload({
+            sessionId, kind, dataUrl,
+            label: String(file.name ?? '').replace(/\.[^.]+$/, '').slice(0, 60),
+          });
+          if (!res?.ok) throw new Error(res?.error ?? '导入失败');
+          await refreshAssets();
+          setMsg({ kind: 'ok', text: `已导入到资源库（${kind === 'portrait' ? '角色' : kind === 'item' ? '道具' : kind === 'other' ? '其他' : '场景'}，${Math.round(Number(res.bytes ?? 0) / 1024)}KB）` });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
+      /** 把一张资源提成某个角色的立绘（不复制文件，只改引用）。 */
+      async function useAssetAsPortrait(asset, name) {
+        const who = String(name ?? '').trim();
+        if (!who) { setMsg({ kind: 'err', text: '先选一个角色' }); return; }
+        setBusy(`asset-portrait:${asset?.id ?? ''}`);
+        try {
+          const res = await mutateAsset({ action: 'useAsPortrait', id: asset.id, name: who });
+          const url = String(asset.url ?? '');
+          setPortraits((p) => ({ ...p, [who]: { url, style: '资源库' } }));
+          setDraft((d) => (d ? { ...d, portraits: res.portraits ?? d.portraits } : d));
+          setMsg({ kind: 'ok', text: `已把这张图设为「${who}」的立绘` });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
+      /** 资源详情里改 label / tags。 */
+      async function saveAssetMeta(asset, label, tags) {
+        setBusy(`asset-save:${asset?.id ?? ''}`);
+        try {
+          await mutateAsset({ action: 'update', id: asset.id, label, tags });
+          setAssetEdit((cur) => (cur && cur.id === asset.id ? { ...cur, label, tags: String(tags).split(/[,，、;；\s]+/).filter(Boolean) } : cur));
+          setMsg({ kind: 'ok', text: '已更新这张图的名称与标签' });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
+      /** 删一张资源（宿主会把文件也删掉，并清掉指向它的立绘引用）。 */
+      async function deleteAsset(asset) {
+        setBusy(`asset-del:${asset?.id ?? ''}`);
+        try {
+          const res = await mutateAsset({ action: 'delete', id: asset.id });
+          if (res.droppedPortraits?.length) {
+            setPortraits((p) => {
+              const next = { ...p };
+              for (const n of res.droppedPortraits) delete next[n];
+              return next;
+            });
+          }
+          setAssetEdit(null);
+          setMsg({
+            kind: 'ok',
+            text: `已删除这张图${res.droppedPortraits?.length ? `（同时解除了 ${res.droppedPortraits.join('、')} 的立绘）` : ''}`,
+          });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
+      /**
+       * 「显示到对话」：把这张图拼成一段 `dsh-ui` 围栏填进输入框，由用户确认后发送。
+       * 和「整理设定」同一个路子 —— **不自动发送**（用户可能还想加一句话）。
+       */
+      function showAssetInChat(asset) {
+        const actions = props?.inputActions;
+        if (!actions || typeof actions.setDraft !== 'function') {
+          setMsg({ kind: 'err', text: '拿不到输入框。可以直接把这张图的地址发给 DM。' });
+          return;
+        }
+        const fence = '```dsh-ui\n'
+          + `${JSON.stringify({ items: [{ type: 'image', src: asset.url, alt: asset.label || '资源图' }] })}\n`
+          + '```';
+        actions.setDraft(fence);
+        setMsg({ kind: 'ok', text: '已把这张图填进输入框 —— 看一眼没问题就发送。' });
       }
 
       if (!draft || !state) {
@@ -1929,6 +2094,72 @@ window.__ModuleLoader__.load({
           h('div', { key: 'addhint', className: 'dim' },
             '角色由 DM 用 `rp_character` 添加/修改（导入角色卡时自动写入）；这里只能编辑、配立绘或删除。'),        ]),
 
+        // 资源库：本会话出过/导入的图都在这儿。**没有图时整张卡片不渲染**（空图墙只是噪音）。
+        // 分类由宿主给（`assets.kinds`），界面不自己维护一份映射。
+        (assets && assets.total > 0) || assetQuery || assetKind
+          ? h('div', { key: 'assets', className: 'card' }, [
+            h('div', { key: 'h', className: 'row' }, [
+              h('h4', { key: 't' }, `资源库（${Object.values(assets?.counts ?? {}).reduce((a, b) => a + Number(b || 0), 0)}）`),
+              h('span', { key: 'd', className: 'dim' }, 'DM 出过的图与导入的图；DM 也能用 rp_assets 查到同一批'),
+            ]),
+            h('div', { key: 'bar', className: 'assetbar' }, [
+              // 「全部」报的是**库里的总数**（各类之和），不是本次筛选命中的条数 ——
+              // 否则点了「场景」之后「全部」会跟着变成 1，看着像图丢了一样。
+              h('button', {
+                key: 'all', className: assetKind === '' ? 'tiny on' : 'tiny',
+                onClick: () => { setAssetKind(''); void refreshAssets('', assetQuery); },
+              }, `全部 ${Object.values(assets?.counts ?? {}).reduce((a, b) => a + Number(b || 0), 0)}`),
+              ...((assets?.kinds ?? []).filter((k) => k.count > 0).map((k) => h('button', {
+                key: k.key, className: assetKind === k.key ? 'tiny on' : 'tiny',
+                onClick: () => { setAssetKind(k.key); void refreshAssets(k.key, assetQuery); },
+              }, `${k.label} ${k.count}`))),
+              h('input', {
+                key: 'q', type: 'search', className: 'assetq', value: assetQuery,
+                placeholder: '搜名字 / 标签 / 角色',
+                onChange: (e) => {
+                  const v = e.target.value;
+                  setAssetQuery(v);
+                  void refreshAssets(assetKind, v);
+                },
+              }),
+              // 导入外部图：分类用下面那个 select 选（默认场景）
+              h('select', {
+                key: 'ik', className: 'assetkindsel', value: assetImportKind,
+                onChange: (e) => setAssetImportKind(e.target.value),
+              }, [
+                h('option', { key: 's', value: 'scene' }, '场景'),
+                h('option', { key: 'p', value: 'portrait' }, '角色'),
+                h('option', { key: 'i', value: 'item' }, '道具'),
+                h('option', { key: 'o', value: 'other' }, '其他'),
+              ]),
+              h('label', {
+                key: 'up', className: `tiny filebtn${busy ? ' disabled' : ''}`,
+                title: '选一张本地图片（png / jpeg / webp，≤8MB）存进资源库',
+              }, [
+                busy === `asset-import:${assetImportKind}` ? '导入中…' : '导入图片',
+                h('input', {
+                  key: 'f', type: 'file', accept: 'image/png,image/jpeg,image/webp',
+                  disabled: Boolean(busy),
+                  onChange: (e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = '';
+                    if (file) void importAsset(assetImportKind, file);
+                  },
+                }),
+              ]),
+            ]),
+            (assets?.assets ?? []).length
+              ? h('div', { key: 'grid', className: 'assetgrid' }, (assets?.assets ?? []).map((a) => h('button', {
+                key: a.id, className: 'assettile', title: `${a.label || a.id}（${a.width}×${a.height}）`,
+                onClick: () => setAssetEdit(a),
+              }, [
+                h('img', { key: 'i', src: a.previewUrl || a.url, alt: a.label || a.id, loading: 'lazy' }),
+                a.label ? h('span', { key: 'l', className: 'assettile-label' }, a.label) : null,
+              ])))
+              : null,
+            (assets?.assets ?? []).length ? null : h('div', { key: 'none', className: 'dim' }, '没有符合条件的图。'),
+          ]) : null,
+
         // 随机表：**没有表时整张卡片不渲染**（一张「RP 表格 / 随机表（0）」摆在面板里
         // 只是噪音）；真建了表才出现，掷表入口也随之回来。
         tables.length ? h('div', { key: 'tables', className: 'card' }, [
@@ -2101,6 +2332,80 @@ window.__ModuleLoader__.load({
               placeholder: '这条被触发时注入的内容。状态/历史类信息建议改用 rp_state，别写成常驻。',
               onChange: (e) => patchLoreEdit({ body: e.target.value }),
             }),
+          ]),
+        ]) : null,
+
+        // 资源详情：大图 + 改名/标签 + 三个动作（显示到对话 / 设成某角色的立绘 / 删除）。
+        // **不自动保存改名** —— 和图鉴那两处一样要点「保存」，避免打字打到一半就被写盘。
+        assetEdit ? h(SharedPortalModal, {
+          key: 'asset-view',
+          title: assetEdit.label || `资源 ${assetEdit.id}`,
+          onClose: () => setAssetEdit(null),
+          footer: [
+            h('span', { key: 'h', className: 'dim' }, '删除会连磁盘上的图一起删掉（不可撤销）'),
+            h('span', { key: 's', className: 'sep' }),
+            h('button', { key: 'x', className: 'tiny', onClick: () => setAssetEdit(null) }, '关闭'),
+          ],
+        }, [
+          h('div', { key: 'f', className: 'assetview' }, [
+            h('div', { key: 'pic', className: 'assetpic' }, [
+              h('img', { key: 'i', src: assetEdit.url, alt: assetEdit.label || '资源图' }),
+            ]),
+            h('div', { key: 'meta', className: 'assetmeta' }, [
+              h('div', { key: 'k', className: 'row' }, [
+                h('span', { key: 'b', className: 'badge' },
+                  (assets?.kinds ?? []).find((k) => k.key === assetEdit.kind)?.label ?? assetEdit.kind),
+                assetEdit.width && assetEdit.height
+                  ? h('span', { key: 'wh', className: 'dim' }, `${assetEdit.width}×${assetEdit.height}`) : null,
+                h('span', { key: 'by', className: 'dim' }, `${Math.round(Number(assetEdit.bytes ?? 0) / 1024)}KB · ${assetEdit.source === 'imported' ? '导入' : '生成'}`),
+                assetEdit.group ? h('span', { key: 'g', className: 'dim', title: '同一幕的多格' }, `组 ${assetEdit.group}`) : null,
+              ]),
+              h('label', { key: 'l1' }, '名称'),
+              h('input', {
+                key: 'l2', type: 'text', value: assetMetaDraft.label, placeholder: '给这张图起个好找的名字',
+                onChange: (e) => setAssetMetaDraft({ ...assetMetaDraft, label: e.target.value }),
+              }),
+              h('label', { key: 't1' }, '标签'),
+              h('input', {
+                key: 't2', type: 'text', value: assetMetaDraft.tags, placeholder: '逗号分隔，如「客栈,雨夜,室内」',
+                onChange: (e) => setAssetMetaDraft({ ...assetMetaDraft, tags: e.target.value }),
+              }),
+              h('button', {
+                key: 'sv', className: 'tiny primary', disabled: Boolean(busy),
+                onClick: () => void saveAssetMeta(assetEdit, assetMetaDraft.label, assetMetaDraft.tags),
+              }, busy === `asset-save:${assetEdit.id}` ? '保存中…' : '保存名称与标签'),
+              h('div', { key: 'hr1', className: 'sep' }),
+              assetEdit.characters?.length
+                ? h('div', { key: 'cs', className: 'dim' }, `画面里的角色：${assetEdit.characters.join('、')}`) : null,
+              assetEdit.prompt ? h('div', { key: 'pr', className: 'dim assetprompt' }, `提示词：${assetEdit.prompt}`) : null,
+              h('button', {
+                key: 'show', className: 'tiny', disabled: Boolean(busy),
+                title: '把这张图拼成一段 dsh-ui 围栏填进输入框（由你确认后发送）',
+                onClick: () => showAssetInChat(assetEdit),
+              }, '显示到对话'),
+              h('div', { key: 'pr1', className: 'row' }, [
+                h('select', {
+                  key: 'sel', value: assetPortraitTarget,
+                  onChange: (e) => setAssetPortraitTarget(e.target.value),
+                }, [
+                  h('option', { key: '', value: '' }, '设为某角色的立绘…'),
+                  ...chars.map((c) => {
+                    const n = String(c?.name ?? '').trim();
+                    return n ? h('option', { key: n, value: n }, n) : null;
+                  }),
+                ]),
+                h('button', {
+                  key: 'go', className: 'tiny', disabled: Boolean(busy) || !assetPortraitTarget,
+                  onClick: () => void useAssetAsPortrait(assetEdit, assetPortraitTarget),
+                }, busy === `asset-portrait:${assetEdit.id}` ? '设置中…' : '设为立绘'),
+              ]),
+              h('div', { key: 'hr2', className: 'sep' }),
+              h('button', {
+                key: 'del', className: 'tiny', disabled: Boolean(busy),
+                title: '删掉这张图（连磁盘文件一起）。如果它正被当成某个角色的立绘，那条引用也会解除。',
+                onClick: () => { if (window.confirm(`删掉「${assetEdit.label || assetEdit.id}」？磁盘上的图也会删掉。`)) void deleteAsset(assetEdit); },
+              }, busy === `asset-del:${assetEdit.id}` ? '删除中…' : '删除这张图'),
+            ]),
           ]),
         ]) : null,
 
