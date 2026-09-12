@@ -214,6 +214,27 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card } = await import(
   const bare = buildOpeningPrompt({ character: { name: '无开场' }, stats: {}, }, {});
   check('开场指令：无开场白时不出现参考段', bare.includes('只作场景与文风参考'), false);
   check('开场指令：缺文件名时有兜底', bare.includes('rp-worldbook.md'), true);
+
+  // ⚠️ 回归：截断绝不能往引用正文里插「（已截断）」这类元信息
+  // —— 模型会把它当叙事照念（用户实测：DM 第一条回复里原样出现了那行字）。
+  const long = '第一段。'.repeat(1200);   // 6000 字，超过开场白的引用上限
+  const cutPrompt = buildOpeningPrompt({ character: { name: '长卡', first_mes: '短版' }, stats: {} }, { greeting: long });
+  check('开场指令：引用里不出现「已截断」', cutPrompt.includes('已截断'), false);
+  check('开场指令：引用里不出现「全文见导出的 JSON」', cutPrompt.includes('全文见导出的 JSON'), false);
+  check('开场指令：超长时说明放在引用之外', cutPrompt.includes('这里给的是节选'), true);
+  check('开场指令：截断处落在句末', cutPrompt.includes('。…'), true);
+
+  // 角色字段被截断时，也只在数据里标记，不污染文本
+  const longPng = makePng([textChunk('ccv3', card({
+    name: '长卡', description: '设定。'.repeat(900), alternate_greetings: ['开场。'.repeat(700)],
+  }, 'chara_card_v3'))]);
+  const longImp = buildImport(decodeCardPng(longPng));
+  check('长字段：字段里没有「已截断」注释', /已截断/.test(longImp.character.personality), false);
+  check('长字段：字段里没有「全文见导出的 JSON」', /全文见导出的 JSON/.test(longImp.character.first_mes), false);
+  check('长字段：用数据标记被截断的字段', longImp.character._truncatedFields.includes('性格'), true);
+  check('长字段：开场白也被标记', longImp.character._truncatedFields.includes('开场白'), true);
+  check('长字段：截断处落在句末', /。…$/.test(longImp.character.personality), true);
+  check('长字段：开场指令拿到的是原文（未截断）', longImp.greeting.length > 1200, true);
 }
 
 // ── 占位符展开（导入时就处理，不留到注入端）─────────────────────────────
