@@ -1309,16 +1309,18 @@ window.__ModuleLoader__.load({
       // `conversation.hero.agentPreset` 都是 **single 且已被官方插件占满**，
       // 没有第三个槽位可注册；而我们的 dock 条目正好**紧挨在那一行后面**渲染，
       // 所以用 portal 把 chip 放进它的 DOM 里（找不到就退回自己占一行，不至于消失）。
-      const holderRef = React.useRef(null);
+      const rootRef = React.useRef(null);
       const [rowTarget, setRowTarget] = React.useState(undefined);
       React.useLayoutEffect(() => {
         if (rowTarget !== undefined) return;
         let target = null;
         try {
-          const holder = holderRef.current;
-          const row = holder?.previousElementSibling;
+          // ⚠️ 要看的是**本条目根元素**的上一兄弟（那一行），不是根元素内部那个占位的上一兄弟
+          // —— 第一版就是在这里看错了一层，于是永远定位失败、chip 一直留在自己那一行。
+          const root = rootRef.current;
+          const row = root?.previousElementSibling;
           // 校验：同一父节点下的兄弟，且里面已经有 chip（button）—— 结构变了就宁可不搬
-          if (row && holder.parentElement && row.parentElement === holder.parentElement && row.querySelector('button')) {
+          if (row && root.parentElement && row.parentElement === root.parentElement && row.querySelector('button')) {
             target = row;
           }
         } catch { target = null; }
@@ -1335,14 +1337,14 @@ window.__ModuleLoader__.load({
         title: '从本地 PNG 角色卡库导入一本故事书：世界书写进工作区，自动开场（只在未开局的 DM 新会话上出现）',
       }, [h('span', { key: 'g' }, '📖'), h('span', { key: 't' }, open ? '收起' : '导入故事书')]);
 
-      const holder = h('span', { key: 'holder', ref: holderRef, className: 'rpc-holder', 'aria-hidden': 'true' });
+      // 定位用的空节点：没有它，根元素在「chip 被 portal 走」之后就只剩面板了
+      const holder = h('span', { key: 'holder', className: 'rpc-holder', 'aria-hidden': 'true' });
       const entry = (ReactDOM && rowTarget === undefined)
         ? null                                  // 首帧先不画，等 useLayoutEffect 定位（它在绘制前跑，不会闪）
         : (ReactDOM && rowTarget ? ReactDOM.createPortal(chip, rowTarget) : chip);
 
       if (!open) {
-        // rowTarget === undefined 时 holder 必须留在树里（定位要靠它）
-        return h('div', { className: 'rpc' }, [holder, entry]);
+        return h('div', { className: 'rpc', ref: rootRef }, [holder, entry]);
       }
 
       const previewCard = preview ? h('div', { key: 'prev', className: 'prev' }, [
@@ -1383,7 +1385,7 @@ window.__ModuleLoader__.load({
           : null,
       ]) : null;
 
-      return h('div', { className: 'rpc' }, [
+      return h('div', { className: 'rpc', ref: rootRef }, [
         holder,
         entry,
         h('div', { key: 'panel', className: 'panel' }, [

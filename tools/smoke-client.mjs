@@ -70,12 +70,17 @@ const React = {
 };
 
 // ── 假 DOM：让「把入口送进工作区那一行」的逻辑真的被走到 ────────────────────
-// 组件的 useLayoutEffect 会看 holder 的 previousElementSibling，所以这里给每个
-// 带 ref 的宿主元素挂一个假的兄弟节点（前面那行里有 button，符合校验条件）。
-const rowEl = { parentElement: null, querySelector: () => ({ tag: 'button' }) };
-const stackEl = { children: [rowEl] };
-rowEl.parentElement = stackEl;
-const holderEl = { parentElement: stackEl, previousElementSibling: rowEl };
+// 结构照抄真实布局（这一层必须忠实，否则测不出「看错了哪一级兄弟」这类错）：
+//   composerStack
+//     ├─ heroWorkspaceRow   ← 里面已经有 chip（button）
+//     └─ .rpc（我们的条目根元素）      ← previousElementSibling 就是上面那一行
+//          └─ .rpc-holder（占位）      ← previousElementSibling 是 null！
+const stackEl = { children: [] };
+const rowEl = { parentElement: stackEl, previousElementSibling: null, querySelector: () => ({ tag: 'button' }) };
+const holderFake = { parentElement: null, previousElementSibling: null };   // .rpc 内部的占位
+const rootEl = { parentElement: stackEl, previousElementSibling: rowEl, children: [holderFake] };
+holderFake.parentElement = rootEl;
+stackEl.children = [rowEl, rootEl];
 const ReactDOM = {
   createPortal: (child, container) => ({ type: 'Portal', props: { container }, children: flatten([child]) }),
 };
@@ -256,9 +261,10 @@ function renderNode(node) {
     const out = node.type({ ...node.props, children: node.children });
     return renderNode(out);
   }
-  // 宿主元素：把 ref 绑到假 DOM 节点上（组件靠它找「上一行」）
+  // 宿主元素：把 ref 绑到对应的假 DOM 节点上（组件靠它找「上一行」）
   if (node.props?.ref && typeof node.props.ref === 'object') {
-    try { node.props.ref.current = holderEl; } catch { /* 只读 ref 忽略 */ }
+    const isRoot = String(node.props.className ?? '').split(/\s+/).includes('rpc');
+    try { node.props.ref.current = isRoot ? rootEl : holderFake; } catch { /* 只读 ref 忽略 */ }
   }
   return { type: node.type, props: node.props, children: (node.children ?? []).map(renderNode) };
 }
