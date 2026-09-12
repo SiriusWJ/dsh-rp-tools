@@ -32,7 +32,7 @@
 | 世界书（**按会话隔离**） | `<会话工作区>/rp-sessions/<会话 id>/rp-worldbook.md` —— 工作区取自 `session.header.cwd`（如 `D:\Story`）。老版本在工作区根目录，首次读取时会**一次性迁移**一份过来（旧文件保留） |
 | PNG 卡库（导入源） | `D:\Story\sillytavernassets`（3269 张，`cards/<分类>/*.png`）—— 设置页「卡库目录」可改，存 `styles.json` 的 `cards.root` |
 | 导入产物（按会话） | `<会话工作区>/rp-sessions/<会话 id>/cards/<slug>.{md,json,png}`（卡全文 / 规范化结果 / 卡面） |
-| 私有卡索引（可选） | `lib/card-index.js`（**gitignore**，482KB，含卡名/作者/标签/条目数；缺失时自动退回目录扫描） |
+| 卡库目录 | `cards.root`（设置页）；**留空 = 会话工作区下的 `rp-cards/`**。不再有任何固定路径兜底，也不再有私有索引 |
 | dm 预设 | `~/.dsh/.agent-presets/dm/agent.cordis.yml`、`~/.dsh/.agent-presets/dm/rp-bridge.mjs`（仓库内有副本 `preset/rp-bridge.mjs`） |
 | ComfyUI | Comfy Desktop **0.35.0** · `http://127.0.0.1:8188` · RTX 5080 16GB |
 | 模型 | `E:\AI\Models\models\{diffusion_models,text_encoders,vae,loras}`（`Documents\ComfyUI\models` 是指向它的 junction） |
@@ -257,7 +257,7 @@ RP 配置按会话 id 存，而 fork 出来的是**新 id** —— 不处理的�
   回归测试 4 条（`/rp-tools/card` 与 `/rp-tools/card-image` 各两条）。
 - **世界书只追加、不重写**：`mergeWorldBook()` 按标题去重后把新条目**原文贴到文件末尾**。
   刻意不走「解析 → 重新渲染」——那会把用户手写的注释与格式全部抹掉。导入是外来动作，不该动用户那部分。
-- **`lib/card-index.js` 是可选私有文件**：用 **动态 `import()` + try** 拿（静态 import 一旦文件不存在，
+- **卡库只由 `cards.root` / 会话工作区决定**（私有索引那条路已按用户要求整条删除；`lib/card-index.js` 也不再需要）：用 **动态 `import()` + try** 拿（静态 import 一旦文件不存在，
   整个插件加载失败）；且**只在卡库根 == 内置默认根**时用它 —— 索引里的相对路径是相对默认根生成的，
   换了根目录还用它就会列出一堆不存在的路径（踩过一次）。没有索引就退回 `scanCardDir()` 扫目录。
 - **预设切换用官方接口**：`ctx.get('remote').agentPresets.select(sessionId, 'dm')`（hero 上的预设

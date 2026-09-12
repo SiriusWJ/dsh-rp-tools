@@ -653,13 +653,15 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   const state = (await callGet('/rp-tools/state')).json;
   const keys = Object.keys(state.config.styles).filter((k) => state.config.styles[k].builtin !== false).sort();
   const builtinKeys = state.styles.filter((s) => s.builtin).map((s) => s.key).sort();
-  check('风格：内置只剩三个', builtinKeys.join(','), 'anime,manga,realistic');
-  check('风格：二次元的显示名', state.styles.find((s) => s.key === 'anime')?.label, '二次元');
-  check('风格：写实的显示名', state.styles.find((s) => s.key === 'realistic')?.label, '写实');
+  check('风格：内置只剩三个', builtinKeys.join(','), 'manga,uncensored_anime,uncensored_real');
+  check('风格：二次元就是用户那套（自带 workflow）', state.styles.find((s) => s.key === 'uncensored_anime')?.label, '二次元');
+  check('风格：写实就是用户那套', state.styles.find((s) => s.key === 'uncensored_real')?.label, '写实');
   check('风格：黑白漫画还在', state.styles.find((s) => s.key === 'manga')?.label, '黑白漫画');
-  check('风格：旧内置风格已移除', ['darkbrush', 'dotmatrix', 'kidsdrawing', 'neondrip', 'rainywindow', 'retroanime', 'softwatercolor', 'sunsetblur', 'vintagetarot']
+  check('风格：二次元用用户的 workflow', state.config.styles.uncensored_anime?.workflow, 'uncensored_anime');
+  check('风格：写实用用户的 workflow', state.config.styles.uncensored_real?.workflow, 'uncensored_real');
+  check('风格：旧内置风格已移除', ['darkbrush', 'dotmatrix', 'kidsdrawing', 'neondrip', 'rainywindow', 'retroanime', 'softwatercolor', 'sunsetblur', 'vintagetarot', 'anime', 'realistic']
     .some((k) => state.config.styles[k]), false);
-  check('风格：默认风格回落到 manga', state.config.defaultStyle, 'manga');
+  check('风格：默认风格是二次元', state.config.defaultStyle, 'uncensored_anime');
   void keys;
 }
 

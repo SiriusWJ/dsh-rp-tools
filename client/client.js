@@ -1992,7 +1992,7 @@ window.__ModuleLoader__.load({
               ? `卡库目录不存在：${lib.root} —— 到「设置 → RP工具 → 卡库目录」改成正确路径`
               : `卡库 ${lib?.root ?? ''}`
                 + (lib?.rootSource === 'workspace' ? '（默认：会话工作区下的 rp-cards）' : '')
-                + (lib?.rootSource === 'fallback' ? '（兜底：内置卡库；本会话没有工作区）' : '')
+                + (lib?.rootSource === 'none' ? '（拿不到会话工作区 —— 去设置页填一个卡库目录）' : '')
                 + (lib?.indexSource === 'scan' ? '（目录扫描：卡名取文件名）' : '')
                 + `｜命中 ${total} 张`),
           h('div', { key: 'split', className: 'split' }, [
