@@ -1,6 +1,6 @@
 {
   "name": "dsh-rp-tools",
-  "version": "1.8.6",
+  "version": "1.8.7",
   "description": "跑团 / DM 工具插件（DeepSeek Harness）：中立随机裁决 rp_random + 本地 ComfyUI 配图（rp_illustrate / rp_styles / rp_character / rp_scenes / rp_table / rp_session / rp_config）+ 按会话隔离的战役配置（世界 / 角色卡 / 随机表）+ 世界书与状态追踪 + 设置页与会话面板 + PNG 故事书（SillyTavern 角色卡）导入（世界书/卡全文/卡面落进工作区，角色与世界写进会话，自动切 dm 预设开场）。只依赖本机 ComfyUI，不依赖 dsh-comfyui；RP 工具只在 dm 预设会话注册。",
   "type": "module",
   "main": "lib/index.js",

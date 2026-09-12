@@ -164,6 +164,8 @@ globalThis.fetch = async (url, options = {}) => {
         name: '长安', personality: '【设定】……', first_mes: '开场白',
         greetingSource: 'alternate_greetings', greetingAlternatives: 4,
       },
+      // 卡里扫到的宏名：导入表单只列这些（+ user），值用设置页的默认宏列表预填
+      macros: [{ name: 'user', count: 5, auto: false }, { name: 'place', count: 2, auto: false }],
       summary: [], warnings: [],
     });
   }
@@ -230,7 +232,11 @@ globalThis.fetch = async (url, options = {}) => {
   if (target.startsWith('/rp-tools/state')) {
     return reply({
       ok: true, file: 'C:\\...\\styles.json',
-      config: { defaultStyle: 'manga', styles: { manga: { label: '黑白漫画' } }, comfyui: {}, negative: '', cards: {} },
+      // 默认宏列表（设置页）：导入表单的预填值来源。userLabel 是宿主同步出来的老字段。
+      config: {
+        defaultStyle: 'manga', styles: { manga: { label: '黑白漫画' } }, comfyui: {}, negative: '',
+        cards: { root: '', userLabel: '阿岚', macros: { user: '阿岚', place: '长安' } },
+      },
       styles: [{ key: 'manga', label: '黑白漫画', builtin: true }],
     });
   }
@@ -493,6 +499,12 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.ok(previewText.includes('宏（按会话保存）'), true);
   assert.ok(previewText.includes('{{user}}'), true);
   assert.ok(previewText.includes('＋ 添加宏'), true);
+  // 导入表单只列**卡里真出现**的宏（+ user），值用设置页「默认宏列表」预填：
+  // 卡里扫到 place → 用默认值「长安」；默认列表里其它键不会凭空塞进来。
+  assert.ok(previewText.includes('{{place}}'), '卡里扫到的宏要出现在导入表单');
+  const macroInputs = findAll(tree2, (n) => n.type === 'input' && String(n.props.className ?? '').includes('macro')
+    || (n.type === 'input' && n.props.placeholder === '这一项的值'));
+  assert.ok(macroInputs.some((n) => n.props.value === '长安'), '进入表单的宏要用默认宏列表预填值');
 
   // ④-b 读盘的卡路由**必须带上会话身份**。
   // ⚠️ 真事故：`API.card` 曾写成 `card: (path) => ...`，把调用点传的 workspace 悄悄吞掉，
@@ -881,6 +893,40 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   }
 }
 
+// ── 关键断言 ⑦：设置页的「默认宏列表」（键值对，名字可改）───────────────
+// 用户的要求：设置页里的是**预设默认值**，此时还不知道会用哪张卡，所以名字当然要能改；
+// 而 RP 面板/导入表单里列出的名字来自卡里的占位符，那边不能改名（改了匹配不上）。
+{
+  const reg = slotRegs.find((r) => r.name === 'settings.section');
+  assert.ok(reg, '应注册设置页');
+  resetHooks();
+  calls.length = 0;
+  const Props = {};
+  let tree = render(Props, reg.component);
+  for (let i = 0; i < 14 && !textOf(tree).includes('默认宏列表'); i++) { await tick(30); tree = render(Props, reg.component); }
+  const text = textOf(tree);
+  assert.ok(text.includes('默认宏列表'), '设置页应有「默认宏列表」');
+  assert.equal(text.includes('玩家称呼'), false, '「玩家称呼」应已被默认宏列表取代');
+  // 每条默认宏 = 名称输入框 + 值输入框（名字可改就是「不只是值一个框」的含义）
+  const rows = findAll(tree, (n) => String(n.props?.className ?? '').includes('macrorow'));
+  assert.equal(rows.length, 2, '两条默认宏应各占一行');
+  const nameBoxes = findAll(tree, (n) => n.type === 'input' && ['user', 'place'].includes(n.props.value));
+  assert.ok(nameBoxes.length >= 2, '默认宏的名字要出现在输入框里（可改）');
+  const valueBoxes = findAll(tree, (n) => n.type === 'input' && ['阿岚', '长安'].includes(n.props.value));
+  assert.ok(valueBoxes.length >= 2, '默认宏的值也要能改');
+  // 改名：把 user 改成 player → 保存时提交的键要跟着变
+  nameBoxes.find((n) => n.props.value === 'user').props.onChange({ target: { value: 'player' } });
+  tree = render(Props, reg.component);
+  const saveBtn = findAll(tree, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '保存');
+  assert.ok(saveBtn.length >= 1, '设置页要有保存');
+  await saveBtn[0].props.onClick();
+  await tick(60);
+  const post = calls.filter((c) => c.url === '/rp-tools/config' && c.method === 'POST').pop();
+  assert.ok(post, '保存应 POST /rp-tools/config');
+  assert.equal(post.body.cards.macros.player, '阿岚', '改过的名字要按新键提交（值跟着走）');
+  assert.equal(post.body.cards.macros.place, '长安', '没动的条目要原样保留');
+  assert.equal(Object.hasOwn(post.body.cards.macros, 'user'), false, '改名后不该再提交旧键');
+}
 console.log('客户端冒烟测试通过：');
 console.log(`  · bundle id = ${captured.id}`);
 console.log(`  · apply 后样式表已注入（${style.textContent.length} 字符，含 .rph-btn / .rpc）`);

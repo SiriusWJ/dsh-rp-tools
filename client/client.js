@@ -442,7 +442,8 @@ window.__ModuleLoader__.load({
             defaultStyle: draft.defaultStyle,
             baseUrl: draft.comfyui?.baseUrl,
             negative: draft.negative,
-            cards: { root: draft.cards?.root ?? '', userLabel: draft.cards?.userLabel ?? '' },
+            // 默认宏列表整份提交（键值对）；userLabel 由宿主从 macros.user 同步，不再单独发
+            cards: { root: draft.cards?.root ?? '', macros: draft.cards?.macros ?? {} },
             styles,
             styleOps,
           });
@@ -597,12 +598,63 @@ window.__ModuleLoader__.load({
               placeholder: '留空 = 会话工作区下的 rp-cards（相对路径按工作区解析）',
               onChange: (e) => setDraft({ ...draft, cards: { ...(draft.cards ?? {}), root: e.target.value } }),
             }),
-            h('span', { key: 'u1' }, '玩家称呼'),
-            h('input', {
-              key: 'u2', type: 'text', value: draft.cards?.userLabel ?? '',
-              placeholder: '导入卡组时把 {{user}} 换成它（默认「玩家」）',
-              onChange: (e) => setDraft({ ...draft, cards: { ...(draft.cards ?? {}), userLabel: e.target.value } }),
-            }),
+            h('span', { key: 'u1' }, '默认宏列表'),
+            h('div', { key: 'u2', className: 'macroblk' }, [
+              // 键值对编辑器：**名字可以改**（这里只是预设默认值，还不知道会用哪张卡，
+              // 所以不存在「改了匹配不上」的问题）；导入/面板里那些名字来自卡里的占位符，
+              // 那边不能改名 —— 两处的规则刻意不同。
+              ...Object.entries(draft.cards?.macros ?? {}).map(([name, value], i) => h('div', { key: `m${i}`, className: 'row macrorow' }, [
+                h('input', {
+                  key: 'n', type: 'text', value: name, className: 'mono',
+                  'data-name': name,                      // 原值：改名时用它把老键删掉
+                  onChange: (e) => {
+                    const next = e.target.value.trim().toLowerCase();
+                    // 清空 / 非法字符时保留原名，否则这一行会在输入过程中反复消失
+                    if (!MACRO_RE.test(next)) return;
+                    const macros = { ...(draft.cards?.macros ?? {}) };
+                    if (next !== name && macros[next] !== undefined) {
+                      setMsg({ kind: 'err', text: `已经有 {{${next}}} 了 —— 名字没改` });
+                      return;   // 撞名不覆盖（静默丢一条默认值比撞名麻烦得多）
+                    }
+                    delete macros[name];
+                    macros[next] = value;
+                    setDraft({ ...draft, cards: { ...(draft.cards ?? {}), macros } });
+                    if (msg?.kind === 'err') setMsg(null);
+                  },
+                }),
+                h('input', {
+                  key: 'v', type: 'text', value,
+                  placeholder: '默认值',
+                  onChange: (e) => setDraft({
+                    ...draft,
+                    cards: { ...(draft.cards ?? {}), macros: { ...(draft.cards?.macros ?? {}), [name]: e.target.value } },
+                  }),
+                }),
+                h('button', {
+                  key: 'd', className: 'tiny',
+                  onClick: () => {
+                    const macros = { ...(draft.cards?.macros ?? {}) };
+                    delete macros[name];
+                    setDraft({ ...draft, cards: { ...(draft.cards ?? {}), macros } });
+                  },
+                }, '×'),
+              ])),
+              h('button', {
+                key: 'add', className: 'tiny',
+                onClick: () => {
+                  // 新行的名字给一个「不撞车」的占位，用户直接改
+                  const macros = { ...(draft.cards?.macros ?? {}) };
+                  let n = 1;
+                  while (macros[`macro${n}`] !== undefined) n += 1;
+                  macros[`macro${n}`] = '';
+                  setDraft({ ...draft, cards: { ...(draft.cards ?? {}), macros } });
+                },
+              }, '＋ 添加默认宏'),
+              h('div', { key: 'hint', className: 'dim' },
+                `键 = 宿主变量名（小写字母开头，只能小写字母/数字/下划线），值 = 会话里没填该宏时用的默认文本。`
+                + `现在共 ${Object.keys(draft.cards?.macros ?? {}).length} 条；` +
+                `{{user}} 留空则回落到「${draft.cards?.macros?.user || '玩家'}」。`),
+            ]),
           ]),
           h('div', { key: 'note', className: 'dim' },
             '负面词对所有会话与风格生效；krea2 turbo 默认 CFG=1 时负向不参与计算 —— 想让负面真正起作用，把对应风格的 CFG 调到 1.5~2.5。'),
@@ -1857,12 +1909,13 @@ window.__ModuleLoader__.load({
       const [autoStart, setAutoStart] = React.useState(true);
       // 用第几条开场白（导入时随请求发给宿主）
       const [greetingIndex, setGreetingIndex] = React.useState(0);
-      // 宏行（导入表单用）：`user` 默认取全局玩家称呼，其余来自卡里扫到的宏名
+      // 宏行（导入表单用）：只列**卡里真出现**的宏名 + user，值用设置页「默认宏列表」预填
       const [macroRows, setMacroRows] = React.useState([{ name: 'user', value: '' }]);
       const [newMacroName, setNewMacroName] = React.useState('');
-      const [globalUserLabel, setGlobalUserLabel] = React.useState('');
-      const globalUserLabelRef = React.useRef('');
-      globalUserLabelRef.current = globalUserLabel;
+      // 设置页那份默认宏列表（`config.cards.macros`）：只当**预填值**用；会话里填过的以会话为准
+      const [globalMacros, setGlobalMacros] = React.useState({});
+      const globalMacrosRef = React.useRef({});
+      globalMacrosRef.current = globalMacros;
       const setMacroRow = (i, value) => setMacroRows((rows) => rows.map((r, j) => (j === i ? { ...r, value } : r)));
       const removeMacroRow = (i) => setMacroRows((rows) => rows.filter((_, j) => j !== i));
       /** 导入表单里加一行自定义宏（名字按宿主变量规则校验）。 */
@@ -1870,11 +1923,12 @@ window.__ModuleLoader__.load({
         const name = newMacroName.trim().toLowerCase();
         if (!MACRO_RE.test(name)) { setMsg({ kind: 'err', text: '宏名只能用 小写字母开头 + 小写字母/数字/下划线' }); return; }
         if (macroRows.some((r) => r.name === name)) { setMsg({ kind: 'err', text: `已经有 {{${name}}} 了` }); return; }
-        setMacroRows((rows) => [...rows, { name, value: '' }]);
+        setMacroRows((rows) => [...rows, { name, value: String(globalMacrosRef.current[name] ?? '') }]);
         setNewMacroName('');
       }
       /** 卡预览回来后，用「卡里扫到的宏名」重建行（已经填过的值保留）。 */
-      function applyDiscoveredMacros(found) {
+      function applyDiscoveredMacros(found, macrosOverride) {
+        const defaults = macrosOverride ?? globalMacrosRef.current ?? {};
         setMacroRows((rows) => {
           const byName = new Map(rows.map((r) => [r.name, r.value]));
           const names = ['user', ...(found ?? []).map((m) => m.name).filter((n) => n !== 'user')];
@@ -1882,8 +1936,9 @@ window.__ModuleLoader__.load({
           return names.map((name) => ({
             name,
             auto: autoSet.has(name),
-            // user 的默认值来自全局「玩家称呼」（设置页）；用户随手改掉也只影响本会话
-            value: byName.get(name) ?? (name === 'user' ? globalUserLabelRef.current : ''),
+            // 默认值来自设置页的「默认宏列表」（user 也在里面）；用户随手改掉只影响本会话。
+            // 只有卡里出现的名字才建行 —— 默认列表里其它条目不必塞进表单（注入时照样兜底生效）。
+            value: byName.get(name) ?? String(defaults[name] ?? ''),
           }));
         });
       }
@@ -1895,10 +1950,22 @@ window.__ModuleLoader__.load({
       // 每张卡给一个稳定的 key（路径里可能有重名文件）
       const itemKey = (it, i) => `${i}:${it.path}`;
 
+      /** 拉一次设置页的默认宏列表（导入表单的预填值来源；拿不到就只填空）。 */
+      async function loadGlobalMacros() {
+        try {
+          const st = await API.state();
+          const raw = st?.config?.cards?.macros;
+          const macs = raw && typeof raw === 'object' ? { ...raw } : {};
+          // 老配置只有 userLabel：把它当 user 的默认值（宿主侧也会这么迁）
+          const label = String(st?.config?.cards?.userLabel ?? '').trim();
+          const merged = label && !macs.user ? { ...macs, user: label } : macs;
+          setGlobalMacros(merged);
+          return merged;
+        } catch { return globalMacrosRef.current ?? {}; }
+      }
+
       React.useEffect(() => {
-        if (open && globalUserLabel === '') {
-          API.state().then((st) => setGlobalUserLabel(String(st?.config?.cards?.userLabel ?? ''))).catch(() => {});
-        }
+        if (open && Object.keys(globalMacros).length === 0) void loadGlobalMacros();
         if (open && lib === null) void load('');
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [open]);
@@ -1971,8 +2038,9 @@ window.__ModuleLoader__.load({
           const res = await API.card(cardPath, { workspace: await ensureCwd(), sessionId: live.current.sessionId });
           if (!res?.ok) throw new Error(res?.error ?? '解析失败');
           setPreview(res);
-          applyDiscoveredMacros(res.macros);
-          try { const st = await API.state(); setGlobalUserLabel(String(st?.config?.cards?.userLabel ?? '')); } catch { /* 拿不到就用默认 */ }
+          // 先取回默认宏列表再建行：否则预填用的是上一次的旧值（刚在设置页改过就白改）
+          const defaults = await loadGlobalMacros();
+          applyDiscoveredMacros(res.macros, defaults);
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }
@@ -2164,7 +2232,7 @@ window.__ModuleLoader__.load({
         h('div', { key: 'macros', className: 'macroblk' }, [
           h('div', { key: 't', className: 'dim' },
             '宏（按会话保存）：卡里用到的 {{…}} 留在这里填，也可以自己加一行。'
-            + `默认 {{user}} = ${globalUserLabel || '玩家'}（设置页的「玩家称呼」）。`),
+            + `这里只填**会话级**的值；设置页「默认宏列表」里的同名条目会先预填进来（user 现在是「${globalMacros.user || '玩家'}」）。`),
           ...macroRows.map((row, i) => h('div', { key: `m${i}`, className: 'row macrorow' }, [
             h('span', { key: 'n', className: 'mono' }, `{{${row.name}}}`),
             // 自动宏（time/date/…）：后台每轮自己算，用户不用填；留空即可，想钉死游戏内时间也可以填

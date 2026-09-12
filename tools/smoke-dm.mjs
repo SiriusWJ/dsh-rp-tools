@@ -281,6 +281,52 @@ if (onSessionCreated) {
     check('随机表目录进了系统提示词', mine?.text?.includes('遭遇表'), true);
     check('其它段未被破坏', (out?.sections ?? []).length, 2);
 
+    // ── 默认宏列表（设置页的键值对预设）────────────────────────────────
+    // 语义：**只提供默认值**，会话里填过的同名键优先。原先只有「玩家称呼」一个字段
+    // 能给 `{{user}}` 当默认值，现在推广到所有名字。
+    {
+      const clean = mod.__debug.globalMacros({
+        cards: { macros: { user: '阿岚', place: '长安', 'bad name': 'x', ok2: '   ' } },
+      });
+      check('默认宏列表：收下合法名字', clean.place, '长安');
+      check('默认宏列表：丢掉非法名字', Object.hasOwn(clean, 'bad name'), false);
+      check('默认宏列表：丢掉空值（界面还没填完的行）', Object.hasOwn(clean, 'ok2'), false);
+      const merged = mod.__debug.mergedMacros(
+        { cards: { macros: { user: '默认', place: '长安' } } },
+        { place: '洛阳' },
+      );
+      check('默认宏列表：会话值优先', merged.place, '洛阳');
+      check('默认宏列表：会话没填的键用默认值', merged.user, '默认');
+      check('玩家称呼仍能从默认宏列表里取（老字段兼容）', mod.__debug.cardUserLabel({ cards: { macros: { user: '阿岚' } } }), '阿岚');
+      check('玩家称呼老字段也认', mod.__debug.cardUserLabel({ cards: { userLabel: '旧玩家' } }), '旧玩家');
+      check('都没填时回落「玩家」', mod.__debug.cardUserLabel({ cards: {} }), '玩家');
+    }
+
+    // 端到端：在设置页加一条默认宏 → 下一轮装配就该注册成宿主变量并给出默认值
+    {
+      const stateBefore = await callGet('/rp-tools/state');
+      await callPost('/rp-tools/config', {
+        cards: {
+          root: stateBefore.json.config?.cards?.root ?? '',
+          macros: { user: '阿岚', era: '天宝年间', 'bad name': '丢掉', empty: '' },
+        },
+      });
+      const stateAfter = await callGet('/rp-tools/state');
+      check('设置页：默认宏列表落盘', stateAfter.json.config?.cards?.macros?.era, '天宝年间');
+      check('设置页：userLabel 跟着 user 同步（老字段）', stateAfter.json.config?.cards?.userLabel, '阿岚');
+      check('设置页：非法名字被丢掉', Object.hasOwn(stateAfter.json.config?.cards?.macros ?? {}, 'bad name'), false);
+      check('设置页：空值被丢掉', Object.hasOwn(stateAfter.json.config?.cards?.macros ?? {}, 'empty'), false);
+
+      await onAssemble(assembly, {}, async () => assembly);
+      check('默认宏：装配后被注册成宿主变量', promptVars.has('era'), true);
+      check('默认宏：变量值就是默认值', promptVars.get('era')?.({}), '天宝年间');
+      check('默认宏：{{user}} 用新的默认值', promptVars.get('user')?.({}), '阿岚');
+      // 会话宏表里填过的同名键仍然优先（这条是「默认值」语义的核心）
+      await callPost('/rp-tools/session', { sessionId: SID, macros: { era: '开元' } });
+      await onAssemble(assembly, {}, async () => assembly);
+      check('默认宏：会话值覆盖默认值', promptVars.get('era')?.({}), '开元');
+    }
+
     // 双花括号必须被中和，否则宿主插值会把 {{宏}} 当变量而抛错
     // （注意：这里必须先做断言再切会话 —— currentStandingSessionId 取的是「最近活动的会话」）
     await callPost('/rp-tools/session', { sessionId: SID, world: '她轻声说 {{user}} 你来了' });
