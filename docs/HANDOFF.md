@@ -172,7 +172,17 @@ RP 配置按会话 id 存，而 fork 出来的是**新 id** —— 不处理的�
 - **角色卡分两层注入**：standing 只放「名字 + 一句简介 + 是否常驻展开」的**索引**
   （`renderCharacterIndex`，字节数不随角色数增长）；详细卡片进 turn 通道，且**只在角色出场的那几轮**
   （`charactersToExpand`：名字出现在最近对话里，或被标了 `always`）。
-- **身份宏 `{{user}}`**：通过 `ctx.systemPrompt.variable('user', …)` 注册成**宿主变量**
+- **宏表（按会话隔离）**：会话配置里的 `macros: { user: '阿岚', place: '广寒宫' }`。
+  - 值在**第一次导入时由界面问用户**（默认取全局「玩家称呼」，可改，也能加自定义宏）；
+    预览接口 `GET /rp-tools/card` 会返回卡里扫到的宏名（`discoverMacros`＋`collectCardText`）供预填；
+  - RP 面板有「宏 / 变量」卡片，任何时候都能改；`rp_session(action:"set", macro_name, macro_value)` 让 DM 也能设；
+  - 注入时由 **`systemPrompt.variable(name, provider)`** 在 agent 作用域逐名注册（`macroVars`/`macroRegistrars`/`macroValueCache`），
+    所以世界设定 / 世界书条目里写的 `{{x}}` 会**跟着面板改的值变**（不是把值烤进文件）；
+  - 未注册的宏由 `neutralizeMustache(text, known)` 换成全角 —— 宿主对未知变量是**严格**的（直接抛错）；
+  - `{{char}}` 仍是**导入时展开成卡名**：一场戏可能多角色，全局变量表达不了它。
+  - ⚠️ 注册必须发生在**该会话的 agent 作用域**；路由（全局作用域）改完宏表要通过 `refreshSessionMacros` 回调进去，
+    否则要么污染别的会话，要么下一轮装配因未知变量抛错。
+- **身份宏 `{{user}}`**：是宏表里的一个普通键，默认值取全局「玩家称呼」；
   （DSH 原生的插值机制，语义上等价于酒馆那边的「身份宏」），所以用户在**世界书条目 / 世界设定里手写**的
   `{{user}}`（哪怕是我们导入之后才写的）也会被正确替换成玩家称呼（设置页「玩家称呼」可改）。
   `neutralizeMustache()` 因此要**放行注册过的变量、只中和没注册的宏** —— 宿主对未知变量是**严格**的（直接抛错）。

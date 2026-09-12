@@ -50,6 +50,9 @@ window.__ModuleLoader__.load({
       loreSave: (body) => jpost('/rp-tools/lore', body),
     };
 
+    /** 宏名规则：与宿主变量名一致（[a-z][a-z0-9_]*）。 */
+    const MACRO_RE = /^[a-z][a-z0-9_]{0,31}$/;
+
     /** 卡面图（导入时复制到工作区的那张）走卡库只读路由。 */
     const cardImageUrl = (rel) => `/rp-tools/card-image?path=${encodeURIComponent(rel)}`;
 
@@ -236,6 +239,10 @@ window.__ModuleLoader__.load({
 .rpc .item .mt { font-size: 11px; opacity: .6; }
 .rpc .prev { display: flex; flex-direction: column; gap: 8px; }
 .rpc .greet { display: flex; flex-direction: column; gap: 4px; }
+.rpc .macroblk { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 8px;
+  background: color-mix(in oklab, currentColor 5%, transparent); }
+.rpc .macrorow, .rpt .macrorow { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.rpc .macrorow .mono, .rpt .macrorow .mono { opacity: .8; }
 .rpc .greet select { font-size: 12px; }
 .rpc .prevbox { max-height: 190px; overflow: auto; white-space: pre-wrap; word-break: break-word;
   font-size: 12px; padding: 8px; border-radius: 8px; background: color-mix(in oklab, currentColor 6%, transparent); }
@@ -636,6 +643,9 @@ window.__ModuleLoader__.load({
       const [loreEdit, setLoreEdit] = React.useState(null);
       const [loreQuery, setLoreQuery] = React.useState('');
       const [tableDraft, setTableDraft] = React.useState({ name: '', dice: '', entries: '' });
+      // 新增宏的临时输入 + 全局玩家称呼（面板里 {{user}} 留空的说明要用）
+      const [newMacroName, setNewMacroName] = React.useState('');
+      const [globalUserLabel, setGlobalUserLabel] = React.useState('');
       // 每个角色自己的立绘：{ [角色名]: { url, style, elapsedMs } }
       const [portraits, setPortraits] = React.useState({});
       const previewRef = React.useRef(null);
@@ -650,6 +660,7 @@ window.__ModuleLoader__.load({
           if (!data?.ok) throw new Error(data?.error ?? '读取失败');
           setState(data);
           setStyles(global);
+          setGlobalUserLabel(String(global?.config?.cards?.userLabel ?? ''));
           setDraft(JSON.parse(JSON.stringify(data.session)));
           setMsg(null);
           // 世界书条目单独取（放在工作区的文件里，不在会话配置里）
@@ -682,6 +693,7 @@ window.__ModuleLoader__.load({
             characterIndex: draft.characterIndex ?? [],
             state: draft.state ?? {},
             tables: draft.tables,
+            macros: draft.macros ?? {},
           });
           if (!res?.ok) throw new Error(res?.error ?? '保存失败');
           setState((s) => ({ ...s, session: res.session }));
@@ -950,6 +962,46 @@ window.__ModuleLoader__.load({
             onChange: (e) => patch({ world: e.target.value }),
           }),
           h('div', { key: 'd', className: 'dim' }, `本会话配置文件（DM 也能用 read/write 直接改）：${state.file ?? ''}`),
+        ]),
+
+        // ── 宏（按会话隔离）：`{{user}}` 与自定义 `{{x}}` 的值 ──────────────────
+        // 值存在会话配置里，宿主会用同名**变量**在注入时插值 —— 所以改完保存，
+        // 世界设定 / 世界书条目里写的 `{{x}}` 立刻跟着变（不是把值烤进文件）。
+        h('div', { key: 'macros', className: 'card' }, [
+          h('div', { key: 'h', className: 'row' }, [
+            h('h4', { key: 't' }, `宏 / 变量（${Object.keys(draft.macros ?? {}).length}）`),
+            h('span', { key: 'sep', className: 'sep' }),
+            h('span', { key: 'd', className: 'dim' }, `按会话隔离；{{user}} 留空 = 全局「${globalUserLabel || '玩家'}」`),
+          ]),
+          ...Object.entries(draft.macros ?? {}).map(([name, value], i) => h('div', { key: `m${i}`, className: 'row macrorow' }, [
+            h('span', { key: 'n', className: 'mono' }, `{{${name}}}`),
+            h('input', {
+              key: 'v', type: 'text', value,
+              onChange: (e) => patch({ macros: { ...(draft.macros ?? {}), [name]: e.target.value } }),
+            }),
+            h('button', {
+              key: 'd', className: 'tiny',
+              onClick: () => { const next = { ...(draft.macros ?? {}) }; delete next[name]; patch({ macros: next }); },
+            }, '×'),
+          ])),
+          h('div', { key: 'add', className: 'row' }, [
+            h('input', {
+              key: 'nn', type: 'text', value: newMacroName, placeholder: '宏名（小写字母/数字/下划线）',
+              onChange: (e) => setNewMacroName(e.target.value),
+            }),
+            h('button', {
+              key: 'ab', className: 'tiny',
+              onClick: () => {
+                const name = newMacroName.trim().toLowerCase();
+                if (!MACRO_RE.test(name)) { setMsg({ kind: 'err', text: '宏名只能用 小写字母开头 + 小写字母/数字/下划线' }); return; }
+                if ((draft.macros ?? {})[name] !== undefined) { setMsg({ kind: 'err', text: `已经有 {{${name}}} 了` }); return; }
+                patch({ macros: { ...(draft.macros ?? {}), [name]: '' } });
+                setNewMacroName('');
+              },
+            }, '＋ 添加宏'),
+          ]),
+          h('div', { key: 'note', className: 'dim' },
+            '在世界设定 / 世界书条目里写 `{{名字}}`，注入时会被替换成这里的值（宿主原生插值，不用重启）。'),
         ]),
 
         // 世界书：条目都在工作区的 rp-worldbook.md 里，只有命中的才进每轮上下文。
@@ -1562,6 +1614,34 @@ window.__ModuleLoader__.load({
       const [autoStart, setAutoStart] = React.useState(true);
       // 用第几条开场白（导入时随请求发给宿主）
       const [greetingIndex, setGreetingIndex] = React.useState(0);
+      // 宏行（导入表单用）：`user` 默认取全局玩家称呼，其余来自卡里扫到的宏名
+      const [macroRows, setMacroRows] = React.useState([{ name: 'user', value: '' }]);
+      const [newMacroName, setNewMacroName] = React.useState('');
+      const [globalUserLabel, setGlobalUserLabel] = React.useState('');
+      const globalUserLabelRef = React.useRef('');
+      globalUserLabelRef.current = globalUserLabel;
+      const setMacroRow = (i, value) => setMacroRows((rows) => rows.map((r, j) => (j === i ? { ...r, value } : r)));
+      const removeMacroRow = (i) => setMacroRows((rows) => rows.filter((_, j) => j !== i));
+      /** 导入表单里加一行自定义宏（名字按宿主变量规则校验）。 */
+      function addMacroRow() {
+        const name = newMacroName.trim().toLowerCase();
+        if (!MACRO_RE.test(name)) { setMsg({ kind: 'err', text: '宏名只能用 小写字母开头 + 小写字母/数字/下划线' }); return; }
+        if (macroRows.some((r) => r.name === name)) { setMsg({ kind: 'err', text: `已经有 {{${name}}} 了` }); return; }
+        setMacroRows((rows) => [...rows, { name, value: '' }]);
+        setNewMacroName('');
+      }
+      /** 卡预览回来后，用「卡里扫到的宏名」重建行（已经填过的值保留）。 */
+      function applyDiscoveredMacros(found) {
+        setMacroRows((rows) => {
+          const byName = new Map(rows.map((r) => [r.name, r.value]));
+          const names = ['user', ...(found ?? []).map((m) => m.name).filter((n) => n !== 'user')];
+          return names.map((name) => ({
+            name,
+            // user 的默认值来自全局「玩家称呼」（设置页）；用户随手改掉也只影响本会话
+            value: byName.get(name) ?? (name === 'user' ? globalUserLabelRef.current : ''),
+          }));
+        });
+      }
       // 待办导入**放在模块级**：新建会话会让会话作用域的槽位子树重新挂载，
       // 那时组件 state 会被重置，任务就永远等不到接手的那次渲染（这条踩过一次）。
       const [pendingTick, setPendingTick] = React.useState(0);
@@ -1571,6 +1651,9 @@ window.__ModuleLoader__.load({
       const itemKey = (it, i) => `${i}:${it.path}`;
 
       React.useEffect(() => {
+        if (open && globalUserLabel === '') {
+          API.state().then((st) => setGlobalUserLabel(String(st?.config?.cards?.userLabel ?? ''))).catch(() => {});
+        }
         if (open && lib === null) void load('');
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [open]);
@@ -1630,6 +1713,8 @@ window.__ModuleLoader__.load({
           const res = await API.card(cardPath);
           if (!res?.ok) throw new Error(res?.error ?? '解析失败');
           setPreview(res);
+          applyDiscoveredMacros(res.macros);
+          try { const st = await API.state(); setGlobalUserLabel(String(st?.config?.cards?.userLabel ?? '')); } catch { /* 拿不到就用默认 */ }
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }
@@ -1680,6 +1765,8 @@ window.__ModuleLoader__.load({
             workspace: live.current.cwd || undefined,
             path: opts.path,
             greetingIndex: opts.greetingIndex ?? greetingIndex,
+            // 宏表：导入表单里填的值，按会话保存（默认值已在界面里预填全局玩家称呼）
+            macros: Object.fromEntries(macroRows.filter((r) => r.name && String(r.value).trim()).map((r) => [r.name, r.value])),
           });
           if (!res?.ok) throw new Error(res?.error ?? '导入失败');
           setResult({ ...res, preset });
@@ -1808,6 +1895,29 @@ window.__ModuleLoader__.load({
           : null,
         preview.world ? h('div', { key: 'w', className: 'prevbox' }, preview.world) : null,
         preview.character?.personality ? h('div', { key: 'p', className: 'prevbox' }, preview.character.personality) : null,
+        // ── 宏（第一次导入时让用户填；默认取全局玩家称呼，可改，也可加自定义 {{x}}）──
+        // 这些值**按会话保存**，世界书/设定里写的 `{{x}}` 由宿主变量在注入时替换，
+        // 所以以后在 RP 面板里改值，已导入的文本会跟着变。
+        h('div', { key: 'macros', className: 'macroblk' }, [
+          h('div', { key: 't', className: 'dim' },
+            '宏（按会话保存）：卡里用到的 {{…}} 留在这里填，也可以自己加一行。'
+            + `默认 {{user}} = ${globalUserLabel || '玩家'}（设置页的「玩家称呼」）。`),
+          ...macroRows.map((row, i) => h('div', { key: `m${i}`, className: 'row macrorow' }, [
+            h('span', { key: 'n', className: 'mono' }, `{{${row.name}}}`),
+            h('input', {
+              key: 'v', type: 'text', value: row.value, placeholder: row.name === 'user' ? '玩家称呼' : '这一项的值',
+              onChange: (e) => setMacroRow(i, e.target.value),
+            }),
+            h('button', { key: 'd', className: 'tiny', onClick: () => removeMacroRow(i) }, '×'),
+          ])),
+          h('div', { key: 'add', className: 'row' }, [
+            h('input', {
+              key: 'nn', type: 'text', value: newMacroName, placeholder: '自定义宏名（小写字母/数字/下划线）',
+              onChange: (e) => setNewMacroName(e.target.value),
+            }),
+            h('button', { key: 'ab', className: 'tiny', onClick: addMacroRow }, '＋ 添加宏'),
+          ]),
+        ]),
         h('label', { key: 'auto', className: 'cb' }, [
           h('input', { key: 'c', type: 'checkbox', checked: autoStart, onChange: (e) => setAutoStart(e.target.checked) }),
           '导入后自动开场（把开场指令发给 DM）',

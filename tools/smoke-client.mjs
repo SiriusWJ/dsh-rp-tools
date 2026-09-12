@@ -405,6 +405,10 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   const importBtn = findAll(tree2, (n) => String(n.props?.className ?? '').includes('primary')
     && textOf(n).includes('导入并开始'));
   assert.equal(importBtn.length, 1, '空白会话上按钮文案应是「导入并开始」');
+  // 宏：导入表单要给 {{user}} 一行（默认取全局玩家称呼），也能加自定义宏
+  assert.ok(previewText.includes('宏（按会话保存）'), true);
+  assert.ok(previewText.includes('{{user}}'), true);
+  assert.ok(previewText.includes('＋ 添加宏'), true);
 
   // ⑤ 导入：切 dm 预设 → POST 导入 → 把开场指令塞进输入框并提交
   importBtn[0].props.onClick();
