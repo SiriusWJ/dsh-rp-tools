@@ -624,7 +624,7 @@ window.__ModuleLoader__.load({
                 }),
                 h('input', {
                   key: 'v', type: 'text', value,
-                  placeholder: '默认值',
+                  placeholder: name === 'user' ? '玩家' : '默认值',
                   onChange: (e) => setDraft({
                     ...draft,
                     cards: { ...(draft.cards ?? {}), macros: { ...(draft.cards?.macros ?? {}), [name]: e.target.value } },
@@ -650,10 +650,12 @@ window.__ModuleLoader__.load({
                   setDraft({ ...draft, cards: { ...(draft.cards ?? {}), macros } });
                 },
               }, '＋ 添加默认宏'),
+              // 说人话：左边名字 → 右边默认值，一个具体的例子把规则讲完
               h('div', { key: 'hint', className: 'dim' },
-                `键 = 宿主变量名（小写字母开头，只能小写字母/数字/下划线），值 = 会话里没填该宏时用的默认文本。`
-                + `现在共 ${Object.keys(draft.cards?.macros ?? {}).length} 条；` +
-                `{{user}} 留空则回落到「${draft.cards?.macros?.user || '玩家'}」。`),
+                Object.keys(draft.cards?.macros ?? {}).length === 0
+                  ? '还没有默认宏。点「＋ 添加默认宏」，名字填 user、值填玩家 —— 卡里的 {{user}} 就会用这个名字。'
+                  : '左边是宏名（对应文本里的 {{…}}），右边是默认值。会话里填过的用它自己那份，这里只影响没填过的会话。' +
+                    `例：user → ${draft.cards?.macros?.user || '玩家'} 表示把 {{user}} 换成「${draft.cards?.macros?.user || '玩家'}」。`),
             ]),
           ]),
           h('div', { key: 'note', className: 'dim' },

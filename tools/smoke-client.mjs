@@ -131,6 +131,11 @@ const sessionStub = {
   campaign: { name: '长安', prompt_prefix: '' }, characters: [], characterIndex: [],
   tables: [], world: '天宝年间。', state: {}, styleNotes: '', portraits: {},
 };
+/** `/rp-tools/state` 返回的全局配置（设置页/导入表单都读它）；空列表那条用例会临时改它。 */
+const stateStub = {
+  defaultStyle: 'manga', styles: { manga: { label: '黑白漫画' } }, comfyui: {}, negative: '',
+  cards: { root: '', userLabel: '阿岚', macros: { user: '阿岚', place: '长安' } },
+};
 /**
  * 宿主对「会话闸门」的回答（是不是 dm / 有没有开局）。
  *
@@ -233,10 +238,8 @@ globalThis.fetch = async (url, options = {}) => {
     return reply({
       ok: true, file: 'C:\\...\\styles.json',
       // 默认宏列表（设置页）：导入表单的预填值来源。userLabel 是宿主同步出来的老字段。
-      config: {
-        defaultStyle: 'manga', styles: { manga: { label: '黑白漫画' } }, comfyui: {}, negative: '',
-        cards: { root: '', userLabel: '阿岚', macros: { user: '阿岚', place: '长安' } },
-      },
+      // stateStub 可变：空列表那条用例会临时清空它。
+      config: stateStub,
       styles: [{ key: 'manga', label: '黑白漫画', builtin: true }],
     });
   }
@@ -926,6 +929,16 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.equal(post.body.cards.macros.player, '阿岚', '改过的名字要按新键提交（值跟着走）');
   assert.equal(post.body.cards.macros.place, '长安', '没动的条目要原样保留');
   assert.equal(Object.hasOwn(post.body.cards.macros, 'user'), false, '改名后不该再提交旧键');
+
+  // 空列表时要说人话：直接给出 `user -> 玩家` 这个例子，而不是留一个空白块让人猜
+  stateStub.cards = { root: '', userLabel: '', macros: {} };
+  resetHooks();
+  let empty = render(Props, reg.component);
+  for (let i = 0; i < 14 && !textOf(empty).includes('默认宏列表'); i++) { await tick(30); empty = render(Props, reg.component); }
+  assert.ok(textOf(empty).includes('还没有默认宏'), '空列表要给一句人话引导');
+  assert.ok(textOf(empty).includes('名字填 user、值填玩家'), '空列表要给出具体例子（user → 玩家）');
+  stateStub.cards = { root: '', userLabel: '阿岚', macros: { user: '阿岚', place: '长安' } };
+  resetHooks();
 }
 console.log('客户端冒烟测试通过：');
 console.log(`  · bundle id = ${captured.id}`);

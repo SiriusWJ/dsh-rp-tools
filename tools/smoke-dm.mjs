@@ -325,6 +325,20 @@ if (onSessionCreated) {
       await callPost('/rp-tools/session', { sessionId: SID, macros: { era: '开元' } });
       await onAssemble(assembly, {}, async () => assembly);
       check('默认宏：会话值覆盖默认值', promptVars.get('era')?.({}), '开元');
+
+      // ── 出厂默认：列表里就该有一条 `user -> 玩家`（用户要求：不要给个空列表看不懂）──
+      await callPost('/rp-tools/reset', {});
+      const fresh = await callGet('/rp-tools/state');
+      check('出厂配置：默认宏列表自带 user', fresh.json.config?.cards?.macros?.user, '玩家');
+      check('出厂配置：userLabel 与之同源', fresh.json.config?.cards?.userLabel, '玩家');
+
+      // 用户删掉这一条之后**不该又被塞回来**（macrosSeeded 一次性迁移）
+      await callPost('/rp-tools/config', { cards: { root: '', macros: {} } });
+      const cleared = await callGet('/rp-tools/state');
+      check('删掉 user 之后不再自动补回', Object.hasOwn(cleared.json.config?.cards?.macros ?? {}, 'user'), false);
+      check('删掉后 userLabel 也跟着空', cleared.json.config?.cards?.userLabel, '');
+      // 但玩家称呼本身仍要有兜底：什么默认值都没有时回落「玩家」
+      check('没默认值时 {{user}} 仍回落「玩家」', mod.__debug.cardUserLabel(cleared.json.config ?? {}), '玩家');
     }
 
     // 双花括号必须被中和，否则宿主插值会把 {{宏}} 当变量而抛错
@@ -1230,6 +1244,23 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   const imgEscape = mkRes();
   imgRoute.handler({ method: 'GET', url: '/rp-tools/card-image?path=..%2F..%2Fsecret.png', headers: {} }, imgEscape);
   check('卡面路由：路径逃逸被拒', imgEscape.out.status, 400);
+}
+
+// ── 老配置迁移（放最后：它会**直接改写 styles.json**，前面那些用例依赖完整配置）──
+// 1.8.8 之前存的配置没有 `macrosSeeded`：打开一次就该补上 `user -> 玩家`，
+// 而且是**一次性**的 —— 用户删掉这条之后不会再被塞回来。
+{
+  writeFileSync(
+    join(TEST_HOME, 'data', 'dsh-rp-tools', 'styles.json'),
+    JSON.stringify({ cards: { root: '', userLabel: '', macros: {} } }, null, 2),
+    'utf8',
+  );
+  const migrated = await callGet('/rp-tools/state');
+  check('老配置打开后补上 user -> 玩家', migrated.json.config?.cards?.macros?.user, '玩家');
+  check('迁移是一次性的（打上标记）', migrated.json.config?.cards?.macrosSeeded, true);
+  await callPost('/rp-tools/config', { cards: { root: '', macros: {} } });
+  const again = await callGet('/rp-tools/state');
+  check('迁移过之后删除不再补回', Object.hasOwn(again.json.config?.cards?.macros ?? {}, 'user'), false);
 }
 
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
