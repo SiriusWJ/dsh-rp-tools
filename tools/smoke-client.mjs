@@ -961,6 +961,16 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     '输入框底色要跟随宿主 token');
   assert.ok(/\.rpt input:focus[^{]*\{[^}]*--dsw-alias-brand-primary/.test(style.textContent),
     '聚焦环要用品牌色（别再出现默认 outline）');
+  // ★ 主按钮：底色 button-primary-fill + 文字 label-primary-foreground。
+  //   踩过的坑：--dsw-alias-brand-primary 在深色主题下是**近白**，配写死的白色文字
+  //   = 白底白字（用户截图里的「保存按钮看不清」）。所以文字必须用前景 token。
+  const primaryCss = /\.rpt button\.primary \{([^}]*)\}/.exec(style.textContent)?.[1] ?? '';
+  assert.ok(primaryCss.includes('--dsw-alias-button-primary-fill'), '主按钮底色要用 button-primary-fill');
+  assert.ok(primaryCss.includes('--dsw-alias-label-primary-foreground'), '主按钮文字要用 label-primary-foreground（深色主题下它是深色）');
+  assert.equal(/color:\s*#fff/.test(primaryCss), false, '主按钮不能写死白色文字（深色主题下会白底白字）');
+  // CSS 模板串自检：花括号配平（反引号会被 node --check 拦住，花括号不会）
+  assert.equal((style.textContent.match(/\{/g) ?? []).length, (style.textContent.match(/\}/g) ?? []).length,
+    '样式表花括号要配平');
   const styleRows = byClass(tree, 'stylerow');
   assert.equal(styleRows.length, 1, 'stub 里一个风格就是一行');
   const nameInputs = findAll(styleRows[0], (n) => n.type === 'input' && n.props.type === 'text'

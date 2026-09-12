@@ -159,7 +159,18 @@ window.__ModuleLoader__.load({
 .rpt button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, color-mix(in oklab, currentColor 12%, transparent)); }
 .rpt button:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4D6BFE); outline-offset: -1px; }
 .rpt button:disabled { opacity: .45; cursor: default; }
-.rpt button.primary { background: var(--dsw-alias-brand-primary, #4D6BFE); border-color: transparent; color: #fff; }
+/* 主按钮 = 宿主的「高对比」按钮：底色 button-primary-fill，文字 label-primary-foreground。
+   ⚠️ 这里踩过一次：--dsw-alias-brand-primary 并不是「蓝色品牌色」，它是**高对比前景色** ——
+   深色主题下是近白（#f9fafb），配上写死的 color:#fff 就成了白底白字，保存按钮直接看不见。
+   浅色主题下它是近黑。所以文字必须跟着 label-primary-foreground 走。 */
+.rpt button.primary {
+  background: var(--dsw-alias-button-primary-fill, var(--dsw-alias-brand-primary, #4D6BFE));
+  color: var(--dsw-alias-label-primary-foreground, #fff);
+  border-color: transparent; font-weight: 500;
+}
+.rpt button.primary:hover:not(:disabled) {
+  background: var(--dsw-alias-button-primary-hover, var(--dsw-alias-brand-primary, #4D6BFE));
+}
 .rpt button.tiny { padding: 2px 8px; font-size: 12px; }
 /* 行尾的删除按钮：小圆点式幽灵按钮，别用带边框的小方块（截图里那个 × 就是它） */
 .rpt button.iconbtn {
