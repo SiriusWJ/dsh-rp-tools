@@ -294,8 +294,16 @@ window.__ModuleLoader__.load({
 .rpc .greet { display: flex; flex-direction: column; gap: 4px; }
 .rpc .macroblk { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 8px;
   background: color-mix(in oklab, currentColor 5%, transparent); }
-.rpc .macrorow, .rpt .macrorow { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+/* 宏行：名称列**固定宽度**（等宽字体 + 定宽，名字长短不一时输入框也齐），
+   值列吃掉剩余宽度，最后一列固定给「自动 / 预设」标记 —— 对齐靠这三列，不靠手写空格 */
+.rpc .macrorows { display: flex; flex-direction: column; gap: 4px; max-height: min(38vh, 320px); overflow: auto; }
+.rpc .macrorow, .rpt .macrorow { display: grid; grid-template-columns: 108px minmax(0, 1fr) 44px; gap: 8px; align-items: center; }
 .rpc .macrorow .mono, .rpt .macrorow .mono { opacity: .8; }
+.rpc .macrorow .mname { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rpc .macrorow .mtag { justify-self: end; font-size: 10.5px; }
+.rpc .macrorow input[type='text'] { height: 30px; padding: 0 8px; font-size: 12.5px; }
+.rpc .macrorow[data-auto='true'] input[type='text'] { opacity: .75; }
+.rpc .macroblk .row.mk { font-size: 12px; font-weight: 600; }
 .rpc .greet select { font-size: 12px; }
 .rpc .prevbox { max-height: 190px; overflow: auto; white-space: pre-wrap; word-break: break-word;
   font-size: 12px; padding: 8px; border-radius: 8px; background: color-mix(in oklab, currentColor 6%, transparent); }
@@ -336,6 +344,8 @@ window.__ModuleLoader__.load({
       // 本地 LoRA 清单（读 ComfyUI）+ 新增风格表单
       const [loras, setLoras] = React.useState(null);
       const [loraErr, setLoraErr] = React.useState('');
+      // 宿主给的自动宏名单（设置页要把「哪些宏不用填」提示出来）
+      const [autoMacros, setAutoMacros] = React.useState([]);
       const [showNew, setShowNew] = React.useState(false);
       const [newStyle, setNewStyle] = React.useState({ key: '', label: '', lora: '', trigger: '', notes: '' });
       // 界面里做过但还没提交的增删操作（保存时一次性交给宿主）
@@ -357,6 +367,8 @@ window.__ModuleLoader__.load({
           if (!data?.ok) throw new Error(data?.error ?? '读取失败');
           setState(data);
           setDraft(JSON.parse(JSON.stringify(data.config)));
+          // 自动宏名单由宿主给（`{{time}}` 那一族 + 年月日时分秒分量）：界面只负责提示，不自己抄一份
+          setAutoMacros(Array.isArray(data.autoMacros) ? data.autoMacros : []);
           setTools(toolData?.tools ?? []);
           setLoras(Array.isArray(loraData?.loras) ? loraData.loras : []);
           setLoraErr(loraData?.ok === false ? String(loraData.error ?? '读不到 LoRA 清单') : '');
@@ -650,12 +662,16 @@ window.__ModuleLoader__.load({
                   setDraft({ ...draft, cards: { ...(draft.cards ?? {}), macros } });
                 },
               }, '＋ 添加默认宏'),
-              // 说人话：左边名字 → 右边默认值，一个具体的例子把规则讲完
+              // 说人话：左边名字 → 右边默认值，一个具体的例子把规则讲完；
+              // 再列出**自动宏**（不用填，装配时现算）—— 卡里常见的那几个就在里面
               h('div', { key: 'hint', className: 'dim' },
                 Object.keys(draft.cards?.macros ?? {}).length === 0
                   ? '还没有默认宏。点「＋ 添加默认宏」，名字填 user、值填玩家 —— 卡里的 {{user}} 就会用这个名字。'
                   : '左边是宏名（对应文本里的 {{…}}），右边是默认值。会话里填过的用它自己那份，这里只影响没填过的会话。' +
                     `例：user → ${draft.cards?.macros?.user || '玩家'} 表示把 {{user}} 换成「${draft.cards?.macros?.user || '玩家'}」。`),
+              h('div', { key: 'auto', className: 'dim' },
+                `自动宏（不用在这里填，装配时按当前时间现算）：${(autoMacros ?? []).map((n) => `{{${n}}}`).join('、') || '（宿主没提供）'}。`
+                + '导入界面里它们会标「自动」；在这里给它一个默认值就等于钉成固定值。'),
             ]),
           ]),
           h('div', { key: 'note', className: 'dim' },
@@ -1911,23 +1927,15 @@ window.__ModuleLoader__.load({
       const [autoStart, setAutoStart] = React.useState(true);
       // 用第几条开场白（导入时随请求发给宿主）
       const [greetingIndex, setGreetingIndex] = React.useState(0);
-      // 宏行（导入表单用）：只列**卡里真出现**的宏名 + user，值用设置页「默认宏列表」预填
+      // 宏行（导入表单用）：只列**卡里真出现**的宏名 + user，值用设置页「默认宏列表」预填。
+      // 名字不可改、也不提供增删 —— 它来自卡里的占位符，多一行少一行都会和卡对不上；
+      // 想预设更多默认值就去设置页的「默认宏列表」加（那边的名字可以改）。
       const [macroRows, setMacroRows] = React.useState([{ name: 'user', value: '' }]);
-      const [newMacroName, setNewMacroName] = React.useState('');
       // 设置页那份默认宏列表（`config.cards.macros`）：只当**预填值**用；会话里填过的以会话为准
       const [globalMacros, setGlobalMacros] = React.useState({});
       const globalMacrosRef = React.useRef({});
       globalMacrosRef.current = globalMacros;
       const setMacroRow = (i, value) => setMacroRows((rows) => rows.map((r, j) => (j === i ? { ...r, value } : r)));
-      const removeMacroRow = (i) => setMacroRows((rows) => rows.filter((_, j) => j !== i));
-      /** 导入表单里加一行自定义宏（名字按宿主变量规则校验）。 */
-      function addMacroRow() {
-        const name = newMacroName.trim().toLowerCase();
-        if (!MACRO_RE.test(name)) { setMsg({ kind: 'err', text: '宏名只能用 小写字母开头 + 小写字母/数字/下划线' }); return; }
-        if (macroRows.some((r) => r.name === name)) { setMsg({ kind: 'err', text: `已经有 {{${name}}} 了` }); return; }
-        setMacroRows((rows) => [...rows, { name, value: String(globalMacrosRef.current[name] ?? '') }]);
-        setNewMacroName('');
-      }
       /** 卡预览回来后，用「卡里扫到的宏名」重建行（已经填过的值保留）。 */
       function applyDiscoveredMacros(found, macrosOverride) {
         const defaults = macrosOverride ?? globalMacrosRef.current ?? {};
@@ -1938,9 +1946,9 @@ window.__ModuleLoader__.load({
           return names.map((name) => ({
             name,
             auto: autoSet.has(name),
-            // 默认值来自设置页的「默认宏列表」（user 也在里面）；用户随手改掉只影响本会话。
-            // 只有卡里出现的名字才建行 —— 默认列表里其它条目不必塞进表单（注入时照样兜底生效）。
-            value: byName.get(name) ?? String(defaults[name] ?? ''),
+            // 默认值来自设置页的「默认宏列表」（user 也在里面）；用户填过的保留。
+            // ⚠️ 空串要当「还没填」——初始那行 `{name:'user', value:''}` 否则会把默认值顶掉。
+            value: String(byName.get(name) ?? '').trim() || String(defaults[name] ?? ''),
           }));
         });
       }
@@ -2228,31 +2236,32 @@ window.__ModuleLoader__.load({
           : null,
         preview.world ? h('div', { key: 'w', className: 'prevbox' }, preview.world) : null,
         preview.character?.personality ? h('div', { key: 'p', className: 'prevbox' }, preview.character.personality) : null,
-        // ── 宏（第一次导入时让用户填；默认取全局玩家称呼，可改，也可加自定义 {{x}}）──
+        // ── 宏（第一次导入时让用户填）──────────────────────────────────────
+        // 名字是**卡里扫到的**占位符，不可改也不可删（改了就对不上卡里的 `{{x}}`）；
+        // 值从设置页「默认宏列表」预填，留空则用默认值 / 自动宏每轮现算。
         // 这些值**按会话保存**，世界书/设定里写的 `{{x}}` 由宿主变量在注入时替换，
         // 所以以后在 RP 面板里改值，已导入的文本会跟着变。
         h('div', { key: 'macros', className: 'macroblk' }, [
-          h('div', { key: 't', className: 'dim' },
-            '宏（按会话保存）：卡里用到的 {{…}} 留在这里填，也可以自己加一行。'
-            + `这里只填**会话级**的值；设置页「默认宏列表」里的同名条目会先预填进来（user 现在是「${globalMacros.user || '玩家'}」）。`),
-          ...macroRows.map((row, i) => h('div', { key: `m${i}`, className: 'row macrorow' }, [
-            h('span', { key: 'n', className: 'mono' }, `{{${row.name}}}`),
-            // 自动宏（time/date/…）：后台每轮自己算，用户不用填；留空即可，想钉死游戏内时间也可以填
-            row.auto ? h('span', { key: 'a', className: 'badge ok', title: '自动：装配时按当前时间/日期填写，留空即可' }, '自动') : null,
+          h('div', { key: 'h', className: 'row' }, [
+            h('span', { key: 't', className: 'mk' }, `宏（${macroRows.length}）`),
+            h('span', { key: 'd', className: 'dim' },
+              `值已按设置页「默认宏列表」预填（共 ${Object.keys(globalMacros).length} 条）；留空 = 用它自己那份或自动`),
+          ]),
+          h('div', { key: 'rows', className: 'macrorows' }, macroRows.map((row, i) => h('div', {
+            key: `m${i}`, className: 'row macrorow', 'data-auto': row.auto ? 'true' : 'false',
+          }, [
+            h('span', { key: 'n', className: 'mono mname', title: row.auto ? '自动宏：每轮由系统按当前时间/日期填写' : `文本里的 {{${row.name}}} 会换成这里填的值` }, `{{${row.name}}}`),
             h('input', {
               key: 'v', type: 'text', value: row.value,
-              placeholder: row.auto ? '留空 = 自动（当前时间/日期）' : (row.name === 'user' ? '玩家称呼' : '这一项的值'),
+              placeholder: row.auto ? '留空 = 自动' : (row.name === 'user' ? '玩家' : '默认值'),
               onChange: (e) => setMacroRow(i, e.target.value),
             }),
-            h('button', { key: 'd', className: 'tiny', onClick: () => removeMacroRow(i) }, '×'),
-          ])),
-          h('div', { key: 'add', className: 'row' }, [
-            h('input', {
-              key: 'nn', type: 'text', value: newMacroName, placeholder: '自定义宏名（小写字母/数字/下划线）',
-              onChange: (e) => setNewMacroName(e.target.value),
-            }),
-            h('button', { key: 'ab', className: 'tiny', onClick: addMacroRow }, '＋ 添加宏'),
-          ]),
+            row.auto
+              ? h('span', { key: 'a', className: 'badge ok mtag', title: '自动：装配时按当前时间/日期填写，留空即可' }, '自动')
+              : (String(row.value).trim() && String(globalMacros[row.name] ?? '') === row.value
+                ? h('span', { key: 'p', className: 'badge mtag', title: '这个值来自设置页的「默认宏列表」；改了就只影响本会话' }, '预设')
+                : h('span', { key: 'p2', className: 'mtag' })),
+          ]))),
         ]),
         h('label', { key: 'auto', className: 'cb' }, [
           h('input', { key: 'c', type: 'checkbox', checked: autoStart, onChange: (e) => setAutoStart(e.target.checked) }),

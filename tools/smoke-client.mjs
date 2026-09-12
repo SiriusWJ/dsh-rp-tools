@@ -135,6 +135,8 @@ const sessionStub = {
 const stateStub = {
   defaultStyle: 'manga', styles: { manga: { label: '黑白漫画' } }, comfyui: {}, negative: '',
   cards: { root: '', userLabel: '阿岚', macros: { user: '阿岚', place: '长安' } },
+  // 宿主给的自动宏名单（设置页要提示「哪些宏不用填」）
+  autoMacros: ['time', 'date', 'datetime', 'isotime', 'localtime', 'timezone', 'weekday', 'year', 'month', 'day', 'hour', 'minute', 'second'],
 };
 /**
  * 宿主对「会话闸门」的回答（是不是 dm / 有没有开局）。
@@ -169,8 +171,13 @@ globalThis.fetch = async (url, options = {}) => {
         name: '长安', personality: '【设定】……', first_mes: '开场白',
         greetingSource: 'alternate_greetings', greetingAlternatives: 4,
       },
-      // 卡里扫到的宏名：导入表单只列这些（+ user），值用设置页的默认宏列表预填
-      macros: [{ name: 'user', count: 5, auto: false }, { name: 'place', count: 2, auto: false }],
+      // 卡里扫到的宏名：导入表单只列这些（+ user），值用设置页的默认宏列表预填；
+      // `year` 是自动宏（宿主每轮现算），界面要标「自动」而不是让人手填
+      macros: [
+        { name: 'user', count: 5, auto: false },
+        { name: 'year', count: 4, auto: true },
+        { name: 'place', count: 2, auto: false },
+      ],
       summary: [], warnings: [],
     });
   }
@@ -240,6 +247,8 @@ globalThis.fetch = async (url, options = {}) => {
       // 默认宏列表（设置页）：导入表单的预填值来源。userLabel 是宿主同步出来的老字段。
       // stateStub 可变：空列表那条用例会临时清空它。
       config: stateStub,
+      // 自动宏名单（顶层字段，设置页用它提示「哪些宏不用填」）
+      autoMacros: stateStub.autoMacros,
       styles: [{ key: 'manga', label: '黑白漫画', builtin: true }],
     });
   }
@@ -498,16 +507,28 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   const importBtn = findAll(tree2, (n) => String(n.props?.className ?? '').includes('primary')
     && textOf(n).includes('导入并开始'));
   assert.equal(importBtn.length, 1, '空白会话上按钮文案应是「导入并开始」');
-  // 宏：导入表单要给 {{user}} 一行（默认取全局玩家称呼），也能加自定义宏
-  assert.ok(previewText.includes('宏（按会话保存）'), true);
+  // 宏：导入表单按「只填值」来 —— 名字来自卡里的占位符，**不能加也不能删**
+  assert.ok(previewText.includes('宏（3）'), '宏区块要显示条数（user + year + place）');
   assert.ok(previewText.includes('{{user}}'), true);
-  assert.ok(previewText.includes('＋ 添加宏'), true);
+  assert.equal(previewText.includes('＋ 添加宏'), false, '导入表单不再提供「添加宏」');
+  assert.equal(findAll(tree2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '×').length, 0,
+    '导入表单不能删宏（名字要和卡对得上）');
+  assert.ok(previewText.includes('默认宏列表'), '要说明值来自设置页的默认宏列表');
+  // 自动宏（这里是 {{year}}）：标「自动」+ 说明留空即自动，不要求手填
+  assert.ok(previewText.includes('{{year}}'), '卡里扫到的自动宏也要列出来');
+  assert.ok(previewText.includes('自动'), '自动宏要标出「自动」');
+  const yearRow = byClass(tree2, 'macrorow').find((row) => textOf(row).includes('{{year}}'));
+  assert.ok(yearRow, '应能找到 year 那一行');
+  assert.equal(String(yearRow.props['data-auto']), 'true', '自动宏那行要有 data-auto 标记');
+  const yearInput = findAll(yearRow, (n) => n.type === 'input')[0];
+  assert.equal(yearInput.props.placeholder, '留空 = 自动', '自动宏的占位提示应说明留空即自动');
   // 导入表单只列**卡里真出现**的宏（+ user），值用设置页「默认宏列表」预填：
   // 卡里扫到 place → 用默认值「长安」；默认列表里其它键不会凭空塞进来。
   assert.ok(previewText.includes('{{place}}'), '卡里扫到的宏要出现在导入表单');
-  const macroInputs = findAll(tree2, (n) => n.type === 'input' && String(n.props.className ?? '').includes('macro')
-    || (n.type === 'input' && n.props.placeholder === '这一项的值'));
+  assert.ok(previewText.includes('预设'), '来自默认宏列表的值要标出「预设」');
+  const macroInputs = findAll(tree2, (n) => n.type === 'input' && ['阿岚', '长安'].includes(n.props.value));
   assert.ok(macroInputs.some((n) => n.props.value === '长安'), '进入表单的宏要用默认宏列表预填值');
+  assert.ok(macroInputs.some((n) => n.props.value === '阿岚'), 'user 也要带上默认值');
 
   // ④-b 读盘的卡路由**必须带上会话身份**。
   // ⚠️ 真事故：`API.card` 曾写成 `card: (path) => ...`，把调用点传的 workspace 悄悄吞掉，
@@ -910,6 +931,9 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   const text = textOf(tree);
   assert.ok(text.includes('默认宏列表'), '设置页应有「默认宏列表」');
   assert.equal(text.includes('玩家称呼'), false, '「玩家称呼」应已被默认宏列表取代');
+  // 自动宏要在设置页提示出来：哪些宏根本不用填、由宿主现算
+  assert.ok(text.includes('自动宏'), '设置页要提示自动宏');
+  assert.ok(text.includes('{{year}}') && text.includes('{{time}}'), '自动宏名单要列出来（含年月日分量）');
   // 每条默认宏 = 名称输入框 + 值输入框（名字可改就是「不只是值一个框」的含义）
   const rows = findAll(tree, (n) => String(n.props?.className ?? '').includes('macrorow'));
   assert.equal(rows.length, 2, '两条默认宏应各占一行');

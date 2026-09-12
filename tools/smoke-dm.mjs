@@ -1263,6 +1263,31 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('迁移过之后删除不再补回', Object.hasOwn(again.json.config?.cards?.macros ?? {}, 'user'), false);
 }
 
+// ── 自动宏：日期/时间及其**分量**都由宿主现算（用户不用填）────────────────────
+// 用户反馈「很多宏其实可以自动设置」——`{{year}}年{{month}}月{{day}}日` 这种写法在卡里
+// 很常见，以前要手填。现在它们全在 AUTO_MACROS 里，导入界面会标「自动」。
+{
+  const discovered = mod.__debug.discoverMacros('{{year}}年{{month}}月{{day}}日 {{time}} {{location}}');
+  const byName = Object.fromEntries(discovered.map((m) => [m.name, m]));
+  check('自动宏：year 判为自动', byName.year?.auto, true);
+  check('自动宏：month 判为自动', byName.month?.auto, true);
+  check('自动宏：day 判为自动', byName.day?.auto, true);
+  check('自动宏：非时间类不算自动', byName.location?.auto, false);
+  check('自动宏：自动的排在前面', discovered[0]?.auto, true);
+
+  const now = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  check('自动宏：year 取当前年份', mod.__debug.autoMacroValue('year'), String(now.getFullYear()));
+  check('自动宏：month 两位补零', mod.__debug.autoMacroValue('month'), p2(now.getMonth() + 1));
+  check('自动宏：day 两位补零', mod.__debug.autoMacroValue('day'), p2(now.getDate()));
+  check('自动宏：宏表给了固定值就优先（可以钉死游戏内年份）', mod.__debug.autoMacroValue('year', { year: '1987' }), '1987');
+  check('自动宏：未知名字返回空串', mod.__debug.autoMacroValue('nope'), '');
+
+  // 设置页要能拿到这份名单（界面据此提示「哪些宏不用填」）
+  const st = await callGet('/rp-tools/state');
+  check('设置页：宿主给出自动宏名单', Array.isArray(st.json.autoMacros) && st.json.autoMacros.includes('year'), true);
+}
+
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 console.log(`数据目录（临时，即将删除）: ${TEST_HOME}`);
 rmSync(TEST_HOME, { recursive: true, force: true });
