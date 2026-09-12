@@ -191,6 +191,7 @@ ComfyUI     Comfy Desktop 0.35.0 · http://127.0.0.1:8188 · RTX 5080 16GB
 
 | 版本 | 主要变化 |
 |---|---|
+| **1.8.2** | **会话工作区解析改为四级链**（内存 → `ctx.get('sessions')` 按 id 现查 → 会话配置里落盘的 `cwd` → 请求参数）：此前只有进程内存，重启后恢复的会话拿不到工作区，卡库/世界书路径随之落空。**「拿不到工作区」不再是猜路径**：`safeCardPath` 要求根目录非空且绝对，否则 400 并说明原因（原先 `resolve('')` = 进程 cwd，报出 `stat '<AppData>\同人\X.png'` 这种莫名的 ENOENT）。客户端所有读盘卡路由（列表/预览/卡面）都带 `sessionId`，并修掉 `API.card` **吞掉 workspace 参数**的写法；`ensureCwd()` 缺 cwd 时回宿主问一次。测试：smoke-dm 323 条（新增工作区解析链 4 条 + 空根目录回归）、smoke-client 新增「卡请求必须带会话身份」「cwd 缺失要回宿主问」两组，均做过变异验证 |
 | 1.0.0 | 只有 `rp_random`（骰子/区间/抽取/布尔） |
 | 1.1.0 | 新增 7 个 RP 工具；生图从「依赖 dsh-comfyui 工作流库」改为**直连 ComfyUI + 自建同源媒体代理**；风格库内置 10 种（含默认 `manga`）；**会话级隔离**（世界/角色卡/随机表/前缀/风格）；设置页「RP工具」（含工具清单与参数说明）；DM 会话头部「🎲 RP」浮层面板；负面词改全局并预置一套；RP 工具**只在 dm 预设作用域注册**；dm 预设白名单与桥接插件 |
 | 1.1.1 | DM 判定收敛为**权威方案**（客户端读 `projectionValues.agentPreset`，宿主 `agent/created` 直接读 `agent.options.preset` 自动登记）；修掉「空串短路兜底」导致的入口静默不出现；删掉 `rp-bridge.mjs` 里靠猜测取会话 id 的登记逻辑；**RP 面板从自绘浮层改为右侧栏页签**（`sidebar.right.pane.tab`），入口移到头部右上角；新增 `tools/smoke-dm.mjs` |

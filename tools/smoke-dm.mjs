@@ -74,13 +74,17 @@ const systemPromptStub = {
 // （这是架构约束的回归测试：注入只允许发生在 dm 预设的 agent 作用域。）
 // 同时记录全局注册了哪些工具：**必须是零个**。
 const globalTools = [];
+// 宿主会话注册表桩（`ctx.get('sessions')`）：模拟「这个会话在本进程里活着」的情况。
+// 插件的 liveSessionCwd 会来这里按 id 查 `session.header.cwd` —— 真机上这是补住
+// 「重启后内存 Map 里没有该会话」空档的一级兜底。
+const liveSessions = new Map();
 const hostCtx = {
   tools: { register: (t) => { tools.set(t.name, t); globalTools.push(t.name); } },
   on,
   effect: (fn) => { fn(); },
   webServer: { register: (r) => { routes.set(r.path, r); } },
   inject: (names, fn) => { fn(hostCtx); },
-  get: () => undefined,
+  get: (name) => (name === 'sessions' ? { get: (id) => liveSessions.get(id) } : undefined),
 };
 mod.apply(hostCtx);
 
@@ -763,6 +767,43 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('cards：分类取自路径第二段', listed.json.items?.[0]?.category, '测试分类');
   check('cards：分类清单含测试分类', listed.json.categories?.some((c) => c.name === '测试分类'), true);
   check('cards：加密目录被跳过', listed.json.items?.some((i) => i.name === '坏卡'), false);
+
+  // ── 工作区解析链：内存 → 宿主会话注册表 → 落盘 → 请求参数 ────────────────
+  // ★ 真事故回归：卡库/世界书都挂在「会话的工作区」上，而插件对工作区的记忆
+  //   曾经**只有进程内存**（session/created 时填）。重启后恢复的会话不在内存里，
+  //   界面又只传 sessionId 时，根目录落空 → resolve('') = 进程 cwd → 用户看到
+  //   `stat '<AppData>\同人\某卡.png'` 这种莫名其妙的 ENOENT。
+  {
+    // 这一段要验证「卡库默认跟着会话工作区」，所以先清掉显式配置的卡库根
+    await callPost('/rp-tools/config', { cards: { root: '' } });
+    const id = crypto.randomUUID();
+    const wsLive = join(TEST_HOME, 'ws-live');
+    mkdirSync(join(wsLive, 'rp-cards', '同人'), { recursive: true });
+    writeFileSync(join(wsLive, 'rp-cards', '同人', '活着的卡.png'), simpleCardPng('活着的卡'));
+    // ① 宿主注册表认识它（= 本进程加载过这个会话）：只给 sessionId 就够
+    liveSessions.set(`session-${id}`, { header: { cwd: wsLive } });
+    const viaLive = await callGet('/rp-tools/card', `?sessionId=${id}&path=${encodeURIComponent('同人/活着的卡.png')}`);
+    check('card：只给 sessionId 也能解析（宿主注册表现查）', viaLive.json.name, '活着的卡');
+    const sessGet = await callGet('/rp-tools/session', `?sessionId=${id}`);
+    check('session：GET 返回 cwd（界面 ensureCwd 的兜底来源）', sessGet.json.cwd, wsLive);
+    check('card：解析顺手把 cwd 落盘（会话配置）', JSON.parse(readFileSync(join(TEST_HOME, 'data', 'dsh-rp-tools', 'sessions', `${id}.json`), 'utf8')).cwd, wsLive);
+
+    // ② 模拟重启：内存清空、宿主注册表也不认识它 —— 只剩落盘那份
+    liveSessions.delete(`session-${id}`);
+    mod.__debug.forgetSessionCwd(id);
+    const afterRestart = await callGet('/rp-tools/card', `?sessionId=${id}&path=${encodeURIComponent('同人/活着的卡.png')}`);
+    check('card：重启后也能靠落盘的 cwd 解析', afterRestart.json.name, '活着的卡');
+    check('workspace 解析链：落盘命中', mod.__debug.resolveWorkspaceDir(id, ''), wsLive);
+
+    // ③ 四级全落空 → null（调用方据此报「拿不到工作区」，而不是猜一个进程 cwd）
+    const stranger = crypto.randomUUID();
+    check('workspace 解析链：完全不知道时返回 null', mod.__debug.resolveWorkspaceDir(stranger, ''), null);
+    // ④ 调用方给的绝对路径仍然有效，并且会被记住
+    check('workspace 解析链：请求参数兜底', mod.__debug.resolveWorkspaceDir(stranger, wsLive), wsLive);
+    check('workspace 解析链：兜底后也记住了', mod.__debug.resolveWorkspaceDir(stranger, ''), wsLive);
+    // 还原后面用例依赖的显式卡库根
+    await callPost('/rp-tools/config', { cards: { root: libRoot } });
+  }
 
   const rel = 'cards/测试分类/烟测卡.card.png';
   const searched = await callGet('/rp-tools/cards', `?q=${encodeURIComponent('烟测')}&limit=10`);

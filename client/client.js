@@ -31,6 +31,23 @@ window.__ModuleLoader__.load({
       body: JSON.stringify(body ?? {}),
     }).then((r) => r.json());
 
+    /**
+     * 拼查询串：丢掉空值。
+     *
+     * ⚠️ 这里踩过一次：`API.card` 原先写成 `card: (path) => ...`，把调用点传进来的
+     * 工作区**悄悄吞掉了** —— 请求里既没有 sessionId 也没有 workspace，宿主无从判断
+     * 「哪个会话的卡库」，于是根目录落空、退化成 `resolve('')` = 进程 cwd 的 ENOENT。
+     * 所有会读盘的卡路由都必须带上 `sessionId`（有 cwd 再带上 workspace 兜底）。
+     */
+    const qs = (params) => {
+      const sp = new URLSearchParams();
+      for (const [k, v] of Object.entries(params ?? {})) {
+        if (v === undefined || v === null || v === '') continue;
+        sp.set(k, String(v));
+      }
+      return sp.toString();
+    };
+
     const API = {
       state: () => jget('/rp-tools/state'),
       save: (body) => jpost('/rp-tools/config', body),
@@ -42,8 +59,8 @@ window.__ModuleLoader__.load({
       saveSession: (body) => jpost('/rp-tools/session', body),
       roll: (body) => jpost('/rp-tools/roll', body),
       loras: () => jget('/rp-tools/loras'),
-      cards: (params) => jget(`/rp-tools/cards?${new URLSearchParams(params ?? {}).toString()}`),
-      card: (path) => jget(`/rp-tools/card?path=${encodeURIComponent(path)}`),
+      cards: (params) => jget(`/rp-tools/cards?${qs(params)}`),
+      card: (path, params) => jget(`/rp-tools/card?${qs({ path, ...(params ?? {}) })}`),
       cardImport: (body) => jpost('/rp-tools/card-import', body),
       lore: (sessionId) => jget(`/rp-tools/lore?sessionId=${encodeURIComponent(sessionId)}`),
       loreEntry: (sessionId, title) => jget(`/rp-tools/lore?sessionId=${encodeURIComponent(sessionId)}&title=${encodeURIComponent(title)}`),
@@ -54,11 +71,10 @@ window.__ModuleLoader__.load({
     const MACRO_RE = /^[a-z][a-z0-9_]{0,31}$/;
 
     /**
-     * 卡面图 URL。卡库默认在**会话工作区**下的 rp-cards/，所以要把 cwd 一起带上，
-     * 宿主才能把相对路径解析到同一个根（不然会按内置卡库去查、404）。
+     * 卡面图 URL。卡库默认在**会话工作区**下的 rp-cards/，所以要把 sessionId + cwd 一起带上，
+     * 宿主才能把相对路径解析到同一个根（只给 sessionId 也行：宿主会自己查会话的工作区）。
      */
-    const cardImageUrl = (rel, workspace) => `/rp-tools/card-image?path=${encodeURIComponent(rel)}`
-      + (workspace ? `&workspace=${encodeURIComponent(workspace)}` : '');
+    const cardImageUrl = (rel, workspace, sessionId) => `/rp-tools/card-image?${qs({ path: rel, workspace, sessionId })}`;
 
     let stylesInjected = false;
     function injectStyles() {
@@ -1161,8 +1177,8 @@ window.__ModuleLoader__.load({
             // 导入 PNG 卡时登记的卡面（会话配置里的 portraits）：没生成过立绘时直接当立绘用，
             // 生成过就排在生成图下面 —— 卡面是「原图」，不覆盖用户的出图结果。
             const cardRel = pkey ? draft?.portraits?.[pkey]?.card : undefined;
-            // 卡库默认在会话工作区下 → 拼卡面 URL 也要带上 cwd（state.cwd 来自 /rp-tools/session）
-            const cardUrl = typeof cardRel === 'string' && cardRel ? cardImageUrl(cardRel, state?.cwd ?? '') : '';
+            // 卡库默认在会话工作区下 → 拼卡面 URL 也要带上 sessionId + cwd（cwd 来自 /rp-tools/session）
+            const cardUrl = typeof cardRel === 'string' && cardRel ? cardImageUrl(cardRel, state?.cwd ?? '', sessionId) : '';
             const setField = (field, value) => {
               const n = [...chars];
               n[i] = { ...n[i], [field]: value };
@@ -1707,8 +1723,8 @@ window.__ModuleLoader__.load({
       async function load(query, cat = category) {
         setLoading(true);
         try {
-          // 卡库默认在会话工作区下的 rp-cards/ → 把 cwd 一起报上去
-      const res = await API.cards({ q: query, category: cat, limit: 60, workspace: await ensureCwd() });
+          // 卡库默认在会话工作区下的 rp-cards/ → sessionId（优先）+ cwd 一起报上去
+          const res = await API.cards({ q: query, category: cat, limit: 60, workspace: await ensureCwd(), sessionId: live.current.sessionId });
           if (!res?.ok) throw new Error(res?.error ?? '读取卡库失败');
           setLib({ root: res.root, exists: res.exists, indexSource: res.indexSource, librarySize: res.librarySize, categories: res.categories ?? [] });
           setItems(res.items ?? []);
@@ -1735,7 +1751,7 @@ window.__ModuleLoader__.load({
         setResult(null);
         setBusy('preview');
         try {
-          const res = await API.card(cardPath, await ensureCwd());
+          const res = await API.card(cardPath, { workspace: await ensureCwd(), sessionId: live.current.sessionId });
           if (!res?.ok) throw new Error(res?.error ?? '解析失败');
           setPreview(res);
           applyDiscoveredMacros(res.macros);

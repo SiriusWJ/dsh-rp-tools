@@ -175,6 +175,8 @@ globalThis.fetch = async (url, options = {}) => {
   if (target.startsWith('/rp-tools/session')) {
     return reply({
       ok: true, isDm: true, preset: 'dm',
+      // 界面 ensureCwd 的兜底来源：会话工作区（真机上是 resolveWorkspaceDir 那四级链的结果）
+      cwd: 'D:\\Story',
       session: {
         sessionId: 'session-abc', preset: 'dm', defaultStyle: null,
         campaign: { name: '长安', prompt_prefix: '' }, characters: [], characterIndex: [],
@@ -410,6 +412,22 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.ok(previewText.includes('{{user}}'), true);
   assert.ok(previewText.includes('＋ 添加宏'), true);
 
+  // ④-b 读盘的卡路由**必须带上会话身份**。
+  // ⚠️ 真事故：`API.card` 曾写成 `card: (path) => ...`，把调用点传的 workspace 悄悄吞掉，
+  //    请求里只剩 `?path=`，宿主无从判断「哪个会话的卡库」→ 根目录落空 →
+  //    `resolve('')` = 进程 cwd → `stat '<AppData>\同人\某卡.png'` 的 ENOENT。
+  const cardGets = calls.filter((c) => c.url.startsWith('/rp-tools/card?'));
+  assert.ok(cardGets.length >= 1, '预览应发出 /rp-tools/card 请求');
+  for (const c of cardGets) {
+    assert.ok(c.url.includes(`sessionId=${SID}`), `卡预览必须带 sessionId（实际：${c.url}）`);
+    assert.ok(c.url.includes('workspace='), `卡预览必须带 workspace（实际：${c.url}）`);
+  }
+  const cardListGets = calls.filter((c) => c.url.startsWith('/rp-tools/cards?'));
+  assert.ok(cardListGets.length >= 1, '展开面板应拉过卡库列表');
+  for (const c of cardListGets) {
+    assert.ok(c.url.includes(`sessionId=${SID}`), `卡库列表必须带 sessionId（实际：${c.url}）`);
+  }
+
   // ⑤ 导入：切 dm 预设 → POST 导入 → 把开场指令塞进输入框并提交
   importBtn[0].props.onClick();
   await tick(80);
@@ -578,6 +596,36 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.equal(lorePost.body.action, 'update', '编辑已有条目应走 update');
   assert.equal(lorePost.body.title, '长安城', 'update 应带上原名（改名时用它定位）');
   assert.equal(lorePost.body.entry.constant, true, '勾选状态应写进 constant');
+}
+
+// ── 关键断言 ⑤：会话工作区「界面不知道」时必须回宿主问 ──────────────────────
+// 真机上就是这么没的：会话列表投影里没有 cwd（刚新建 / 列表还没回来 / 重启后恢复），
+// 而宿主那边也只记内存。两处都不知道 → 卡库根落空。这里钉住界面这一半的兜底：
+// cwd 缺失 → 必须去 /rp-tools/session 问一次，并把拿到的 cwd 用在后续读盘请求上。
+{
+  const tab = slotRegs.find((r) => r.name === 'conversation.input.dock');
+  calls.length = 0;                 // 只关心这一段发出的请求
+  rt.cells = [];                    // 重新挂载，清掉上一步的面板状态
+  const noCwd = () => propsFor({ blank: true, preset: 'dm', cwd: '' });
+  byClass(render(noCwd(), tab.component), 'rpc-chip')[0].props.onClick();
+  // 兜底路径要等「问宿主 → 再拉卡库」两跳，所以轮询到稳定再断言（定长 tick 不够稳）
+  let tree = render(noCwd(), tab.component);
+  for (let i = 0; i < 12 && !textOf(tree).includes('3269'); i++) {
+    await tick(30);
+    tree = render(noCwd(), tab.component);
+  }
+  assert.ok(textOf(tree).includes('3269'), `拿不到 cwd 时面板仍要能列出卡库（实际：${textOf(tree).slice(0, 80)}）`);
+  const listGet = calls.filter((c) => c.url.startsWith('/rp-tools/cards?')).pop();
+  assert.ok(listGet, '应拉过卡库列表');
+  assert.ok(/workspace=D%3A%5CStory|workspace=D:\\Story/.test(listGet.url),
+    `cwd 缺失时应先用 /rp-tools/session 问回来再列卡库（实际：${listGet.url}）`);
+  assert.ok(calls.some((c) => c.url.startsWith('/rp-tools/session?')), 'cwd 缺失时应问过 /rp-tools/session');
+  // 预览请求同样要带上问回来的 cwd
+  byClass(tree, 'item')[0].props.onClick();
+  await tick(60);
+  const prevGet = calls.filter((c) => c.url.startsWith('/rp-tools/card?')).pop();
+  assert.ok(prevGet && prevGet.url.includes(`sessionId=${SID}`), '预览要带 sessionId');
+  assert.ok(prevGet.url.includes('workspace='), `预览要带上问回来的 cwd（实际：${prevGet.url}）`);
 }
 
 console.log('客户端冒烟测试通过：');
