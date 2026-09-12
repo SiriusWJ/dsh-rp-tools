@@ -735,10 +735,10 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('导入：世界书写进本会话自己的目录', imported.json.files?.world, `rp-sessions/${IMPORT_SID}/rp-worldbook.md`);
   check('导入：世界书文件真的在会话目录里', existsSync(LORE_FILE), true);
   check('导入：旧的共享世界书没被改写', readFileSync(join(ws, 'rp-worldbook.md'), 'utf8').includes('烟测条目'), false);
-  check('导入：全文文件已写出', existsSync(join(ws, 'rp-cards', '烟测卡.card.md')), true);
-  check('导入：卡 JSON 已写出', existsSync(join(ws, 'rp-cards', '烟测卡.card.json')), true);
-  check('导入：卡面已复制（当立绘）', existsSync(join(ws, 'rp-cards', '烟测卡.card.png')), true);
-  check('导入：立绘登记在会话里', imported.json.files?.image, 'rp-cards/烟测卡.card.png');
+  check('导入：全文文件已写出（写在会话目录里）', existsSync(join(ws, 'rp-sessions', IMPORT_SID, 'cards', '烟测卡.card.md')), true);
+  check('导入：卡 JSON 已写出', existsSync(join(ws, 'rp-sessions', IMPORT_SID, 'cards', '烟测卡.card.json')), true);
+  check('导入：卡面已复制（当立绘）', existsSync(join(ws, 'rp-sessions', IMPORT_SID, 'cards', '烟测卡.card.png')), true);
+  check('导入：立绘登记在会话里', imported.json.files?.image, `rp-sessions/${IMPORT_SID}/cards/烟测卡.card.png`);
   check('导入：返回开场指令', String(imported.json.opening).includes('不要再问世界从哪来'), true);
 
   const wbText = readFileSync(LORE_FILE, 'utf8');
@@ -752,9 +752,9 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('导入：会话世界里的占位符已展开', String(sess.json.session?.world).includes('玩家站在门外'), true);
   check('导入：返回占位符统计', (imported.json.placeholders?.total ?? 0) >= 2, true);
   // 开场白引导文件：全部开场白都写进去（不截断），DM 需要时自己 read
-  check('导入：写出开场白引导文件', existsSync(join(ws, 'rp-cards', '烟测卡.card.opening.md')), true);
-  check('导入：结果里有引导文件路径', imported.json.files?.opening, 'rp-cards/烟测卡.card.opening.md');
-  check('导入：开场指令指向引导文件', String(imported.json.opening).includes('rp-cards/烟测卡.card.opening.md'), true);
+  check('导入：写出开场白引导文件', existsSync(join(ws, 'rp-sessions', IMPORT_SID, 'cards', '烟测卡.card.opening.md')), true);
+  check('导入：结果里有引导文件路径', imported.json.files?.opening, `rp-sessions/${IMPORT_SID}/cards/烟测卡.card.opening.md`);
+  check('导入：开场指令指向引导文件', String(imported.json.opening).includes(`rp-sessions/${IMPORT_SID}/cards/烟测卡.card.opening.md`), true);
   check('导入：会话立绘已登记', sess.json.session?.portraits?.['烟测卡']?.card, rel);
   check('导入：战役名补成卡名', sess.json.session?.campaign?.name, '烟测卡');
 

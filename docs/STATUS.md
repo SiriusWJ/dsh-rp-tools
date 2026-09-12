@@ -13,7 +13,7 @@
 | 生图链路（直连 ComfyUI） | ✅ 已验证 | 组装 API 工作流 → `POST /prompt` → 轮询 `/history` → 同源媒体代理；实测 1024² 13–18s、1344×768 25s |
 | 风格库（10 种内置 + 可自定义） | ✅ 已验证 | `manga`（无 LoRA，默认）+ 9 个官方 Krea-2 LoRA；触发词 / CFG / 步数 / 尺寸预设。设置页可**新增/删除自定义风格**，每条风格的 **LoRA 从本地清单下拉选取**（ComfyUI `/object_info/LoraLoaderModelOnly` → `/rp-tools/loras`）；内置风格不可删 |
 | `rp_illustrate` / `rp_styles` | ✅ 已验证 | 出图、风格列举、aspect→尺寸换算 |
-| **PNG 故事书导入** | ✅ 宿主已验证（界面待确认） | 工作区那一行的「📖 导入 PNG 故事书」：列卡库（3269 张，服务端过滤/分页）→ 预览 → 导入。世界书**追加合并**进 `<工作区>/rp-worldbook.md`、卡全文 `rp-cards/<slug>.md`（超预算条目的去处）、卡面复制当立绘；角色/世界/战役名写进会话配置；自动切 `dm` 预设 + 发开场指令。真卡库实测：160/160 解析成功（中位 1ms）、642 条目的卡导入 25 条 |
+| **PNG 故事书导入** | ✅ 宿主已验证（界面待确认） | 工作区那一行的「📖 导入 PNG 故事书」：列卡库（3269 张，服务端过滤/分页）→ 预览 → 导入。世界书**追加合并**进 `<工作区>/rp-worldbook.md`、卡全文 `rp-sessions/<会话 id>/cards/<slug>.md`（超预算条目的去处）、卡面复制当立绘；角色/世界/战役名写进会话配置；自动切 `dm` 预设 + 发开场指令。真卡库实测：160/160 解析成功（中位 1ms）、642 条目的卡导入 25 条 |
 | `rp_character`（8 字段） | ✅ 已验证 | 增删查 + 立绘；字段含 `first_mes` / `mes_example` 两个**样本字段**（给样本 > 给形容词）。导入的卡面会作为默认立绘显示在角色卡下面 |
 | **提示词注入（两条通道）** | ✅ **已实测生效** | `rp:standing`(order 210) 放战役名/世界设定/**角色索引**；`rp:turn`(order 20) 放**当前状态 + 世界书命中 + 在场角色详细卡**。实测：Cordis 会话为空、dm 会话三条通道齐全 |
 | **世界书** | ✅ 已实现（未实跑） | 会话工作区的 `rp-worldbook.md`；`##` 分条、`keys/constant/order/prob` 标记；触发式注入 + 预算 + 被裁列出标题；`rp_lore` 按条补读 |
@@ -178,7 +178,7 @@ PASS  agent/created 不误登记非 dm =false
 数据        ~/.dsh/data/dsh-rp-tools/{styles.json, sessions/*.json, dm-sessions.json, _agent-probe.json}
 私有卡索引  lib/card-index.js                                    （gitignore；缺失时自动扫目录兜底）
 卡库        D:\Story\sillytavernassets\cards\<分类>\*.png        （3269 张，设置页「卡库目录」可改）
-导入产物    <会话工作区>\{rp-worldbook.md, rp-cards\<slug>.{md,json,png}}
+导入产物    <会话工作区>\rp-sessions\<会话 id>\{rp-worldbook.md, cards\<slug>.{md,json,png}}
 ComfyUI     Comfy Desktop 0.35.0 · http://127.0.0.1:8188 · RTX 5080 16GB
 模型        E:\AI\Models\models\{diffusion_models,text_encoders,vae,loras}
 ```
@@ -198,4 +198,4 @@ ComfyUI     Comfy Desktop 0.35.0 · http://127.0.0.1:8188 · RTX 5080 16GB
 | 1.2.2 | **世界书**（会话工作区的 `rp-worldbook.md`，关键词触发 + 常驻 + 概率 + order + 预算，`rp_lore` 按条补读）；**状态追踪**（`rp_state`：场景/时间/地点/在场/线索 + 队伍 + 自由旗标，空串即清除） |
 | **1.3.0** | **架构收敛：一切都在 dm 作用域。** host 组合不再注册任何模型工具（`rp_random` 也从全局收进 dm，全局 `inject` 改为 `[]`）；**提示词注入从全局 `apply()` 移到 agent 作用域** —— 此前它让每个会话都带上跑团世界观，还得靠「猜当前会话」的启发式（会把别的战役设定注进来），两者都已删除；dm 预设 `keepGlobalTools` 从 11 项缩到 3 项；修复 `/rp-tools/tools` 因删除全局数组而静默 400；测试补「路由体检」与「作用域隔离」断言，共 **146 条** |
 | **1.5.0** | **世界书改为按会话隔离**（<工作区>/rp-sessions/<会话 id>/rp-worldbook.md）—— 修掉「同工作区两个会话的世界书混到一起」的事故：原先它放在工作区根目录，而工作区是按目录共享的；老文件首次读取时一次性迁移一份（保留原文件）。另：开场白改用**引导文件**（p-cards/*.opening.md，不截断，全部开场白都在里面）+ 面板可选第几条；截断不再往正文里插「（已截断…）」；世界书条目可查看详情/编辑/新建/删除 + 常驻就地开关；属性标签中文化（name:→名称、gender: Female→性别：女） |
-| **1.4.0** | **PNG 故事书（角色卡）导入**：工作区那一行的「📖 导入 PNG 故事书」→ 列卡库（本地 3269 张，服务端过滤/分页）→ 预览 → **导入并开始**：世界书**追加合并**进工作区 `rp-worldbook.md`、卡全文写 `rp-cards/<slug>.md`、卡面复制成 `rp-cards/<slug>.png` 并当默认立绘、角色卡/世界/战役名写进会话配置、**自动切 `dm` 预设并发出开场指令**。四件套依据实测（`first_mes` 100% 广告 → 换 `alternate_greetings`；32% 条目无 keys → 补 `constant`；单卡最大 167 万字 → 限量 + 全文落文件）。新增 `lib/card-png.js`、`lib/card-import.js`、4 条路由（含路径逃逸防护）、私有卡索引缺失时的目录扫描兜底；测试补 `smoke-card.mjs`（64 条）与真卡库探针 `probe-cardlib.mjs`，共 **262 条断言** |
+| **1.4.0** | **PNG 故事书（角色卡）导入**：工作区那一行的「📖 导入 PNG 故事书」→ 列卡库（本地 3269 张，服务端过滤/分页）→ 预览 → **导入并开始**：世界书**追加合并**进工作区 `rp-worldbook.md`、卡全文写 `rp-sessions/<会话 id>/cards/<slug>.md`、卡面复制成 `rp-sessions/<会话 id>/cards/<slug>.png` 并当默认立绘、角色卡/世界/战役名写进会话配置、**自动切 `dm` 预设并发出开场指令**。四件套依据实测（`first_mes` 100% 广告 → 换 `alternate_greetings`；32% 条目无 keys → 补 `constant`；单卡最大 167 万字 → 限量 + 全文落文件）。新增 `lib/card-png.js`、`lib/card-import.js`、4 条路由（含路径逃逸防护）、私有卡索引缺失时的目录扫描兜底；测试补 `smoke-card.mjs`（64 条）与真卡库探针 `probe-cardlib.mjs`，共 **262 条断言** |

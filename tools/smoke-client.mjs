@@ -534,7 +534,23 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.equal(bodyArea.length, 1, '详情里应有正文输入框');
   assert.equal(bodyArea[0].props.value, '天宝年间的长安城，坊市分明。', '详情里应带出完整正文（不是 160 字预览）');
   assert.ok(formText.includes('触发词：长安'), '详情里应显示触发词');
+
+  // ⚠️ 回归：展开之后按钮要能**收起**（第一版这里永远调 beginLore → 只能展开、收不起来）
+  const collapseBtn = findAll(withForm, (n) => typeof n.props?.onClick === 'function'
+    && textOf(n) === '收起' && String(n.props.className ?? '').includes('tiny'));
+  assert.equal(collapseBtn.length, 1, '展开后该条按钮应变成「收起」');
+  collapseBtn[0].props.onClick();
+  const collapsed = render({
+    sessionId: SID,
+    useSessions: (sel) => sel(store),
+    useInput: (sel) => sel({ draft: '' }),
+    inputActions,
+  }, tab.component);
+  assert.equal(findAll(collapsed, (n) => n.type === 'textarea' && String(n.props.className ?? '').includes('lorebody')).length, 0,
+    '点「收起」后详情表单应消失');
   assert.ok(formText.includes('删除条目'), '详情里应有删除');
+  assert.ok(text.includes('世界设定'), '卡片标题应是「世界设定」');
+  assert.equal(text.includes('世界 / 战役设定'), false, '不该再出现旧标题');
   // 「看不全」那次的教训：右侧栏很窄，正文框必须给足高度，列表也要按视口给高度
   assert.ok(/\.rpt \.loreform textarea\.lorebody \{[^}]*min-height:\s*2\d\dpx/.test(style.textContent),
     '正文输入框要有足够高度（≥200px）');

@@ -922,7 +922,7 @@ window.__ModuleLoader__.load({
         msg ? h('div', { key: 'msg', className: 'msg' }, msg.text) : null,
 
         h('div', { key: 'world', className: 'card' }, [
-          h('h4', { key: 't' }, '世界 / 战役设定'),
+          h('h4', { key: 't' }, '世界设定'),
           h('textarea', {
             key: 'w', value: draft.world ?? '', placeholder: '世界观、时代、地点、基调……',
             onChange: (e) => patch({ world: e.target.value }),
@@ -994,8 +994,14 @@ window.__ModuleLoader__.load({
                 }),
                 '常驻',
               ]),
-              h('button', { key: 'ed', className: 'tiny', disabled: Boolean(busy), onClick: () => void beginLore(e) },
-                loreEdit && loreEdit.title === e.title ? '收起' : '详情 / 编辑'),
+              h('button', {
+                key: 'ed', className: 'tiny', disabled: Boolean(busy),
+                // 已经展开的那条再点一次就是**收起**（第一版这里永远调 beginLore，于是只能展开、收不起来）
+                onClick: () => {
+                  if (loreEdit && loreEdit.title === e.title) setLoreEdit(null);
+                  else void beginLore(e);
+                },
+              }, loreEdit && loreEdit.title === e.title ? '收起' : '详情 / 编辑'),
             ]),
             // 详情 / 编辑：就地展开在这一条下面（正文全文都在表单里，可读也可改）
             loreEdit && loreEdit.title === e.title

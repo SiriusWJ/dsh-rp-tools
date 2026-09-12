@@ -31,7 +31,7 @@
 | 数据目录 | `~/.dsh/data/dsh-rp-tools/`（`styles.json` / `sessions/<id>.json` / `dm-sessions.json` / `_agent-probe.json` / `_standing-probe.json`） |
 | 世界书（**按会话隔离**） | `<会话工作区>/rp-sessions/<会话 id>/rp-worldbook.md` —— 工作区取自 `session.header.cwd`（如 `D:\Story`）。老版本在工作区根目录，首次读取时会**一次性迁移**一份过来（旧文件保留） |
 | PNG 卡库（导入源） | `D:\Story\sillytavernassets`（3269 张，`cards/<分类>/*.png`）—— 设置页「卡库目录」可改，存 `styles.json` 的 `cards.root` |
-| 导入产物（按会话） | `<会话工作区>/rp-cards/<slug>.{md,json,png}`（卡全文 / 规范化结果 / 卡面） |
+| 导入产物（按会话） | `<会话工作区>/rp-sessions/<会话 id>/cards/<slug>.{md,json,png}`（卡全文 / 规范化结果 / 卡面） |
 | 私有卡索引（可选） | `lib/card-index.js`（**gitignore**，482KB，含卡名/作者/标签/条目数；缺失时自动退回目录扫描） |
 | dm 预设 | `~/.dsh/.agent-presets/dm/agent.cordis.yml`、`~/.dsh/.agent-presets/dm/rp-bridge.mjs`（仓库内有副本 `preset/rp-bridge.mjs`） |
 | ComfyUI | Comfy Desktop **0.35.0** · `http://127.0.0.1:8188` · RTX 5080 16GB |
@@ -224,9 +224,9 @@ RP 配置按会话 id 存，而 fork 出来的是**新 id** —— 不处理的�
   选一张   ──GET /rp-tools/card?path=─────▶ 解码 PNG → 摘要 + 预览（不落盘）
   点导入   ──POST remote.agentPresets.select(sessionId,'dm')──▶ 切预设（空白会话才允许）
            ──POST /rp-tools/card-import───▶ ① 世界书**追加合并**进 <工作区>/rp-worldbook.md
-                                            ② 卡全文写 rp-cards/<slug>.md（超预算条目的去处）
-                                            ③ 规范化结果写 rp-cards/<slug>.json
-                                            ④ 卡面复制成 rp-cards/<slug>.png
+                                            ② 卡全文写 rp-sessions/<会话 id>/cards/<slug>.md（超预算条目的去处）
+                                            ③ 规范化结果写 rp-sessions/<会话 id>/cards/<slug>.json
+                                            ④ 卡面复制成 rp-sessions/<会话 id>/cards/<slug>.png
                                             ⑤ 角色卡合并/世界覆盖/立绘登记进会话配置
            ◀─{lore, files, opening, stats}─┘
   开始游戏：inputActions.setDraft(opening) → submit()
@@ -334,7 +334,7 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen |
    - 验证：**刷新页面** → 新建会话（Hero 上应出现「📖 导入 PNG 故事书」）→ 点开应列出卡库分类与卡片 →
      选一张应出预览（世界书条数 / 开场白来源 / 世界与性格摘要）→ 点「导入并开始」应：
      ① 会话预设变成 `dm`（右上角预设标签）；② 输入框被自动填上开场指令并发出；③ 工作区出现
-     `rp-worldbook.md` 与 `rp-cards/`；④ RP 面板的角色卡下面出现卡面立绘。
+     `rp-sessions/<会话 id>/` 下的世界书与 `cards/`；④ RP 面板的角色卡下面出现卡面立绘。
    - 已知**未在浏览器里跑过**的部分：`remote.agentPresets.select()` 与 `uiWorkspace.startSession()`
      都只能在页面里验证（宿主侧没有等价入口）。若切预设失败，面板会**显示原因**而不是静默 —— 先看那行字。
 3. **`rp_scenes` 未用真实 `scenes_*.json` 实跑过**（逻辑同 `rp_illustrate`；样例文件在 `~/.dsh/.../userdata/workflows/manga_pipeline/scenes_*.json`）。
