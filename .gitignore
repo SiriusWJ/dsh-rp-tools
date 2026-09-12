@@ -9,3 +9,6 @@ Thumbs.db
 # 建议生成脚本把产物直接写到数据目录（$DSH_HOME/data/dsh-rp-tools/），
 # 而不是写进 lib/；在那之前先在这里挡一道。
 lib/card-index.js
+
+# 本地试出的图（ComfyUI 产物，几百 KB~MB 级）—— 只留在工作区，不进仓库
+temp_output/
