@@ -767,6 +767,9 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('导入：写出开场白引导文件', existsSync(join(ws, 'rp-sessions', IMPORT_SID, 'cards', '烟测卡.card.opening.md')), true);
   check('导入：结果里有引导文件路径', imported.json.files?.opening, `rp-sessions/${IMPORT_SID}/cards/烟测卡.card.opening.md`);
   check('导入：开场指令指向引导文件', String(imported.json.opening).includes(`rp-sessions/${IMPORT_SID}/cards/烟测卡.card.opening.md`), true);
+  // 四个产物（世界书 / 全文 / JSON / 卡面 / 开场白引导）**全部**在会话目录里，
+  // 工作区根目录不许再冒出共享的 rp-cards/
+  check('隔离：工作区根不再产生 rp-cards/', !existsSync(join(ws, 'rp-cards')), true);
   check('导入：会话立绘已登记', sess.json.session?.portraits?.['烟测卡']?.card, rel);
   check('导入：战役名补成卡名', sess.json.session?.campaign?.name, '烟测卡');
 
