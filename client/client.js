@@ -127,10 +127,20 @@ window.__ModuleLoader__.load({
 .rpt .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .rpt .sep { flex: 1; }
 .rpt .kv { display: grid; grid-template-columns: 96px 1fr; gap: 8px 10px; align-items: center; }
-.rpt input[type=text], .rpt input[type=number], .rpt textarea, .rpt select {
-  width: 100%; box-sizing: border-box; padding: 5px 8px; border-radius: 6px;
-  border: 1px solid color-mix(in oklab, currentColor 20%, transparent);
-  background: color-mix(in oklab, currentColor 4%, transparent); color: inherit; font: inherit;
+/* ── 设置页控件统一规格 ────────────────────────────────────────────────
+   跟随宿主的语义 token（与官方设置页同一套：输入框 bg-layer-1 + border-l4 + 10px 圆角，
+   聚焦用 brand-primary 细环）。以前用的是 currentColor 半透明描边，聚焦时浏览器会给
+   一圈又粗又亮的默认 outline —— 用户说的「选中效果不好看」就是它。 */
+.rpt input[type=text], .rpt input[type=number], .rpt input[type=search], .rpt textarea, .rpt select {
+  width: 100%; box-sizing: border-box; padding: 6px 9px; border-radius: 8px; font: inherit; font-size: 13px;
+  border: .5px solid var(--dsw-alias-border-l4, color-mix(in oklab, currentColor 20%, transparent));
+  background: var(--dsw-alias-bg-layer-1, color-mix(in oklab, currentColor 4%, transparent));
+  color: var(--dsw-alias-label-primary, inherit);
+}
+.rpt input::placeholder, .rpt textarea::placeholder { color: var(--dsw-alias-label-dimmed, color-mix(in oklab, currentColor 45%, transparent)); }
+.rpt input:focus, .rpt textarea:focus, .rpt select:focus {
+  outline: 2px solid var(--dsw-alias-brand-primary, #4D6BFE); outline-offset: -1px;
+  border-color: transparent;
 }
 /* 原生下拉的弹出列表由浏览器绘制，不继承我们的半透明背景 —— 不显式给色就会是
    白底 + 浅色文字 → 看不清。用 DSH 主题 token（浅色主题下这两个值本身就是浅色）。 */
@@ -139,17 +149,36 @@ window.__ModuleLoader__.load({
   color: var(--dsw-alias-label-primary, #e8e8ea);
 }
 .rpt select option:checked { background-color: var(--dsw-alias-bg-overlay, #303136); }
-.rpt textarea { min-height: 68px; resize: vertical; }
+.rpt textarea { min-height: 62px; resize: vertical; }
 .rpt button {
-  padding: 4px 10px; border-radius: 6px; cursor: pointer; font: inherit; white-space: nowrap;
-  border: 1px solid color-mix(in oklab, currentColor 22%, transparent);
-  background: color-mix(in oklab, currentColor 6%, transparent); color: inherit;
+  padding: 5px 11px; border-radius: 8px; cursor: pointer; font: inherit; font-size: 12.5px;
+  white-space: nowrap; color: var(--dsw-alias-label-primary, inherit);
+  border: .5px solid var(--dsw-alias-border-l4, color-mix(in oklab, currentColor 22%, transparent));
+  background: transparent;
 }
-.rpt button:hover:not(:disabled) { background: color-mix(in oklab, currentColor 12%, transparent); }
-.rpt button:disabled { opacity: .5; cursor: default; }
-.rpt button.primary { background: #4D6BFE; border-color: #4D6BFE; color: #fff; }
+.rpt button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, color-mix(in oklab, currentColor 12%, transparent)); }
+.rpt button:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4D6BFE); outline-offset: -1px; }
+.rpt button:disabled { opacity: .45; cursor: default; }
+.rpt button.primary { background: var(--dsw-alias-brand-primary, #4D6BFE); border-color: transparent; color: #fff; }
 .rpt button.tiny { padding: 2px 8px; font-size: 12px; }
-.rpt .card { border: 1px solid color-mix(in oklab, currentColor 13%, transparent); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+/* 行尾的删除按钮：小圆点式幽灵按钮，别用带边框的小方块（截图里那个 × 就是它） */
+.rpt button.iconbtn {
+  width: 22px; height: 22px; padding: 0; border-radius: 6px; border-color: transparent;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+  color: var(--dsw-alias-label-tertiary, color-mix(in oklab, currentColor 55%, transparent));
+}
+.rpt button.iconbtn:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-danger, color-mix(in oklab, #ef4444 18%, transparent));
+  color: var(--dsw-alias-state-error-primary, #ef4444);
+}
+/* 「＋ 添加」类按钮：整条虚线，和上面的行拉开距离（原来贴着最后一行，看着像被挤住） */
+.rpt button.addbtn {
+  margin-top: 6px; width: 100%; border-style: dashed; color: var(--dsw-alias-label-secondary, inherit);
+  font-size: 12px; padding: 5px 8px;
+}
+.rpt .card { border: .5px solid var(--dsw-alias-border-l4, color-mix(in oklab, currentColor 13%, transparent));
+  border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px;
+  background: var(--dsw-alias-bg-layer-1, transparent); }
 .rpt .badge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; }
 .rpt .badge.ok { background: color-mix(in oklab, #22c55e 24%, transparent); }
 .rpt .badge.warn { background: color-mix(in oklab, #f59e0b 26%, transparent); }
@@ -159,26 +188,36 @@ window.__ModuleLoader__.load({
   border: 1px solid color-mix(in oklab, currentColor 11%, transparent); border-radius: 8px; padding: 10px; }
 /* ── 设置页三大类（设定 / 图像 / 工具）────────────────────────────────────
    小节标题带一条细分隔线，比一堆卡片堆叠好扫；提示文字一律 dim + 12px，别抢正文。 */
-.rpt .rpsec { gap: 12px; }
-.rpt .sechead { align-items: baseline; gap: 10px; }
-.rpt .sechead h4 { margin: 0; font-size: 14px; }
-.rpt .rpsec .dim { font-size: 12px; line-height: 1.5; }
+.rpt .rpsec { gap: 14px; }
+.rpt .sechead { align-items: baseline; gap: 10px; padding-bottom: 8px;
+  border-bottom: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 10%, transparent)); }
+.rpt .sechead h4 { margin: 0; font-size: 14.5px; font-weight: 600; letter-spacing: -.01em; }
+.rpt .rpsec .dim { font-size: 12px; line-height: 1.6; }
+.rpt .kv { grid-template-columns: 92px minmax(0, 1fr); gap: 10px 12px; }
+/* 默认宏列表：名字 + 值 + 行尾删除按钮；名称列定宽，几行之间对齐 */
+.rpt .rpsec .macroblk { width: 100%; }
+.rpt .rpsec .macrorow { grid-template-columns: 118px minmax(0, 1fr) 22px; gap: 8px; }
+.rpt .rpsec .macrorow input[type=text] { height: 30px; padding: 0 8px; font-size: 12.5px; }
 /* 风格库：一行一个风格，用 flex-wrap 保证窄面板下自动换行而不是挤压输入框 */
 .rpt .stylegrid { display: flex; flex-direction: column; gap: 6px; }
 .rpt .stylerow { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center;
-  border: 1px solid color-mix(in oklab, currentColor 10%, transparent); border-radius: 8px; padding: 6px 8px; }
-.rpt .stylerow .styname { display: flex; flex-direction: column; min-width: 116px; font-size: 12.5px; }
-.rpt .stylerow .styname .mono { font-size: 10.5px; }
-.rpt .stylerow .styfield { display: flex; gap: 5px; align-items: center; font-size: 12px; opacity: .85; }
-.rpt .stylerow .styfield input[type=number] { width: 60px; }
-.rpt .stylerow .stylora select { max-width: 190px; }
-.rpt .stylerow .stytrigger { flex: 1 1 150px; min-width: 120px; }
+  border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 10%, transparent));
+  border-radius: 10px; padding: 7px 10px; transition: background .14s ease; }
+.rpt .stylerow:hover { background: var(--dsw-alias-interactive-bg-hover, color-mix(in oklab, currentColor 6%, transparent)); }
+.rpt .stylerow .styname { display: flex; flex-direction: column; min-width: 120px; font-size: 13px; font-weight: 600; }
+.rpt .stylerow .styname .mono { font-size: 10.5px; font-weight: 400; }
+.rpt .stylerow .styfield { display: flex; gap: 5px; align-items: center; font-size: 11.5px;
+  color: var(--dsw-alias-label-secondary, inherit); }
+.rpt .stylerow .styfield input[type=number] { width: 58px; height: 28px; padding: 0 6px; font-size: 12px; }
+.rpt .stylerow .stylora select { max-width: 190px; height: 30px; padding: 0 8px; font-size: 12px; }
+.rpt .stylerow .stytrigger { flex: 1 1 150px; min-width: 120px; height: 30px; font-size: 12px; }
 .rpt .stylerow .styact { gap: 4px; }
 /* 图像尺寸：三行「用途 宽 × 高 px」，数字框定宽，行与行对齐 */
-.rpt .szblock { display: flex; flex-direction: column; gap: 4px; }
+.rpt .szblock { display: flex; flex-direction: column; gap: 6px; }
 .rpt .szrow { display: flex; gap: 6px; align-items: center; }
-.rpt .szrow .szlabel { flex: 0 0 40px; font-size: 12px; opacity: .85; }
-.rpt .szrow input[type=number] { width: 78px; }
+.rpt .szrow .szlabel { flex: 0 0 42px; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); }
+.rpt .szrow input[type=number] { width: 80px; height: 28px; padding: 0 8px; }
+.rpt .szrow .szx, .rpt .szrow .szu { flex: 0 0 auto; opacity: .55; font-size: 11.5px; }
 .rpt .toollist { max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
 .rpt .nums { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .rpt .nums label { display: flex; gap: 5px; align-items: center; font-size: 12px; opacity: .85; }
@@ -421,6 +460,24 @@ window.__ModuleLoader__.load({
         setMsg({ kind: 'ok', text: `已移除风格 ${key} —— 记得点「保存」落盘` });
       }
 
+      // 三档图像尺寸的内置默认值：宿主还没重启 / 配置里缺这一项时也**不显示 0**
+      const IMAGE_SIZE_DEFAULTS = { scene: [1024, 576], portrait: [640, 896], item: [768, 768] };
+      /**
+       * 解析出当前的三个尺寸（缺就用内置默认值）。
+       *
+       * 界面显示与保存都走它：宿主还是旧版（config 里没有 `imageSizes`）时，用户看到的是
+       * 默认值而不是 0，保存时也把默认值**一起交回去** —— 旧宿主不会自己补，交回去就自愈了。
+       */
+      function resolvedImageSizes() {
+        const out = {};
+        for (const [slot, fallback] of Object.entries(IMAGE_SIZE_DEFAULTS)) {
+          const raw = draft?.imageSizes?.[slot];
+          const ok = Array.isArray(raw) && Number(raw[0]) >= 256 && Number(raw[1]) >= 256;
+          out[slot] = ok ? [Number(raw[0]), Number(raw[1])] : fallback;
+        }
+        return out;
+      }
+
       async function save() {
         if (!draft) return;
         setBusy('save');
@@ -445,8 +502,8 @@ window.__ModuleLoader__.load({
             negative: draft.negative,
             // 默认宏列表整份提交（键值对）；userLabel 由宿主从 macros.user 同步，不再单独发
             cards: { root: draft.cards?.root ?? '', macros: draft.cards?.macros ?? {} },
-            // 全局图像尺寸（场景/立绘/道具）
-            imageSizes: draft.imageSizes ?? {},
+            // 全局图像尺寸（场景/立绘/道具）：用**解析后**的值，缺配置时把默认值交回去自愈
+            imageSizes: resolvedImageSizes(),
             styles,
             styleOps,
           });
@@ -565,19 +622,20 @@ window.__ModuleLoader__.load({
         ...children,
       ]);
       const sizeRow = (slot, label) => {
-        const pair = Array.isArray(draft.imageSizes?.[slot]) ? draft.imageSizes[slot] : [0, 0];
+        // 显示用**解析后**的值：宿主旧版 / 配置缺项时显示内置默认值，绝不显示 0
+        const pair = resolvedImageSizes()[slot];
         const setSlot = (idx, value) => {
           const n = Number(value);
           const next = [pair[0], pair[1]];
-          next[idx] = Number.isFinite(n) ? Math.round(n) : 0;
+          next[idx] = Number.isFinite(n) ? Math.round(n) : pair[idx];
           setDraft({ ...draft, imageSizes: { ...(draft.imageSizes ?? {}), [slot]: next } });
         };
         return h('div', { key: `sz-${slot}`, className: 'szrow' }, [
           h('span', { key: 'l', className: 'szlabel' }, label),
           h('input', { key: 'w', type: 'number', min: '256', step: '16', value: pair[0], onChange: (e) => setSlot(0, e.target.value) }),
-          h('span', { key: 'x', className: 'dim' }, '×'),
+          h('span', { key: 'x', className: 'dim szx' }, '×'),
           h('input', { key: 'h', type: 'number', min: '256', step: '16', value: pair[1], onChange: (e) => setSlot(1, e.target.value) }),
-          h('span', { key: 'u', className: 'dim' }, 'px'),
+          h('span', { key: 'u', className: 'dim szu' }, 'px'),
         ]);
       };
 
@@ -636,7 +694,7 @@ window.__ModuleLoader__.load({
                   }),
                 }),
                 h('button', {
-                  key: 'd', className: 'tiny',
+                  key: 'd', className: 'iconbtn', title: '删掉这条默认宏',
                   onClick: () => {
                     const macros = { ...(draft.cards?.macros ?? {}) };
                     delete macros[name];
@@ -645,7 +703,7 @@ window.__ModuleLoader__.load({
                 }, '×'),
               ])),
               h('button', {
-                key: 'add', className: 'tiny',
+                key: 'add', className: 'addbtn',
                 onClick: () => {
                   // 新行的名字给一个「不撞车」的占位，用户直接改
                   const macros = { ...(draft.cards?.macros ?? {}) };

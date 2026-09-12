@@ -949,6 +949,18 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.equal(sizeInputs.length, 6, '每档两个数字框（宽 × 高）');
   // 风格库：名称不可编辑、没有「新增风格」、参数仍可改
   assert.equal(text.includes('新增风格'), false, '风格库不再提供「＋ 新增风格」');
+  // 行尾删除用幽灵图标按钮、添加用整条虚线按钮（用户说「× 不好看、添加按钮太近」）
+  const macroRowsFound = byClass(tree, 'macrorow');
+  assert.ok(macroRowsFound.length >= 1, '默认宏要有行');
+  assert.equal(findAll(macroRowsFound[0], (n) => String(n.props?.className ?? '').split(/\s+/).includes('iconbtn')).length, 1,
+    '行尾删除要用 iconbtn（小幽灵按钮），不是带边框的方块');
+  assert.equal(findAll(tree, (n) => String(n.props?.className ?? '').split(/\s+/).includes('addbtn')).length, 1,
+    '「＋ 添加默认宏」要用 addbtn（整条虚线、与上一行拉开距离）');
+  // 控件规格：输入框用宿主 token + 细聚焦环（原来聚焦是一圈又粗又亮的默认 outline）
+  assert.ok(/\.rpt input\[type=text\][^{]*\{[^}]*--dsw-alias-bg-layer-1/.test(style.textContent),
+    '输入框底色要跟随宿主 token');
+  assert.ok(/\.rpt input:focus[^{]*\{[^}]*--dsw-alias-brand-primary/.test(style.textContent),
+    '聚焦环要用品牌色（别再出现默认 outline）');
   const styleRows = byClass(tree, 'stylerow');
   assert.equal(styleRows.length, 1, 'stub 里一个风格就是一行');
   const nameInputs = findAll(styleRows[0], (n) => n.type === 'input' && n.props.type === 'text'
@@ -994,6 +1006,30 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.ok(textOf(empty).includes('名字填 user、值填玩家'), '空列表要给出具体例子（user → 玩家）');
   stateStub.cards = { root: '', userLabel: '阿岚', macros: { user: '阿岚', place: '长安' } };
   resetHooks();
+
+  // ★ 尺寸不能显示 0：宿主是旧版（config 里没有 imageSizes）时也要显示内置默认值，
+  //   并且保存时把默认值一起交回去（旧宿主不会自己补）。
+  {
+    const keep = stateStub.imageSizes;
+    delete stateStub.imageSizes;
+    resetHooks();
+    calls.length = 0;
+    let legacy = render(Props, reg.component);
+    for (let i = 0; i < 14 && !textOf(legacy).includes('图像尺寸'); i++) { await tick(30); legacy = render(Props, reg.component); }
+    const vals = byClass(legacy, 'szrow')
+      .flatMap((r) => findAll(r, (n) => n.type === 'input' && n.props.type === 'number'))
+      .map((n) => Number(n.props.value));
+    assert.ok(vals.length === 6 && vals.every((v) => v >= 256), `尺寸不能出现 0（实际 ${JSON.stringify(vals)}）`);
+    assert.deepEqual(vals.slice(0, 2), [1024, 576], '缺配置时场景用内置默认值');
+    assert.deepEqual(vals.slice(2, 4), [640, 896], '缺配置时立绘用内置默认值');
+    const save2 = findAll(legacy, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '保存');
+    await save2[0].props.onClick();
+    await tick(60);
+    const post2 = calls.filter((c) => c.url === '/rp-tools/config' && c.method === 'POST').pop();
+    assert.deepEqual(post2?.body?.imageSizes?.scene, [1024, 576], '保存要把默认尺寸交回去（旧宿主不会补）');
+    stateStub.imageSizes = keep;
+    resetHooks();
+  }
 }
 console.log('客户端冒烟测试通过：');
 console.log(`  · bundle id = ${captured.id}`);
