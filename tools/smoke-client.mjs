@@ -38,9 +38,19 @@ globalThis.document = {
 
 // ── 极小 React 运行时 ──────────────────────────────────────────────────────
 // 钩子按**调用序号**存槽位（与 React 的规则同源：顺序必须稳定）。
-// 槽位提供的 useSessions / useInput 是普通函数（真实实现内部才用 useSyncExternalStore），
-// 所以它们不占槽位 —— 桩与真实行为在这一点上一致。
-const rt = { cells: [], cursor: 0, effects: [], cleanups: [], dirty: false };
+// ⚠️ 槽位必须**按组件类型隔离**：早先所有组件共用一个 cells 数组，于是 A 组件的 state
+//    落在 B 组件的槽位上 —— 我加了几个 hook 之后，dock 组件的 `open` 读到了 RP 面板的
+//    `lib` 值，测试开始报「面板没打开」这种假失败（查了半天才发现是测试桩的锅）。
+const rt = { cells: [], cellStore: new Map(), cursor: 0, effects: [], cleanups: [], dirty: false };
+/** 重新挂载（等价于把整棵树卸载重来）：清掉所有组件的钩子状态。 */
+function resetHooks() {
+  rt.cellStore.clear();
+  rt.cells = [];
+  rt.cursor = 0;
+  rt.effects = [];
+  rt.cleanups = [];
+  rt.dirty = false;
+}
 const resetSignals = () => { rt.cursor = 0; rt.effects = []; };
 function flushEffects() {
   for (const fn of rt.effects.splice(0)) {
@@ -53,15 +63,17 @@ const React = {
   createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: flatten(children) }),
   Fragment: Symbol('Fragment'),
   useState(init) {
+    const cells = rt.cells;                 // 捕获**本组件**的槽位数组（setState 可能在别处被调用）
     const i = rt.cursor++;
-    if (!(i in rt.cells)) rt.cells[i] = typeof init === 'function' ? init() : init;
+    if (!(i in cells)) cells[i] = typeof init === 'function' ? init() : init;
     // setState 后要重渲染：render() 靠 dirty 决定是否再跑一趟（模拟 React 的提交+重渲染）
-    return [rt.cells[i], (v) => { rt.cells[i] = typeof v === 'function' ? v(rt.cells[i]) : v; rt.dirty = true; }];
+    return [cells[i], (v) => { cells[i] = typeof v === 'function' ? v(cells[i]) : v; rt.dirty = true; }];
   },
   useRef(init) {
+    const cells = rt.cells;
     const i = rt.cursor++;
-    if (!(i in rt.cells)) rt.cells[i] = { current: init };
-    return rt.cells[i];
+    if (!(i in cells)) cells[i] = { current: init };
+    return cells[i];
   },
   useEffect(fn) { rt.cursor++; rt.effects.push(fn); },
   useLayoutEffect(fn) { rt.cursor++; rt.effects.push(fn); },
@@ -226,6 +238,8 @@ const slotsStub = {
 // ctx 桩：remote / uiWorkspace 都给上，让「切预设」与「新建会话」两条路都能被走到
 let startedSessions = 0;
 const selectedPresets = [];
+// 宿主转发给客户端的事件（`remote.$on`）：预设切换就靠它触发「重新判断入口」
+const remoteEventHandlers = new Map();
 const ctx = {
   slots: slotsStub,
   // 右栏那两个服务：回调要真的跑，否则 `sidebar.right.pane.tab` 不会被注册（面板也就无从渲染）
@@ -245,6 +259,12 @@ const ctx = {
       return {
         agentPresets: {
           select: async (id, preset) => { selectedPresets.push([id, preset]); return { ok: true, value: preset }; },
+        },
+        // 与官方客户端插件同一个用法：ctx.remote.$on(event, listener) → 返回退订函数
+        $on: (event, listener) => {
+          if (!remoteEventHandlers.has(event)) remoteEventHandlers.set(event, new Set());
+          remoteEventHandlers.get(event).add(listener);
+          return () => remoteEventHandlers.get(event)?.delete(listener);
         },
       };
     }
@@ -344,7 +364,19 @@ function renderNode(node) {
   if (Array.isArray(node)) return node.map(renderNode);
   if (typeof node !== 'object') return node;
   if (typeof node.type === 'function') {
-    const out = node.type({ ...node.props, children: node.children });
+    // 每个组件类型有自己的钩子槽位（见 rt 的注释）；游标按组件归零
+    const prevCells = rt.cells;
+    const prevCursor = rt.cursor;
+    if (!rt.cellStore.has(node.type)) rt.cellStore.set(node.type, []);
+    rt.cells = rt.cellStore.get(node.type);
+    rt.cursor = 0;
+    let out;
+    try {
+      out = node.type({ ...node.props, children: node.children });
+    } finally {
+      rt.cells = prevCells;
+      rt.cursor = prevCursor;
+    }
     return renderNode(out);
   }
   // 宿主元素：把 ref 绑到对应的假 DOM 节点上（组件靠它找「上一行」）
@@ -490,13 +522,13 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
 
   // ① dock 的条目外面套了一层容器（那一行不是根元素的直接上一兄弟）→ 要逐层往上找
   domVariant = 'wrapped';
-  rt.cells = [];                       // 换一种 DOM 布局 = 重新挂载组件
+  resetHooks();                       // 换一种 DOM 布局 = 重新挂载组件
   const wrapped = render(DM_PROPS());
   const portalsW = findAll(wrapped, (n) => n.type === 'Portal');
   assert.equal(portalsW.length, 1, '套了容器也要能找到那一行（逐层往上找）');
   assert.equal(portalsW[0].props.container, rowEl, 'portal 目标仍应是那一行');
   domVariant = 'direct';
-  rt.cells = [];
+  resetHooks();
 
   // ② 拿不到 react-dom → 退回「量出那一行的位置、把 chip 贴上去」，而不是自己占一行
   (0, eval)(source);                   // 再求值一次 bundle，拿一个新的 factory
@@ -513,7 +545,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     get: () => undefined,
   });
   const dock2 = regs2.find((r) => r.name === 'conversation.input.dock');
-  rt.cells = [];
+  resetHooks();
   const noDom = render(DM_PROPS(), dock2.c);   // 注意：渲染的是**第二个实例**的组件
   const chips2 = byClass(noDom, 'rpc-chip');
   assert.equal(chips2.length, 1, '拿不到 react-dom 时 chip 仍要在（不能消失）');
@@ -527,7 +559,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
 {
   const tab = slotRegs.find((r) => r.name === 'sidebar.right.pane.tab');
   assert.ok(tab, '应注册右侧栏面板页签（RP 面板本体）');
-  rt.cells = [];
+  resetHooks();
   const store = { current: SID, byId: { [SID]: { blank: false, cwd: 'D:\\Story', projectionValues: { agentPreset: 'dm' } } } };
   const panel = render({
     sessionId: SID,
@@ -667,7 +699,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
 {
   const tab = slotRegs.find((r) => r.name === 'conversation.input.dock');
   calls.length = 0;                 // 只关心这一段发出的请求
-  rt.cells = [];                    // 重新挂载，清掉上一步的面板状态
+  resetHooks();                    // 重新挂载，清掉上一步的面板状态
   const noCwd = () => propsFor({ blank: true, preset: 'dm', cwd: '' });
   byClass(render(noCwd(), tab.component), 'rpc-chip')[0].props.onClick();
   // 兜底路径要等「问宿主 → 再拉卡库」两跳，所以轮询到稳定再断言（定长 tick 不够稳）
@@ -706,20 +738,20 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   };
 
   // ① 投影里预设被清空（切预设后的真实后果）→ 宿主说 dm + 未开局 → 入口要回来
-  rt.cells = [];
+  resetHooks();
   gateReply = { ok: true, dm: true, started: false };
   const noPreset = () => propsFor({ blank: true, preset: '', sid: 'session-cleared-preset' });
   assert.equal(byClass(await waitFor(noPreset, 1), 'rpc-chip').length, 1,
     '投影里没有预设时，宿主说 dm 就该把入口显示出来');
 
   // ② 摘要被当成「已开局」→ 宿主说还没开局 → 仍以宿主为准
-  rt.cells = [];
+  resetHooks();
   const startedBlank = () => propsFor({ blank: false, preset: 'dm', sid: 'session-blank-cleared' });
   assert.equal(byClass(await waitFor(startedBlank, 1), 'rpc-chip').length, 1,
     '摘要说已开局、宿主说没开局时，应以宿主为准');
 
   // ③ 两侧都说「已开局」→ 藏起来（别把入口挂在已开局的会话上）
-  rt.cells = [];
+  resetHooks();
   gateReply = { ok: true, dm: true, started: true };
   const reallyStarted = () => propsFor({ blank: false, preset: 'dm', sid: 'session-really-started' });
   assert.equal(byClass(await waitFor(reallyStarted, 0), 'rpc-chip').length, 0,
@@ -727,11 +759,41 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
 
   // ④ 只有一侧说已开局 → **显示**。方向是刻意的：入口少显示一次用户就找不回来
   //    （连着报过两次「按钮不见了」），多显示一次最坏是点进去发现要新建会话。
-  rt.cells = [];
+  resetHooks();
   const splitVerdict = () => propsFor({ blank: true, preset: 'dm', sid: 'session-split-verdict' });
   assert.equal(byClass(await waitFor(splitVerdict, 1), 'rpc-chip').length, 1,
     '界面说未开局、宿主说已开局时宁可显示（用户找不回入口的代价更大）');
   gateReply = { ok: true, dm: true, started: false };
+
+  // ⑤ ★ 用户报的正解：新对话首屏切走预设再切回 dm，**不刷新页面**按钮也要回来。
+  // 现象是「值都对、刷新就回来」——说明不是数据错，而是切换后**没有重新判断**：
+  // 客户端那份投影在切走之后可能不再更新，组件入参一个都没变 → 不重渲染 → 按钮永久消失。
+  // 修法是订阅宿主广播的 `agent-preset/selected`（官方客户端插件也是用 `remote.$on` 收它）。
+  {
+    resetHooks();
+    const SID_SWITCH = 'session-preset-switch';
+    // 切回 dm 后的真实状态：宿主说 dm / 未开局；而**客户端投影仍是旧值**（模拟它不更新）
+    const stale = () => propsFor({ blank: true, preset: 'novelist', sid: SID_SWITCH });
+    gateReply = { ok: true, dm: false, started: false };
+    const hidden = await waitFor(stale, 0);
+    assert.equal(byClass(hidden, 'rpc-chip').length, 0, '切到别的预设后入口应消失');
+
+    // 现在宿主那边切回了 dm。**先不广播**：只是重渲染（props 完全没变）不该让它出现 ——
+    // 这一条是「事件确实是必要的」的反证，否则这个用例可能在测别的东西。
+    gateReply = { ok: true, dm: true, started: false };
+    for (let i = 0; i < 3; i++) { await tick(30); render(stale, tab.component); }
+    assert.equal(byClass(render(stale, tab.component), 'rpc-chip').length, 0,
+      '只是重渲染、没有广播事件时，入口不该自己冒出来（说明用例确实在测事件这条通道）');
+
+    // 广播事件 → 客户端必须重新问一次宿主并重新判断
+    const handlers = remoteEventHandlers.get('agent-preset/selected');
+    assert.ok(handlers && handlers.size >= 1, '客户端应订阅 agent-preset/selected（官方同款事件）');
+    for (const fn of [...handlers]) fn(SID_SWITCH, 'dm');
+    const back = await waitFor(stale, 1);          // 注意：props 完全没变，全靠事件触发
+    assert.equal(byClass(back, 'rpc-chip').length, 1,
+      '宿主广播预设切换后，入口要重新判断（不刷新页面也要回来）');
+    gateReply = { ok: true, dm: true, started: false };
+  }
 }
 
 console.log('客户端冒烟测试通过：');

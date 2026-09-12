@@ -1582,16 +1582,24 @@ window.__ModuleLoader__.load({
     let pendingImport = null;
 
     /**
-     * 会话闸门的答复缓存（宿主说：是不是 dm / 有没有开局）。
+     * 预设切换的订阅者（每实例一个）：宿主广播 `agent-preset/selected` 时全部叫醒。
      *
-     * ⚠️ 这里踩过一次：入口的可见性原先**只看客户端投影**（`projectionValues.agentPreset`
-     * 与摘要里的 `blank`）。切预设会重建投影基线、把基线里没有的键清掉 —— `agentPreset`
-     * 读成空串，判定「不是 DM」，入口**永久消失**（刷新页面才回来）。
-     * 宿主手里是活着的会话对象，所以问它一次就有确定答案。
-     * 按 `会话 id | blank | 预设` 做键：这些值一抖动就重新问一次（真开局后才会变），
-     * 平时不会重复打请求。
+     * 这是「新对话切预设 → 按钮状态要重新判断」的唯一可靠触发源：客户端那份投影
+     * 在被切走之后**可能不再更新**（官方 chip 自己持有 staged 值所以看起来是对的），
+     * 组件入参一个都不变 → 不重渲染 → 按钮再也回不来，只有刷新页面才行。
      */
+    const presetChangeListeners = new Map();
+
+    /** 宿主的闸门答复缓存：键里带 presetRev，所以切预设后旧答复自动作废（见 notifyPresetChange）。 */
     const gateCache = new Map();
+
+    /** 宿主切了预设：丢掉所有闸门答复，再叫醒订阅者（订阅者自己重算并重渲染）。 */
+    function notifyPresetChange() {
+      gateCache.clear();
+      for (const listener of [...presetChangeListeners.values()]) {
+        try { listener(); } catch { /* 单个订阅者出错不影响其它 */ }
+      }
+    }
 
     /** 闸门缓存的键：会话 + 已知的投影值（这些值一变就重新问一次宿主）。 */
     const gateKeyOf = (sessionId, blank, preset) => `${sessionId}|${blank === false ? 'started' : blank === true ? 'blank' : 'unknown'}|${preset}`;
@@ -1693,10 +1701,26 @@ window.__ModuleLoader__.load({
           return typeof v === 'string' ? v : '';
         })
         : '';
-      // 客户端的判据只当**快速路径**：投影可能被重建清空（见 gateCache 注释）。
+      // 客户端的判据只当**快速路径**：投影可能被重建清空（见下面 gate 的注释）。
       const storeDm = agentPreset === 'dm';
       const storeStarted = blankRaw === false;
-      const gateKey = gateKeyOf(sessionId, blankRaw, agentPreset);
+      // ★ 预设切换的重新判断：宿主每次切预设都会 append `agent-preset/selected` 并广播同名事件，
+      //   客户端用 `ctx.remote.$on('agent-preset/selected')` 收得到（见 apply 里的订阅）。
+      //   这个计数进 key：事件一来 key 就变，闸门答复作废并**重新问一次宿主**。
+      //   为什么必须这样：首屏选 dm → 切走 → 切回 dm，客户端那份投影**可能根本没更新**
+      //   （官方那枚 chip 显示正确是因为它自己持有 staged 值），于是组件的入参一个都没变、
+      //   也不会重渲染 —— 只有刷新页面才会重读。用户报的「切回 dm 按钮不见了，刷新才回来」
+      //   就是这条：**值是对的，判断没有重跑**。
+      const [presetRev, setPresetRev] = React.useState(0);
+      const gateKey = `${gateKeyOf(sessionId, blankRaw, agentPreset)}|${presetRev}`;
+      // 订阅「预设变了」：清掉闸门缓存（notifyPresetChange 里做）并重算一次
+      React.useEffect(() => {
+        const key = Symbol('rp-preset');
+        const listener = () => { setPresetRev((n) => n + 1); };
+        presetChangeListeners.set(key, listener);
+        return () => { presetChangeListeners.delete(key); };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, []);
       // 闸门答复**带键存**：键一变（切预设 / 摘要刷新）旧答复立刻作废，
       // 直到新答复回来为止都用投影快速路径 —— 否则会拿着上个会话状态的答案做决定。
       const [gateState, setGateState] = React.useState(() => {
@@ -1965,6 +1989,22 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // 入口要待在「工作区 / DM 主持人」那一行上，而不是自己占一行。
+      // 那一行的两个座位（`conversation.hero.workspace` / `conversation.hero.agentPreset`）
+      // 都是 **single 且已被官方插件占满**，没有第三个槽位可注册 ——
+      // 所以只能在 DOM 上想办法：**优先**用 portal 把 chip 送进那一行（它是 flex 行，
+      // 送进去就是正经的第三个 chip）；拿不到 react-dom（或找不到那一行）时退回
+      // 「量出那一行的位置、把 chip 固定在它右边」，最差也只是自己占一行，不会消失。
+      //
+      // ⚠️ 这两个 hook 必须在**早退之前**声明：早退（下面那两个 return null）会让后面的
+      // hook 不再执行，等于「按条件调用 hook」—— 真实 React 下状态会错位（测试桩尤其会）。
+      const rootRef = React.useRef(null);
+      const [slot, setSlot] = React.useState(undefined);   // undefined=还没量 / null=找不到 / {kind,row|rect}
+      React.useLayoutEffect(() => {
+        if (embedMode || slot !== undefined) return;       // embed 模式不进 DOM 找那一行
+        setSlot(findHeroRowSlot(rootRef.current));
+      }, [slot, sessionId]);
+
       // 入口只在「还没开局的 DM 新会话」上出现 —— 那正是要选卡开团的时刻。
       // 导入进行中/刚导完时例外：开场指令一发出去会话就不再是空白，
       // 这时把面板藏掉会让用户看不到结果（`keep` 一直维持到用户自己收起）。
@@ -1972,19 +2012,6 @@ window.__ModuleLoader__.load({
       if (!sessionId) return null;
       // embed 模式不受「未开局的 DM 新会话」这条限制：它就在 RP 面板里，用户是主动打开的
       if (!embedMode && !(unstarted && dmNow) && !keepOpen) return null;
-
-      // 入口要待在「工作区 / DM 主持人」那一行上，而不是自己占一行。
-      // 那一行的两个座位（`conversation.hero.workspace` / `conversation.hero.agentPreset`）
-      // 都是 **single 且已被官方插件占满**，没有第三个槽位可注册 ——
-      // 所以只能在 DOM 上想办法：**优先**用 portal 把 chip 送进那一行（它是 flex 行，
-      // 送进去就是正经的第三个 chip）；拿不到 react-dom（或找不到那一行）时退回
-      // 「量出那一行的位置、把 chip 固定在它右边」，最差也只是自己占一行，不会消失。
-      const rootRef = React.useRef(null);
-      const [slot, setSlot] = React.useState(undefined);   // undefined=还没量 / null=找不到 / {kind,row|rect}
-      React.useLayoutEffect(() => {
-        if (slot !== undefined) return;
-        setSlot(findHeroRowSlot(rootRef.current));
-      }, [slot, sessionId]);
 
       const isRow = slot?.kind === 'portal';
       const chip = h('button', {
@@ -2225,6 +2252,19 @@ window.__ModuleLoader__.load({
       // 按钮先以裸 <button> 的默认外观出现（灰底方角），等某个组件挂载后才变正常 ——
       // 就是「第一次启动样式不对、后面正常」的典型 FOUC。
       injectStyles();
+
+      // ── 订阅「预设被切换」─────────────────────────────────────────────
+      // 宿主每次切预设都会 broadcast `agent-preset/selected`（在 API 的转发白名单里，
+      // 客户端用 `remote.$on` 就能收到）。导入入口的可见性必须跟着它重新判断：
+      // 首屏选 dm → 切走 → 切回 dm 时，客户端那份投影可能一个字节都没变，
+      // 组件不重渲染，按钮就再也回不来（只有刷新页面才恢复）—— 这正是用户报的现象。
+      try {
+        const remote = ctx.get ? ctx.get('remote') : undefined;
+        if (remote && typeof remote.$on === 'function') {
+          const off = remote.$on('agent-preset/selected', notifyPresetChange);
+          ctx.effect(() => () => { try { off?.(); } catch { /* 忽略 */ } }, 'rp-tools: preset listener');
+        }
+      } catch { /* 拿不到 remote（旧宿主）就只靠投影，功能不因此中断 */ }
       ctx.slots.inject('settings.section', () => ctx.slots.register({
         name: 'settings.section',
         id: 'rp-tools',
