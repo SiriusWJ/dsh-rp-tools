@@ -134,8 +134,16 @@ models/loras/krea2_*.safetensors                               ← 9 个风格 L
 老配置里**没动过**的那一档会跟着换成新值，**自己改过的保持原样**。
 
 **立绘复用**：常驻段的【本会话设定】里有一行「已有可用图」—— 角色已有的生成立绘、
-以及**导入卡的卡面**（对角色卡来说那张 PNG 就是它的立绘）都在那里。DM 第一次出场时直接展示它，
-不必再花十几秒重出一张；确实没有图时才调 `rp_illustrate`。
+**玩家自己导入的图**、以及**导入卡的卡面**（对角色卡来说那张 PNG 就是它的立绘）都在那里。
+DM 第一次出场时直接展示它，不必再花十几秒重出一张；确实没有图时才调 `rp_illustrate`。
+DM 也可以在叙事里直接把这些图摆进回复（零成本），不必为了「让角色露个脸」重新生图。
+
+**立绘是纵向的**：`rp_illustrate` 不传 `width`/`height`/`aspect` 时，画面里**只提到一个已登记角色**
+就按 `portrait`（纵向，默认 512×768）出，否则按场景横幅 —— 所以「给某人出一张立绘」不必自己算比例。
+DM 出的第一张单人图会**自动记成那个角色的立绘**（已有立绘时**不覆盖**）。
+
+角色卡编辑器里可以：**生成立绘 / 重新生成**（覆盖，纵向）、**导入图片**（png / jpeg / webp，≤8MB，
+存进 `<工作区>/rp-sessions/<会话 id>/portraits/`）、或直接删掉这个角色（会顺手清掉它的立绘记录）。
 
 需要一次出多张时，DM 会在**同一步**里并发发出多个 `rp_illustrate`（插件已把这两个工具声明为
 并发安全，宿主才会真的并行调度）。ComfyUI 是单卡队列，**GPU 总时长不变** —— 省掉的是每张图
@@ -246,7 +254,10 @@ dsh-rp-tools/
 | `/rp-tools/tools` | GET | 工具清单 + 参数说明（设置页用） |
 | `/rp-tools/roll` | POST | 掷随机表（面板用） |
 | `/rp-tools/media` | GET | **同源媒体代理**：把 ComfyUI `/view` 转成同源，图片才能在聊天里渲染 |
-| `/rp-tools/preview` | POST | 试出一张（设置页 / 面板用，可带 sessionId） |
+| `/rp-tools/portrait` | POST | 登记/清除某个角色的立绘（只存 ComfyUI 三要素，媒体仍走 `/rp-tools/media`） |
+| `/rp-tools/portrait-upload` | POST | 导入外部立绘（data URL → 落到 `<工作区>/rp-sessions/<id>/portraits/`，只收 png/jpeg/webp） |
+| `/rp-tools/portrait-image` | GET | 把**登记过**的导入立绘发回浏览器（只认会话配置里的相对路径 + 会话目录前缀校验） |
+| `/rp-tools/preview` | POST | 试出一张（设置页 / 面板用，可带 sessionId；`sizeKey` 选场景/立绘/道具档） |
 | `/rp-tools/cards` | GET | 列卡库（服务端搜索 / 分类 / 分页） |
 | `/rp-tools/card` | GET | 解析单张卡 → 摘要与预览（不落盘） |
 | `/rp-tools/card-import` | POST | 导入到某个会话（写世界书 / 卡全文 / 卡面 + 更新会话配置，返回开场指令） |
@@ -254,6 +265,8 @@ dsh-rp-tools/
 
 > ⚠️ `/rp-tools/card*` 三条会把磁盘内容交给浏览器，路径一律经 `safeCardPath()`（`resolve` 后前缀比对卡库根 + 只认 `.png`）；
 > 逃逸 / 绝对路径 / 非 png 全部 400。
+> `/rp-tools/portrait-image` 同理，而且是**双锁**：只发会话配置里登记过的那张，
+> 再把相对路径解析到会话目录下做前缀校验；文件名由宿主用 `portraitFileSlug()` 生成（用户给的名字不进路径）。
 
 ---
 

@@ -59,18 +59,33 @@ window.__ModuleLoader__.load({
       ? `/rp-tools/media?${qs({ file: ref.file, subfolder: ref.subfolder, type: ref.type })}`
       : '');
 
-    /** 会话配置里的 portraits → 面板用的立绘表（生成图优先，卡面另存）。 */
-    const portraitsFromSession = (raw) => {
+    /**
+     * 会话配置里的 portraits → 面板用的立绘表（生成立绘优先，其次外部导入的，卡面另存）。
+     * `sid` 用来拼导入立绘的地址（那条路由要 sessionId 才知道去哪个会话目录取文件）。
+     */
+    const portraitsFromSession = (raw, sid = '') => {
       const out = {};
       for (const [name, entry] of Object.entries(raw ?? {})) {
         const ref = entry?.generated;
-        if (!ref || !ref.file) continue;
-        out[name] = {
-          url: mediaUrlOf(ref),
-          style: String(entry?.style ?? ''),
-          elapsedMs: Number(entry?.elapsedMs) || 0,
-          persisted: true,
-        };
+        if (ref && ref.file) {
+          out[name] = {
+            url: mediaUrlOf(ref),
+            style: String(entry?.style ?? ''),
+            elapsedMs: Number(entry?.elapsedMs) || 0,
+            persisted: true,
+          };
+          continue;
+        }
+        // 用户外部导入的立绘：文件在会话目录里，走 /rp-tools/portrait-image。
+        // `v` 用导入时间：同名重导时文件名不变，浏览器会命中缓存，带上才能换图即换。
+        if (entry?.imported?.file) {
+          out[name] = {
+            url: `/rp-tools/portrait-image?${qs({ sessionId: sid, name, v: String(entry.imported.at ?? '') })}`,
+            style: '导入',
+            elapsedMs: 0,
+            persisted: true,
+          };
+        }
       }
       return out;
     };
@@ -91,6 +106,8 @@ window.__ModuleLoader__.load({
       cardImport: (body) => jpost('/rp-tools/card-import', body),
       // 立绘：把生成结果的 (file, subfolder, type) 记进会话配置，下次打开面板还在
       portraitSave: (body) => jpost('/rp-tools/portrait', body),
+      // 外部立绘：用户在编辑器里选一张本地图，转成 data URL 传给宿主落盘（宿主只收 png/jpeg/webp）
+      portraitUpload: (body) => jpost('/rp-tools/portrait-upload', body),
       // 会话闸门：宿主回答「现在是不是 dm」「有没有真的开局」。
       // 为什么不能只信客户端投影：切预设会重建投影基线、把基线里没有的键**清掉**，
       // 于是 `projectionValues.agentPreset` 变空 → 判定「不是 DM」→ 入口永久消失。
@@ -152,13 +169,14 @@ window.__ModuleLoader__.load({
 }
 .rpt select option:checked { background-color: var(--dsw-alias-bg-overlay, #303136); }
 .rpt textarea { min-height: 62px; resize: vertical; }
-.rpt button {
+/* label.filebtn 是「导入图片」那个包裹隐藏 input 的 label：外观要跟旁边的小按钮一模一样 */
+.rpt button, .rpt label.filebtn {
   padding: 5px 11px; border-radius: 8px; cursor: pointer; font: inherit; font-size: 12.5px;
   white-space: nowrap; color: var(--dsw-alias-label-primary, inherit);
   border: .5px solid var(--dsw-alias-border-l4, color-mix(in oklab, currentColor 22%, transparent));
   background: transparent;
 }
-.rpt button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, color-mix(in oklab, currentColor 12%, transparent)); }
+.rpt button:hover:not(:disabled), .rpt label.filebtn:hover { background: var(--dsw-alias-interactive-bg-hover, color-mix(in oklab, currentColor 12%, transparent)); }
 .rpt button:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4D6BFE); outline-offset: -1px; }
 .rpt button:disabled { opacity: .45; cursor: default; }
 /* 主按钮 = 宿主的「高对比」按钮：底色 button-primary-fill，文字 label-primary-foreground。
@@ -173,7 +191,7 @@ window.__ModuleLoader__.load({
 .rpt button.primary:hover:not(:disabled) {
   background: var(--dsw-alias-button-primary-hover, var(--dsw-alias-brand-primary, #4D6BFE));
 }
-.rpt button.tiny { padding: 2px 8px; font-size: 12px; }
+.rpt button.tiny, .rpt label.filebtn { padding: 2px 8px; font-size: 12px; }
 /* 行尾的删除按钮：小圆点式幽灵按钮，别用带边框的小方块（截图里那个 × 就是它） */
 .rpt button.iconbtn {
   width: 22px; height: 22px; padding: 0; border-radius: 6px; border-color: transparent;
@@ -290,8 +308,15 @@ window.__ModuleLoader__.load({
 .rpt .chareditform { display: grid; grid-template-columns: minmax(280px, 46%) minmax(0, 1fr); gap: 18px; align-items: start; }
 .rpt .chareditform .facepreview { position: sticky; top: 0; display: flex; flex-direction: column; gap: 8px; }
 .rpt .chareditform .facepreview img { display: block; width: auto; height: auto; max-width: 100%;
-  max-height: calc(85vh - 240px); margin: 0 auto; border-radius: 12px;
+  max-height: calc(88vh - 250px); margin: 0 auto; border-radius: 12px;
   border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent)); }
+.rpt .chareditform .facepreview .facecap { font-size: 12px; line-height: 1.55; }
+.rpt .chareditform .facepreview .facerow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; }
+/* 「导入图片」是个 label 包着隐藏 input：样式按按钮来，别让原生 file 控件露出来 */
+.rpt .chareditform .facepreview .filebtn { display: inline-flex; align-items: center; cursor: pointer; }
+.rpt .chareditform .facepreview .filebtn.disabled { opacity: .45; cursor: default; }
+.rpt .chareditform .facepreview .filebtn input[type=file] { position: absolute; width: 1px; height: 1px;
+  opacity: 0; pointer-events: none; }
 .rpt .chareditform .charfields { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px 10px; align-items: start; }
 .rpt .chareditform .charfields > label { padding-top: 6px; }
 @media (max-width: 860px) {
@@ -1027,7 +1052,7 @@ window.__ModuleLoader__.load({
           const data = await API.session(sessionId);
           if (!data?.ok) return;
           setState(data);
-          setPortraits(portraitsFromSession(data.session?.portraits));
+          setPortraits(portraitsFromSession(data.session?.portraits, sessionId));
           const hostDraft = JSON.parse(JSON.stringify(data.session));
           // 用户**没动过任何字段**（dirtyRef）→ 整份铺上宿主的新版本；
           // 动过就不覆盖表单，只更新只读部分（世界书列表 / 立绘 / 宿主原文）。
@@ -1069,7 +1094,7 @@ window.__ModuleLoader__.load({
           dirtyRef.current = false;                  // 重新载入 = 回到宿主的版本，没有未保存改动
           // 立绘：会话配置里记着的生成图要**装回面板状态** —— 原先它只活在组件 state 里，
           // 关面板/刷新就没了（用户报的「下次打开就消失」）。
-          setPortraits(portraitsFromSession(data.session?.portraits));
+          setPortraits(portraitsFromSession(data.session?.portraits, sessionId));
           setMsg(null);
           // 诊断：把「界面看到的预设」和「宿主说的预设/是否开局」都记下来。
           // 导入入口的可见性一度只依赖客户端投影，而它会被切预设清空 —— 这一行是为了
@@ -1439,6 +1464,9 @@ window.__ModuleLoader__.load({
             sessionId,
             style: draft?.defaultStyle || undefined,
             prompt: `${name} 的半身立绘，正面，中性背景`,
+            // **立绘要纵向**（用户要求）：不传的话宿主按场景档出，出来是横向的 ——
+            // 那样在角色卡编辑器左列只占半截，头像也扁。
+            sizeKey: 'portrait',
           });
           if (!res?.ok) throw new Error(res?.error ?? '出图失败');
           const label = res.styleLabel || res.styleKey || '';
@@ -1490,6 +1518,38 @@ window.__ModuleLoader__.load({
           .catch(() => { /* 清不掉只会导致下次仍显示，不打断编辑 */ });
       }
 
+      /** 文件 → data URL。宿主收不了本地路径，只能这样把图带过去。 */
+      function readAsDataUrl(file) {
+        return new Promise((resolvePromise, rejectPromise) => {
+          const reader = new FileReader();
+          reader.onload = () => resolvePromise(String(reader.result ?? ''));
+          reader.onerror = () => rejectPromise(new Error('读不出这个文件'));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      /**
+       * 外部立绘：用户自己选的图交给宿主落盘（宿主只认 png/jpeg/webp，上限 8MB）。
+       * 用户要求「也支持用户用外部导入立绘」—— 生图不满意时不必反复抽卡，直接用现成的图。
+       */
+      async function importPortrait(character, file) {
+        const name = String(character?.name ?? '').trim();
+        if (!name) { setMsg({ kind: 'err', text: '先给角色起个名字，立绘要按名字存档' }); return; }
+        if (!file) return;
+        setBusy(`portrait:${name}`);
+        try {
+          const dataUrl = await readAsDataUrl(file);
+          const res = await API.portraitUpload({ sessionId, name, dataUrl });
+          if (!res?.ok) throw new Error(res?.error ?? '导入失败');
+          const url = String(res.url ?? '');
+          setPortraits((p) => ({ ...p, [name]: { url, style: '导入' } }));
+          setDraft((d) => (d ? { ...d, portraits: res.portraits ?? d.portraits } : d));
+          setMsg({ kind: 'ok', text: `已把这张图记成「${name}」的立绘（${Math.round(Number(res.bytes ?? 0) / 1024)}KB）` });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
       if (!draft || !state) {
         return h('div', { className: embed ? 'rpt embed' : 'rpt ovl' }, [
           h('div', { key: 'hd', className: 'ovlhead' }, [
@@ -1513,11 +1573,16 @@ window.__ModuleLoader__.load({
       const loreDiagnostics = lore?.characterOverlap ?? lore?.diagnostics?.characterOverlap;
       // 编辑器里的同名提示：条目级说明由宿主计算，这里只负责显示
       const nameConflictWarn = diagnosticText(loreEdit?.nameConflict);
-      // 大浮窗里的立绘：按**原名**取（改名过程中也还能看到那张图）
-      const charEditPortraitUrl = charEdit
-        ? String(portraits[String(charEdit.originalName ?? '')]?.url
-          || portraits[String(charEdit.character?.name ?? '')]?.url || '')
-        : '';
+      // 大浮窗里的立绘：**当前名字优先**，取不到再退回原名 —— 改名后重新生成，
+      // 新图立刻显示；还没重生成时也还能看到旧名的旧图（不至于突然空掉）。
+      const charEditName = charEdit ? String(charEdit.character?.name ?? '').trim() : '';
+      const charEditOriginal = charEdit ? String(charEdit.originalName ?? '').trim() : '';
+      const charEditFaceKey = charEditName || charEditOriginal;
+      const charEditPortrait = charEdit
+        ? (portraits[charEditName] || portraits[charEditOriginal] || null)
+        : null;
+      const charEditPortraitUrl = String(charEditPortrait?.url ?? '');
+      const charEditPortraitStyle = String(charEditPortrait?.style ?? '');
 
       return h('div', { className: embed ? 'rpt embed' : 'rpt ovl' }, [
         h('div', { key: 'head', className: 'ovlhead' }, [
@@ -2052,28 +2117,44 @@ window.__ModuleLoader__.load({
           ],
         }, [
           h('div', { key: 'f', className: 'chareditform' }, [
-            // 左列：立绘（尽量大、随列宽，窄屏落到上方）。**删除立绘放在这里** ——
-            // 列表里那个「收起」以前会直接把会话配置里的立绘删掉，点完就真看不到了；
-            // 挪到这张大图旁边，删之前至少看得见。
+            // 左列：立绘（纵向、尽量占满这一列的宽/高；窄屏落到上方）。
+            // 按钮集中在这里：生成立绘是**纵向**的（宿主 sizeKey=portrait），所以图比场景图高，
+            // 这一列才填得满。「看大图」已去掉（用户要求）—— 图在这里就是最大的那个尺寸。
             h('div', { key: 'face', className: 'facepreview' }, [
               charEditPortraitUrl
                 ? h('img', { key: 'i', src: charEditPortraitUrl, alt: '立绘' })
-                : h('div', { key: 'none', className: 'dim faceempty' }, '还没有立绘 —— 关掉这里，在角色行点「立绘」生成一张'),
-              h('div', { key: 'c', className: 'dim' }, charEditPortraitUrl
-                ? `这张立绘属于「${String(charEdit.originalName || charEdit.character?.name || '（未命名）')}」；要换姿势/风格，回列表点「立绘」重新生成。`
-                : '立绘按角色名保存；改名后旧立绘不会自动跟过来。'),
-              charEditPortraitUrl
-                ? h('div', { key: 'a', className: 'row' }, [
-                  h('a', {
-                    key: 'o', className: 'tiny', href: charEditPortraitUrl, target: '_blank', rel: 'noreferrer',
-                  }, '看大图'),
-                  h('button', {
-                    key: 'x', className: 'tiny', disabled: Boolean(busy),
-                    title: '把这个角色的立绘从会话配置里删掉（不可撤销，可以重新生成）',
-                    onClick: () => void clearPortrait(String(charEdit.originalName || charEdit.character?.name || '')),
-                  }, '删掉立绘'),
-                ])
-                : null,
+                : h('div', { key: 'none', className: 'dim faceempty' },
+                  '还没有立绘 —— 点下面的「生成立绘」，或直接导入一张现成的图'),
+              h('div', { key: 'c', className: 'dim facecap' }, charEditPortraitUrl
+                ? `「${charEditFaceKey || '（未命名）'}」的立绘${charEditPortraitStyle ? `（${charEditPortraitStyle}）` : ''}。重新生成会覆盖这张；不想抽卡就直接导入一张图。`
+                : '立绘按角色名保存；改名后旧立绘不会自动跟过来，重新生成一次即可。'),
+              h('div', { key: 'a', className: 'row facerow' }, [
+                h('button', {
+                  key: 'g', className: 'tiny', disabled: Boolean(busy) || !charEditName,
+                  title: charEditPortraitUrl
+                    ? '按这个角色的名字与外貌重新出一张纵向立绘（会覆盖现在这张）'
+                    : '按这个角色的名字与外貌出一张纵向立绘',
+                  onClick: () => void runPortrait(charEdit.character),
+                }, busy === `portrait:${charEditFaceKey}` ? '出图中…' : (charEditPortraitUrl ? '重新生成' : '生成立绘')),
+                // 外部导入（用户要求）：对生成结果不满意时不必反复抽卡，直接用现成的图。
+                // 走隐藏的 file input + data URL：浏览器不能把本地路径交给宿主。
+                h('label', {
+                  key: 'u', className: `tiny filebtn${busy ? ' disabled' : ''}`,
+                  title: '选一张本地图片（png / jpeg / webp，≤8MB）作为这个角色的立绘',
+                }, [
+                  '导入图片',
+                  h('input', {
+                    key: 'f', type: 'file', accept: 'image/png,image/jpeg,image/webp',
+                    disabled: Boolean(busy) || !charEditName,
+                    onChange: (e) => {
+                      const file = e.target.files?.[0];
+                      // 清 value：连着选同一个文件也要能再触发一次 onChange
+                      e.target.value = '';
+                      if (file) void importPortrait(charEdit.character, file);
+                    },
+                  }),
+                ]),
+              ]),
             ]),
             // 右列：字段（label + 控件两列对齐）
             h('div', { key: 'fields', className: 'charfields' }, [

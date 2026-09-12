@@ -283,6 +283,122 @@ if (rpTable) {
   check('出图登记：用户点按钮重出**可以**覆盖', rerun.json.portraits?.祁俊?.generated?.file, 'rp_auto_3.png');
 }
 
+// ── 尺寸档：不指定尺寸时，单人角色 → 纵向立绘（用户要求）──────────────────
+// 以前「立绘」出的图和场景图同档（横向），塞进角色卡编辑器左列只占半截、头像也是扁的。
+{
+  const D = mod.__debug;
+  const sid = crypto.randomUUID();
+  const ws3 = join(TEST_HOME, 'ws-size-slot');
+  mkdirSync(ws3, { recursive: true });
+  D.setSessionCwd(sid, ws3);
+  const sess = () => ({
+    ...D.loadSession(sid), sessionId: sid,
+    characters: [{ name: '祁俊' }, { name: '祝婉宁' }],
+  });
+  check('尺寸档：单人且没有立绘 → portrait', D.illustrateSizeKey(sess(), '祁俊推开门'), 'portrait');
+  check('尺寸档：两个角色同框 → scene', D.illustrateSizeKey(sess(), '祁俊和祝婉宁对峙'), 'scene');
+  check('尺寸档：画面里没有已登记角色 → scene', D.illustrateSizeKey(sess(), '雨夜的空街'), 'scene');
+  // 显式尺寸一律不干预：调用方说了算
+  check('尺寸档：显式 width/height 不干预', D.illustrateSizeKey(sess(), '祁俊推开门', { width: 1024, height: 576 }), 'scene');
+  check('尺寸档：显式 aspect 不干预', D.illustrateSizeKey(sess(), '祁俊推开门', { aspect: '16:9' }), 'scene');
+  // 已经有立绘了 → 这一张不会再被记成立绘，按场景档出
+  D.recordGeneratedPortrait(sid, '祁俊', [{ file: 'slot.png', subfolder: '', type: 'output' }], {});
+  check('尺寸档：已有生成立绘 → scene', D.illustrateSizeKey(sess(), '祁俊推开门'), 'scene');
+  // 导入的立绘同样算「已有」
+  const noPortrait = crypto.randomUUID();
+  const ws3b = join(TEST_HOME, 'ws-size-slot-imported');
+  mkdirSync(ws3b, { recursive: true });
+  D.setSessionCwd(noPortrait, ws3b);
+  const sessB = () => ({ ...D.loadSession(noPortrait), sessionId: noPortrait, characters: [{ name: '祁俊' }] });
+  check('尺寸档：导入立绘之前 → portrait', D.illustrateSizeKey(sessB(), '祁俊推开门'), 'portrait');
+  const { imagePng: mkPng } = await import(pathToFileURL(join(here, 'png-fixture.mjs')).href);
+  const tinyPng = mkPng(4, 4, () => [10, 20, 30, 255]);
+  await callPost('/rp-tools/portrait-upload', {
+    sessionId: noPortrait, name: '祁俊',
+    dataUrl: `data:image/png;base64,${tinyPng.toString('base64')}`,
+  });
+  check('尺寸档：导入立绘之后 → scene', D.illustrateSizeKey(sessB(), '祁俊推开门'), 'scene');
+}
+
+// ── 外部导入立绘（用户要求「也支持用户用外部导入立绘」）────────────────────
+// 生图很慢且靠抽卡：用户手里有现成的图时应该能直接用。浏览器读成 data URL（拿不到本地路径），
+// 宿主落进会话目录，再经同源路由取回。
+{
+  const D = mod.__debug;
+  const { imagePng } = await import(pathToFileURL(join(here, 'png-fixture.mjs')).href);
+  const sid = crypto.randomUUID();
+  const ws4 = join(TEST_HOME, 'ws-portrait-import');
+  mkdirSync(ws4, { recursive: true });
+  D.setSessionCwd(sid, ws4);
+  const png = imagePng(6, 6, (x, y) => [x * 40, y * 40, 90, 255]);
+  const dataUrl = `data:image/png;base64,${png.toString('base64')}`;
+
+  // 文件名由宿主生成，用户给的名字只当 slug 的原料 —— 路径分隔符必须被替换掉
+  check('导入立绘：文件名的路径分隔符被替换', D.portraitFileSlug('a/b\\c:d*e'), 'a_b_c_d_e');
+  check('导入立绘：名字全是非法字符时兜底', D.portraitFileSlug('///'), '___');
+
+  check('导入立绘：只收 png/jpeg/webp',
+    (await callPost('/rp-tools/portrait-upload', { sessionId: sid, name: '祁俊', dataUrl: 'data:image/gif;base64,R0lGODlh' })).status, 400);
+  check('导入立绘：不是 data URL 就拒',
+    (await callPost('/rp-tools/portrait-upload', { sessionId: sid, name: '祁俊', dataUrl: 'https://example.com/a.png' })).status, 400);
+  check('导入立绘：缺角色名被拒',
+    (await callPost('/rp-tools/portrait-upload', { sessionId: sid, dataUrl })).status, 400);
+  check('导入立绘：缺 sessionId 被拒',
+    (await callPost('/rp-tools/portrait-upload', { name: '祁俊', dataUrl })).status, 400);
+  check('导入立绘：跨源被拒',
+    (await callPost('/rp-tools/portrait-upload', { sessionId: sid, name: '祁俊', dataUrl }, 'http://evil.example', '127.0.0.1:3080')).status, 403);
+
+  const up = await callPost('/rp-tools/portrait-upload', { sessionId: sid, name: '祁俊', dataUrl });
+  check('导入立绘：写入成功', up.status, 200);
+  check('导入立绘：落盘在 portraits/ 下、扩展名跟着 MIME', up.json.file, 'portraits/祁俊.png');
+  check('导入立绘：返回同源地址（带 v 防缓存）',
+    String(up.json.url).startsWith('/rp-tools/portrait-image?') && String(up.json.url).includes('v='), true);
+  const sessionDir = join(ws4, 'rp-sessions', sid);
+  const onDisk = join(sessionDir, 'portraits', '祁俊.png');
+  check('导入立绘：文件真的落盘了', existsSync(onDisk), true);
+  check('导入立绘：字节与原图一致', readFileSync(onDisk).equals(png), true);
+  check('导入立绘：会话配置里记的是相对路径（可整体搬走）',
+    D.loadSession(sid).portraits?.祁俊?.imported?.file, 'portraits/祁俊.png');
+  check('导入立绘：没有顺手编一张 generated（两件事分开）',
+    D.loadSession(sid).portraits?.祁俊?.generated, undefined);
+
+  // 取回：只有会话配置里记下的那张才发
+  const got = await callGetRaw(`/rp-tools/portrait-image?sessionId=${sid}&name=${encodeURIComponent('祁俊')}`);
+  check('导入立绘：取回 200', got.status, 200);
+  check('导入立绘：取回的字节一致', got.bytes.equals(png), true);
+  check('导入立绘：没登记过的角色 404',
+    (await callGetRaw(`/rp-tools/portrait-image?sessionId=${sid}&name=${encodeURIComponent('查无此人')}`)).status, 404);
+  check('导入立绘：缺参数 400', (await callGetRaw('/rp-tools/portrait-image')).status, 400);
+  check('导入立绘：只认 GET',
+    (await callPost('/rp-tools/portrait-image', { sessionId: sid, name: '祁俊' })).status, 405);
+
+  // **路径穿越**：把配置里的相对路径改成往外跳，路由必须挡住（前缀校验）
+  // 这一条就是「只认会话配置里记的那张」之外的**第二道锁**：配置本身被改坏时也不能读到外面。
+  {
+    const sess = D.loadSession(sid);
+    sess.portraits.祁俊.imported.file = 'portraits/../../outside.png';
+    D.saveSession(sess);
+    const esc = await callGet('/rp-tools/portrait-image', `?sessionId=${sid}&name=${encodeURIComponent('祁俊')}`);
+    check('导入立绘：配置被改成越界路径后拒绝', esc.status, 400);
+    check('导入立绘：拒绝理由是路径越界', esc.json.error, '路径越界');
+  }
+
+  // 常驻段：导入的立绘要出现在「已有可用图」里（DM 才不会又出一张）
+  {
+    const sid2 = crypto.randomUUID();
+    const ws5 = join(TEST_HOME, 'ws-portrait-import-standing');
+    mkdirSync(ws5, { recursive: true });
+    D.setSessionCwd(sid2, ws5);
+    await callPost('/rp-tools/portrait-upload', { sessionId: sid2, name: '祝婉宁', dataUrl });
+    const standing = D.buildStandingText({
+      ...D.loadSession(sid2), sessionId: sid2, characters: [{ name: '祝婉宁' }],
+    }, {});
+    check('导入立绘：常驻段里给了可复用地址', standing.includes('/rp-tools/portrait-image?'), true);
+    check('导入立绘：常驻段标注了「导入的立绘」', standing.includes('（导入的立绘）'), true);
+    check('导入立绘：常驻段仍写明「有就直接展示」', standing.includes('有就直接展示，不要再生成'), true);
+  }
+}
+
 // agent/created：宿主侧能否直接识别预设并自动登记
 const onCreated = (payload) => emit('agent/created', payload);
 if (onCreated) {
@@ -2064,6 +2180,13 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     check('预设：要求先复用已有图', prefix.includes('先查「已有可用图」，能复用就不生成'), true);
     check('预设：明确指出卡面＝角色卡的立绘', prefix.includes('导入卡的卡面') && prefix.includes('那张 PNG 就是它的立绘'), true);
     check('预设：说明出图会自动记成角色立绘', prefix.includes('第一张图会自动记成它的立绘'), true);
+    // 已有立绘绝不覆盖（DM 自动登记那条路径）；不满意让玩家用面板的按钮换
+    check('预设：说明已有立绘不会被覆盖', prefix.includes('已有立绘不会被覆盖'), true);
+    // 立绘是纵向的：不传尺寸时单人 → 纵向，dm 不必自己猜
+    check('预设：说明不传尺寸时单人出纵向立绘', prefix.includes('画面里只有一个已登记角色 → 出纵向立绘'), true);
+    // 叙事里可以直接用已有立绘（玩家要求；零成本，不用重新生图）
+    check('预设：允许叙事时直接摆角色立绘', prefix.includes('叙事时也可以把角色立绘直接摆进回复里'), true);
+    check('预设：可复用的图包含玩家导入的', prefix.includes('玩家自己导入的都算'), true);
     // 围栏必须成对：奇数个三反引号会让模型把后文当代码块（persona 里踩过）
     const ticks = prefix.split('```').length - 1;
     check('预设：三反引号成对出现（不留未闭合围栏）', ticks % 2, 0);

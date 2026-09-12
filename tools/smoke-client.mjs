@@ -149,6 +149,18 @@ globalThis.window = {
 const calls = [];
 /** 立绘持久化的 POST 记录（面板里点「立绘」/「收起」时写会话配置）。 */
 const portraitPosts = [];
+/** 外部导入立绘的 POST 记录（`/rp-tools/portrait-upload`）。 */
+const portraitUploads = [];
+/**
+ * FileReader 桩：真实浏览器里「选文件 → data URL」就是这一步。
+ * 测试造的 File 上带一个 `__dataUrl`，读出来即用它（这样断言能对上具体内容）。
+ */
+globalThis.FileReader = class {
+  readAsDataURL(file) {
+    this.result = file?.__dataUrl ?? 'data:image/png;base64,AAAA';
+    queueMicrotask(() => this.onload?.());
+  }
+};
 /** `/rp-tools/session` 返回的会话配置：立绘用例会临时往里面塞角色与已持久化的立绘。 */
 const sessionStub = {
   sessionId: 'session-abc', preset: 'dm', defaultStyle: null,
@@ -285,6 +297,23 @@ globalThis.fetch = async (url, options = {}) => {
       media: ['http://127.0.0.1:3080/rp-tools/media?file=rp-portrait-9.png'],
       // 宿主新增：原始三要素，界面据此把立绘记进会话配置（只存 URL 的话换 origin 就失效）
       files: [{ file: 'rp-portrait-9.png', subfolder: '', type: 'output' }],
+    });
+  }
+  // 外部导入立绘：界面读成 data URL 后 POST 上来，宿主落盘并回一个同源地址
+  if (target === '/rp-tools/portrait-upload') {
+    const body = JSON.parse(options.body ?? '{}');
+    portraitUploads.push(body);
+    return reply({
+      ok: true, sessionId: body.sessionId, name: body.name,
+      file: `portraits/${body.name}.png`, bytes: 5,
+      url: `/rp-tools/portrait-image?sessionId=${encodeURIComponent(body.sessionId)}&name=${encodeURIComponent(body.name)}&v=2026`,
+      portraits: {
+        ...sessionStub.portraits,
+        [body.name]: {
+          ...(sessionStub.portraits?.[body.name] ?? {}),
+          imported: { file: `portraits/${body.name}.png`, bytes: 5, at: '2026-01-01T00:00:00.000Z' },
+        },
+      },
     });
   }
   if (target.startsWith('/rp-tools/state')) {
@@ -1062,7 +1091,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     // 布局（用户要求）：立绘在**左列**、尽量铺满那一列；字段在右列
     assert.ok(/\.rpt \.chareditform \{[^}]*grid-template-columns:\s*minmax\(280px,\s*46%\)/.test(style.textContent),
       '编辑器要两列（左 46% 立绘 / 右表单）');
-    assert.ok(/\.rpt \.chareditform \.facepreview img \{[^}]*max-height:\s*calc\(85vh/.test(style.textContent),
+    assert.ok(/\.rpt \.chareditform \.facepreview img \{[^}]*max-height:\s*calc\(88vh/.test(style.textContent),
       '立绘要受列高约束、尽量用满左侧空间（max-height）');
     assert.ok(/\.rpt \.chareditform \.facepreview img \{[^}]*max-width:\s*100%/.test(style.textContent),
       '立绘也不能撑破列宽');
@@ -1075,6 +1104,41 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     const nameInput = findAll(charForm, (n) => n.type === 'input' && n.props.value === '阿岚')[0];
     assert.ok(nameInput, '名称框要带出当前角色名');
     assert.ok(byClass(charForm, 'facepreview').length === 1, '大浮窗里要能看到这个角色的立绘');
+    // ★「查看大图」已去掉（用户要求）：立绘在这里就是最大的尺寸，再开一个标签页没意义
+    assert.equal(textOf(charModal).includes('看大图'), false, '编辑器里不该再有「看大图」');
+    assert.equal(findAll(charForm, (n) => n.type === 'a').length, 0, '编辑器里不该再有外链（看大图）');
+    // ★「删掉立绘」改成「重新生成」（用户要求）：不满意就重出，而不是把记录删掉留个空位
+    assert.equal(textOf(charModal).includes('删掉立绘'), false, '「删掉立绘」应被去掉');
+    const regenBtn = findAll(charForm, (n) => typeof n.props?.onClick === 'function'
+      && n.props.className === 'tiny' && textOf(n) === '重新生成')[0];
+    assert.ok(regenBtn, '编辑器里要有「重新生成」（已有立绘时）');
+    // ★ 外部导入（用户要求）：一个 file input，只收 png/jpeg/webp
+    const fileInput = findAll(charForm, (n) => n.type === 'input' && n.props.type === 'file')[0];
+    assert.ok(fileInput, '编辑器里要有导入立绘的 file input');
+    assert.equal(fileInput.props.accept, 'image/png,image/jpeg,image/webp', '只收 png/jpeg/webp');
+    assert.equal(fileInput.props.disabled, false, '空闲时不该禁用');
+    // 真的走一遍：选文件 → FileReader → POST /rp-tools/portrait-upload
+    const beforeUploads = portraitUploads.length;
+    fileInput.props.onChange({
+      target: { value: 'C:\\fakepath\\x.png', files: [{ name: 'x.png', __dataUrl: 'data:image/png;base64,QUJD' }] },
+    });
+    for (let i = 0; i < 12 && portraitUploads.length === beforeUploads; i++) await tick(30);
+    assert.equal(portraitUploads.length, beforeUploads + 1, '选完文件应 POST 一次 portrait-upload');
+    assert.equal(portraitUploads.at(-1).name, '阿岚', '导入的图要挂在角色名下');
+    assert.equal(portraitUploads.at(-1).dataUrl, 'data:image/png;base64,QUJD', '传的是 FileReader 读出的 data URL');
+    assert.equal(portraitUploads.at(-1).sessionId, SID, '带上会话 id');
+    // 出图按钮：点「重新生成」→ POST /rp-tools/preview 且**要纵向档**
+    const beforePosts = portraitPosts.length;
+    const previewCallsBefore = calls.filter((c) => c.url === '/rp-tools/preview').length;
+    await regenBtn.props.onClick();
+    for (let i = 0; i < 14 && portraitPosts.length === beforePosts; i++) await tick(30);
+    const previewCalls = calls.filter((c) => c.url === '/rp-tools/preview');
+    assert.ok(previewCalls.length > previewCallsBefore, '「重新生成」要真的去出图');
+    assert.equal(previewCalls.at(-1).body?.sizeKey, 'portrait',
+      '立绘要按纵向档出（否则塞进角色卡是横向的）');
+    // 上面这两下会往记录里塞条目；后面的立绘持久化用例按**绝对条数**断言，先清干净
+    portraitPosts.length = 0;
+    portraitUploads.length = 0;
     // 改名 → 应用 → 落到会话草稿（保存后才落盘）
     nameInput.props.onChange({ target: { value: '阿岚·改' } });
     const applied = render({
@@ -1312,7 +1376,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     assert.equal(portraitPosts[0].style, '二次元', '风格一起记下来');
 
     // 列表里**不再有「大图 / 收起」**：那个「收起」其实会把立绘从会话配置里删掉，
-    // 点完就真的看不到了（用户实测）。删立绘挪到编辑浮窗里 —— 那里摆着大图，删之前看得见。
+    // 点完就真的看不到了（用户实测）。
     assert.equal(findAll(afterGen, (n) => textOf(n) === '收起').length, 0, '列表里不该再有「收起」');
     const charRow = byClass(afterGen, 'charbox')[0];
     const rowEdit = findAll(charRow, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '编辑')[0];
@@ -1320,18 +1384,49 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
     await rowEdit.props.onClick();
     await tick(30);
     let withModal2 = asPanel();
-    for (let i = 0; i < 14 && !findAll(withModal2, (n) => textOf(n) === '删掉立绘').length; i++) {
+    for (let i = 0; i < 14 && !findAll(withModal2, (n) => textOf(n) === '重新生成').length; i++) {
       await tick(30);
       withModal2 = asPanel();
     }
-    assert.ok(findAll(withModal2, (n) => textOf(n) === '看大图').length >= 1, '编辑浮窗里应有「看大图」');
-    const clearBtn = findAll(withModal2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '删掉立绘')[0];
-    assert.ok(clearBtn, '编辑浮窗里应有「删掉立绘」');
-    clearBtn.props.onClick();
+    // 「看大图」和「删掉立绘」都按用户要求去掉了：图在浮窗里已经是最大尺寸；
+    // 不满意应该是**重新生成**（覆盖那张），而不是把记录删掉留一个空位。
+    assert.equal(findAll(withModal2, (n) => textOf(n) === '看大图').length, 0, '编辑浮窗里不该再有「看大图」');
+    assert.equal(findAll(withModal2, (n) => textOf(n) === '删掉立绘').length, 0, '「删掉立绘」应换成「重新生成」');
+    assert.ok(findAll(withModal2, (n) => textOf(n) === '重新生成').length >= 1, '编辑浮窗里应有「重新生成」');
+    assert.ok(findAll(withModal2, (n) => n.type === 'input' && n.props.type === 'file').length >= 1,
+      '编辑浮窗里应有导入立绘的 file input');
+
+    // 立绘记录的清理改由**删角色**兜底（否则会话配置里留一条孤儿记录）
+    const delBtn = findAll(charRow, (n) => String(n.props?.className ?? '').split(/\s+/).includes('iconbtn'))[0];
+    assert.ok(delBtn, '角色行要有删除按钮');
+    delBtn.props.onClick();
     for (let i = 0; i < 14 && !portraitPosts.some((p) => p.action === 'clear'); i++) await tick(30);
     const clearPost = portraitPosts.find((p) => p.action === 'clear');
-    assert.ok(clearPost, '「删掉立绘」要同时清掉会话配置里那份');
+    assert.ok(clearPost, '删角色时要顺手清掉它的立绘记录');
     assert.equal(clearPost.name, '阿岚', '清除要指名道姓（按角色名）');
+
+    // ★ 外部导入的立绘（用户要求）：会话配置里记的是**相对路径**，界面要拼成
+    // /rp-tools/portrait-image?sessionId=&name=&v=（v 用导入时间，同名重导才不会被缓存挡住）
+    portraitPosts.length = 0;
+    sessionStub.portraits = {
+      阿岚: { imported: { file: 'portraits/阿岚.png', bytes: 5, at: '2026-01-01T00:00:00.000Z' } },
+    };
+    resetHooks();
+    let imported = asPanel();
+    for (let i = 0; i < 14 && !findAll(imported, (n) => n.type === 'img'
+      && String(n.props.src ?? '').includes('/rp-tools/portrait-image?')).length; i++) {
+      await tick(30);
+      imported = asPanel();
+    }
+    const importedImg = findAll(imported, (n) => n.type === 'img'
+      && String(n.props.src ?? '').includes('/rp-tools/portrait-image?'))[0];
+    assert.ok(importedImg, '导入的立绘也要在角色卡上显示出来');
+    const importedSrc = String(importedImg.props.src);
+    assert.ok(importedSrc.includes(`sessionId=${SID}`), '取导入立绘要带 sessionId（按会话目录取文件）');
+    assert.ok(importedSrc.includes(`name=${encodeURIComponent('阿岚')}`), '要按角色名取那张图');
+    assert.ok(importedSrc.includes('v=2026-01-01T00%3A00%3A00.000Z') || importedSrc.includes('v=2026-01-01T00:00:00.000Z'),
+      `要带 v（导入时间）绕过缓存（实际 ${importedSrc}）`);
+    assert.equal(importedSrc.includes('/rp-tools/media?'), false, '导入的图不走 ComfyUI 代理');
 
     // 还原，免得影响后面的用例
     sessionStub.characters = [];
