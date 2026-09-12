@@ -121,6 +121,8 @@ window.__ModuleLoader__.load({
 .rpt .loreitem .loreprev.clamp { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
 /* 条目详情 / 编辑表单：**标签在上、控件在下**（右侧栏窄，两列网格会把正文框挤成一条） */
 .rpt .loreconst { display: inline-flex; align-items: center; gap: 4px; }
+.rpt .lorelegacy { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 8px;
+  background: color-mix(in oklab, #f59e0b 14%, transparent); }
 .rpt .loreform { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 4px; padding: 10px;
   border-radius: 8px; background: color-mix(in oklab, currentColor 6%, transparent); }
 .rpt .loreform label { font-size: 12px; opacity: .75; margin-top: 4px; }
@@ -795,6 +797,26 @@ window.__ModuleLoader__.load({
         } finally { setBusy(''); }
       }
 
+      /** 把旧版共享世界书**显式**并入本会话（不自动继承，见 ensureSessionLore 的注释）。 */
+      async function importLegacyLore() {
+        if (!window.confirm('把工作区根目录那份旧共享世界书里的条目并入本会话？\n只影响本会话；同名条目会跳过。')) return;
+        setBusy('lore-legacy');
+        try {
+          const res = await API.loreSave({ sessionId, action: 'importLegacy', legacyFile: lore?.legacy });
+          if (!res?.ok) throw new Error(res?.error ?? '并入失败');
+          applyLoreResponse(res);
+          setLoreEdit(null);
+          setMsg({
+            kind: 'ok',
+            text: res.imported
+              ? `已并入 ${res.imported} 条旧世界书条目（同名跳过）`
+              : '没有可并入的条目（旧文件为空，或同名条目都在了）',
+          });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setBusy(''); }
+      }
+
       /** 整本书「属性中文化」（老世界书里的 name:/gender: 之类一键换成中文）。 */
       async function localizeLoreAll() {
         if (!window.confirm('把整本世界书里 YAML 风格的英文属性键换成中文？（name→名称、gender: Female→性别：女 …）\n只会改这类属性行，正文与触发词不动。')) return;
@@ -951,11 +973,23 @@ window.__ModuleLoader__.load({
               busy === 'lore' ? '读取中…' : '刷新'),
           ]),
           lore && lore.exists === false
-            ? h('div', { key: 'none', className: 'dim' }, '这个会话的工作区里还没有 rp-worldbook.md。用「📖 导入故事书」导入一张卡，或让 DM 用 rp_lore 生成模板。')
+            ? h('div', { key: 'none', className: 'dim' }, '本会话还没有自己的世界书。用「📖 导入故事书」导入一张卡，或让 DM 用 rp_lore 生成模板。')
             : null,
-          lore && lore.migrated
-            ? h('div', { key: 'mig', className: 'dim' },
-              '本会话的世界书是刚从旧的共享文件（工作区根目录的 rp-worldbook.md）复制过来的 —— 老文件原样保留。以后各会话各自独立，不再互相串。')
+          // 旧版的世界书在**工作区根目录**、按工作区共享（谁都能写，混着好几个会话的条目）。
+          // 归属无法判断，所以**绝不自动继承** —— 只提示存在，并进来与否由用户点。
+          lore && lore.legacyExists
+            ? h('div', { key: 'mig', className: 'lorelegacy' }, [
+              h('div', { key: 't', className: 'dim' },
+                '⚠ 发现旧版本的共享世界书（工作区根目录的 rp-worldbook.md）：历史上多个会话共用过它，归属已无法判断，'
+                + '所以本会话**没有**继承它。要并进本会话就点右边按钮（只影响本会话）。'),
+              h('div', { key: 'a', className: 'row' }, [
+                h('button', {
+                  key: 'b', className: 'tiny', disabled: Boolean(busy),
+                  onClick: () => void importLegacyLore(),
+                }, busy === 'lore-legacy' ? '并入中…' : '把旧世界书并入本会话'),
+                h('span', { key: 'p', className: 'mono dim' }, lore.legacy ?? ''),
+              ]),
+            ])
             : null,
           lore && lore.exists
             ? h('div', { key: 'stat', className: 'dim' },
