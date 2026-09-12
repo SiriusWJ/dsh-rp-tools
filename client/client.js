@@ -18,6 +18,10 @@ window.__ModuleLoader__.load({
     var exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
     const React = require('react');
+    // react-dom 只为 createPortal：那一行没有对外槽位，只能把 chip 送进它的 DOM。
+    // 万一取不到（更精简的宿主）就退回「自己占一行」，功能不受影响。
+    let ReactDOM = null;
+    try { ReactDOM = require('react-dom'); } catch { ReactDOM = null; }
     const h = React.createElement;
 
     const jget = (path) => fetch(path).then((r) => r.json());
@@ -169,6 +173,10 @@ window.__ModuleLoader__.load({
 }
 .rpc .chip:hover { background: var(--dsw-alias-interactive-bg-hover, color-mix(in oklab, currentColor 10%, transparent)); }
 .rpc .chip[data-open='true'] { border-color: var(--dsw-alias-label-secondary, currentColor); background: color-mix(in oklab, currentColor 10%, transparent); }
+/* 定位用的空占位（被 portal 送进「工作区 / DM 主持人」那一行时，这里不能占空间） */
+.rpc .rpc-holder { display: none; }
+/* 送进那一行之后：与旁边的 chip 同一套规格（28px 高、细边框、透明底），但要矮一点以免撑高整行 */
+.rpc .chip[data-row='true'] { height: 24px; border-radius: 12px; padding: 0 9px 0 7px; font-size: 12px; }
 .rpc .panel {
   display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 12px;
   border: 1px solid color-mix(in oklab, currentColor 14%, transparent);
@@ -1288,18 +1296,54 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // 非 DM 且已开局的会话不显示入口（RP 内容只属于 DM 会话；新会话/空白会话要能进来）
+      // 入口只在「还没开局的 DM 新会话」上出现 —— 那正是要选卡开团的时刻。
+      // 导入进行中/刚导完时例外：开场指令一发出去会话就不再是空白，
+      // 这时把面板藏掉会让用户看不到结果（`keep` 一直维持到用户自己收起）。
+      const isDmNow = agentPreset === 'dm';
+      const keepOpen = open && (busy === 'import' || result !== null);
       if (!sessionId) return null;
-      if (!blank && agentPreset !== 'dm') return null;
+      if (!(blank && isDmNow) && !keepOpen) return null;
+
+      // 入口挂在「工作区 / DM 主持人」那一行上，而不是自己占一行。
+      // 那一行（heroWorkspaceRow）里的两个座位 `conversation.hero.workspace` 与
+      // `conversation.hero.agentPreset` 都是 **single 且已被官方插件占满**，
+      // 没有第三个槽位可注册；而我们的 dock 条目正好**紧挨在那一行后面**渲染，
+      // 所以用 portal 把 chip 放进它的 DOM 里（找不到就退回自己占一行，不至于消失）。
+      const holderRef = React.useRef(null);
+      const [rowTarget, setRowTarget] = React.useState(undefined);
+      React.useLayoutEffect(() => {
+        if (rowTarget !== undefined) return;
+        let target = null;
+        try {
+          const holder = holderRef.current;
+          const row = holder?.previousElementSibling;
+          // 校验：同一父节点下的兄弟，且里面已经有 chip（button）—— 结构变了就宁可不搬
+          if (row && holder.parentElement && row.parentElement === holder.parentElement && row.querySelector('button')) {
+            target = row;
+          }
+        } catch { target = null; }
+        setRowTarget(target);
+      }, [rowTarget, sessionId]);
 
       const chip = h('button', {
-        key: 'chip', type: 'button', className: 'chip', 'data-open': open ? 'true' : 'false',
+        key: 'chip', type: 'button', className: 'chip',
+        'data-open': open ? 'true' : 'false',
+        // 送进那一行时用矮一号的规格（那边是 24~28px 的小 chip 行）
+        'data-row': rowTarget ? 'true' : 'false',
         'aria-expanded': open,
         onClick: () => setOpen((v) => !v),
-        title: '从本地 PNG 角色卡库导入一本故事书：世界书写进工作区，自动切到 DM 预设并开场',
-      }, [h('span', { key: 'g' }, '📖'), h('span', { key: 't' }, open ? '收起故事书导入' : '导入 PNG 故事书')]);
+        title: '从本地 PNG 角色卡库导入一本故事书：世界书写进工作区，自动开场（只在未开局的 DM 新会话上出现）',
+      }, [h('span', { key: 'g' }, '📖'), h('span', { key: 't' }, open ? '收起' : '导入故事书')]);
 
-      if (!open) return h('div', { className: 'rpc' }, [chip]);
+      const holder = h('span', { key: 'holder', ref: holderRef, className: 'rpc-holder', 'aria-hidden': 'true' });
+      const entry = (ReactDOM && rowTarget === undefined)
+        ? null                                  // 首帧先不画，等 useLayoutEffect 定位（它在绘制前跑，不会闪）
+        : (ReactDOM && rowTarget ? ReactDOM.createPortal(chip, rowTarget) : chip);
+
+      if (!open) {
+        // rowTarget === undefined 时 holder 必须留在树里（定位要靠它）
+        return h('div', { className: 'rpc' }, [holder, entry]);
+      }
 
       const previewCard = preview ? h('div', { key: 'prev', className: 'prev' }, [
         h('div', { key: 'h', className: 'row' }, [
@@ -1340,7 +1384,8 @@ window.__ModuleLoader__.load({
       ]) : null;
 
       return h('div', { className: 'rpc' }, [
-        chip,
+        holder,
+        entry,
         h('div', { key: 'panel', className: 'panel' }, [
           h('div', { key: 'bar', className: 'row' }, [
             h('input', {

@@ -40,7 +40,7 @@ globalThis.document = {
 // 钩子按**调用序号**存槽位（与 React 的规则同源：顺序必须稳定）。
 // 槽位提供的 useSessions / useInput 是普通函数（真实实现内部才用 useSyncExternalStore），
 // 所以它们不占槽位 —— 桩与真实行为在这一点上一致。
-const rt = { cells: [], cursor: 0, effects: [], cleanups: [] };
+const rt = { cells: [], cursor: 0, effects: [], cleanups: [], dirty: false };
 const resetSignals = () => { rt.cursor = 0; rt.effects = []; };
 function flushEffects() {
   for (const fn of rt.effects.splice(0)) {
@@ -55,7 +55,8 @@ const React = {
   useState(init) {
     const i = rt.cursor++;
     if (!(i in rt.cells)) rt.cells[i] = typeof init === 'function' ? init() : init;
-    return [rt.cells[i], (v) => { rt.cells[i] = typeof v === 'function' ? v(rt.cells[i]) : v; }];
+    // setState 后要重渲染：render() 靠 dirty 决定是否再跑一趟（模拟 React 的提交+重渲染）
+    return [rt.cells[i], (v) => { rt.cells[i] = typeof v === 'function' ? v(rt.cells[i]) : v; rt.dirty = true; }];
   },
   useRef(init) {
     const i = rt.cursor++;
@@ -63,8 +64,20 @@ const React = {
     return rt.cells[i];
   },
   useEffect(fn) { rt.cursor++; rt.effects.push(fn); },
+  useLayoutEffect(fn) { rt.cursor++; rt.effects.push(fn); },
   useMemo(fn) { return fn(); },
   useCallback(fn) { return fn; },
+};
+
+// ── 假 DOM：让「把入口送进工作区那一行」的逻辑真的被走到 ────────────────────
+// 组件的 useLayoutEffect 会看 holder 的 previousElementSibling，所以这里给每个
+// 带 ref 的宿主元素挂一个假的兄弟节点（前面那行里有 button，符合校验条件）。
+const rowEl = { parentElement: null, querySelector: () => ({ tag: 'button' }) };
+const stackEl = { children: [rowEl] };
+rowEl.parentElement = stackEl;
+const holderEl = { parentElement: stackEl, previousElementSibling: rowEl };
+const ReactDOM = {
+  createPortal: (child, container) => ({ type: 'Portal', props: { container }, children: flatten([child]) }),
 };
 
 // ── 模块加载器桩：捕获 factory，喂给它 require ──────────────────────────────
@@ -127,6 +140,7 @@ assert.equal(captured.id, 'dsh-rp-tools', 'bundle 注册的 id 应为 dsh-rp-too
 
 const plugin = captured.factory((name) => {
   if (name === 'react') return React;
+  if (name === 'react-dom') return ReactDOM;
   throw new Error(`未预期的 require: ${name}`);
 });
 assert.equal(plugin.name, 'dsh-rp-tools');
@@ -242,36 +256,57 @@ function renderNode(node) {
     const out = node.type({ ...node.props, children: node.children });
     return renderNode(out);
   }
+  // 宿主元素：把 ref 绑到假 DOM 节点上（组件靠它找「上一行」）
+  if (node.props?.ref && typeof node.props.ref === 'object') {
+    try { node.props.ref.current = holderEl; } catch { /* 只读 ref 忽略 */ }
+  }
   return { type: node.type, props: node.props, children: (node.children ?? []).map(renderNode) };
 }
+/**
+ * 渲染一趟 = 渲染 + 跑副作用 + （有 setState 就）重渲染。
+ * React 的 useLayoutEffect 在**绘制前**跑，所以这里循环到稳定，
+ * 组件的「先定位、再 portal」两步就都能被观察到。
+ */
 const render = (props) => {
-  resetSignals();
-  const tree = renderNode(dockReg.component(props));
-  flushEffects();
+  let tree = null;
+  for (let pass = 0; pass < 4; pass++) {
+    rt.dirty = false;
+    resetSignals();
+    tree = renderNode(dockReg.component(props));
+    flushEffects();
+    if (!rt.dirty) break;
+  }
   return tree;
 };
 const tick = (ms = 25) => new Promise((r) => setTimeout(r, ms));
 const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-import'));
 
 {
-  // ① 折叠态：只有一枚 chip，不铺面板
-  const tree = render(propsFor({ blank: true }));
+  const DM_PROPS = () => propsFor({ blank: true, preset: 'dm' });
+
+  // ① 折叠态：只有一枚 chip（而且被送进了「工作区 / DM 主持人」那一行）
+  const tree = render(DM_PROPS());
   const chips = byClass(tree, 'chip');
   assert.equal(chips.length, 1, '折叠态应渲染一枚 chip');
-  assert.ok(textOf(chips[0]).includes('导入 PNG 故事书'), 'chip 文案应说明这是导入入口');
+  assert.ok(textOf(chips[0]).includes('导入故事书'), 'chip 文案应说明这是导入入口');
   assert.equal(byClass(tree, 'panel').length, 0, '折叠态不该渲染面板');
+  const portals = findAll(tree, (n) => n.type === 'Portal');
+  assert.equal(portals.length, 1, '入口应 portal 进「工作区 / DM 主持人」那一行');
+  assert.equal(portals[0].props.container, rowEl, 'portal 的目标应是紧挨在 dock 之前的那一行');
+  assert.equal(chips[0].props['data-row'], 'true', '送进那一行后应用矮一号的样式');
 
-  // ② 会话筛选：非 DM 且已开局 → 一个像素都不渲染；DM 会话 → 渲染
+  // ② 只在不曾开局的 DM 新会话上出现
+  assert.equal(render(propsFor({ blank: true, preset: 'novelist' })), null, '未开局但不是 DM 预设的会话不该出现入口');
+  assert.equal(render(propsFor({ blank: true, preset: '' })), null, '预设还没投影出来时先不出现（避免闪一下又消失）');
+  assert.equal(render(propsFor({ blank: false, preset: 'dm' })), null, '已经开局的 DM 会话不该出现入口');
   assert.equal(render(propsFor({ blank: false, preset: 'novelist' })), null, '非 DM 且已开局的会话应完全不渲染');
-  assert.equal(byClass(render(propsFor({ blank: false, preset: 'dm' })), 'chip').length, 1, 'DM 会话应渲染入口');
 
   // ③ 点开：面板铺开，并自动拉一次卡库
-  render(propsFor({ blank: true }));
-  byClass(render(propsFor({ blank: true })), 'chip')[0].props.onClick();
-  let tree2 = render(propsFor({ blank: true }));
+  byClass(render(DM_PROPS()), 'chip')[0].props.onClick();
+  let tree2 = render(DM_PROPS());
   assert.equal(byClass(tree2, 'panel').length, 1, '展开后应渲染面板');
   await tick(40);
-  tree2 = render(propsFor({ blank: true }));
+  tree2 = render(DM_PROPS());
   assert.ok(textOf(tree2).includes('3269'), '面板应显示卡库规模（fetch 回来之后）');
   const items = byClass(tree2, 'item');
   assert.equal(items.length, 1, '列表应渲染出卡片条目（fetch 桩返回 1 张）');
@@ -280,7 +315,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   // ④ 选卡 → 预览
   items[0].props.onClick();
   await tick(40);
-  tree2 = render(propsFor({ blank: true }));
+  tree2 = render(DM_PROPS());
   const previewText = textOf(byClass(tree2, 'prev')[0] ?? tree2);
   assert.ok(previewText.includes('长安'), '预览应显示卡名');
   assert.ok(previewText.includes('世界书 12 条'), '预览应显示世界书条数');
@@ -292,9 +327,9 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   // ⑤ 导入：切 dm 预设 → POST 导入 → 把开场指令塞进输入框并提交
   importBtn[0].props.onClick();
   await tick(80);
-  render(propsFor({ blank: true }));   // 编辑器把草稿同步好了 → 组件这一帧提交
+  render(DM_PROPS());   // 编辑器把草稿同步好了 → 组件这一帧提交
   await tick(120);
-  assert.deepEqual(selectedPresets[0], [SID, 'dm'], '导入前应把该会话预设切成 dm');
+  assert.equal(selectedPresets.length, 0, '会话已经是 dm 预设 → 不该再重复切一次（入口本来就只在 dm 新会话上出现）');
   assert.equal(importPosts().length, 1, '应 POST /rp-tools/card-import');
   assert.equal(importPosts()[0].body.path, 'cards/古风/长安.card.png', 'POST 应带上选中的卡路径');
   assert.equal(importPosts()[0].body.workspace, 'D:\\Story', 'POST 应带上会话工作区（宿主据此落盘）');
@@ -302,29 +337,18 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.ok(actions.drafts[0].includes('不要再问世界从哪来'), '开场指令必须拦住 dm persona 的开场提问');
   assert.equal(actions.submitted, 1, '开场指令应被提交（自动开始游戏）');
   assert.ok(!selectedPresets.some(([, p]) => p !== 'dm'), '只应切到 dm，不该切别的预设');
+  assert.equal(startedSessions, 0, '空白 DM 会话上导入不该去新建会话');
 
-  // ⑥ 已开局的会话：应「新建会话再导入」，且新会话出现后自动接手
-  selectedPresets.length = 0;
-  actions.submitted = 0;
-  // 面板还是展开态（上一步点开的），列表也还在；直接选卡 → 点导入
-  let tree3 = render(propsFor({ blank: false, preset: 'dm' }));
-  byClass(tree3, 'item')[0].props.onClick();
-  await tick(40);
-  tree3 = render(propsFor({ blank: false, preset: 'dm' }));
-  const btn3 = findAll(tree3, (n) => String(n.props?.className ?? '').includes('primary'));
-  assert.ok(textOf(btn3[0]).includes('新建会话并导入'), '已开局的会话上按钮文案应提示会新建会话');
-  const before = importPosts().length;
-  btn3[0].props.onClick();
-  await tick(40);
-  assert.equal(startedSessions, 1, '已开局的会话应调 uiWorkspace.startSession() 新建会话');
-  assert.equal(importPosts().length, before, '新会话就位之前不该先导进旧会话');
-  // 新会话成为当前会话（组件可能被重新挂载 —— 订阅这套桩会重跑一遍渲染）
-  render(propsFor({ blank: true }));
-  await tick(80);
-  assert.equal(importPosts().length, before + 1, '新会话出现后应自动接手导入');
-  render(propsFor({ blank: true }));   // 编辑器同步草稿的那一帧
-  await tick(120);
-  assert.equal(actions.submitted, 1, '接手后应把开场指令发出去');
+  // ⑥ 开场指令一发出去会话就不再是空白 —— 此时面板必须留住（否则用户看不到导入结果）
+  const after = render(propsFor({ blank: false, preset: 'dm' }));
+  assert.equal(byClass(after, 'panel').length, 1, '导入进行中/刚导完时，即使会话已开局也要留住面板');
+  assert.equal(byClass(after, 'chip').length, 1, '这时入口也还在（收起它之后才会消失）');
+  assert.ok(textOf(after).includes('导入完成'), '面板应显示导入结果');
+  assert.ok(textOf(after).includes('rp-worldbook.md'), '结果里应写出世界书文件名');
+
+  // ⑦ 收起之后，入口就该彻底消失（会话已经不是新会话了）
+  byClass(after, 'chip')[0].props.onClick();
+  assert.equal(render(propsFor({ blank: false, preset: 'dm' })), null, '收起后入口应消失（已开局且非空白）');
 }
 
 console.log('客户端冒烟测试通过：');
@@ -333,4 +357,4 @@ console.log(`  · apply 后样式表已注入（${style.textContent.length} 字�
 console.log(`  · 重复 apply 幂等`);
 console.log(`  · 已注册槽位：${[...new Set(registered)].join(', ')}`);
 console.log(`  · 故事书导入槽位：id=${dockReg.id} order=${dockReg.order}`);
-console.log(`  · 无头渲染全流程通过：折叠/展开/列表/预览/导入/新建会话接手（共 ${calls.length} 次请求）`);
+console.log(`  · 无头渲染全流程通过：portal 进工作区那一行 / 只在未开局的 DM 新会话出现 / 列表 / 预览 / 导入 / 结果留存（共 ${calls.length} 次请求）`);
