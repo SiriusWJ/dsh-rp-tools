@@ -727,8 +727,25 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     check('卡库：默认指向工作区的 rp-cards', def.json.root, join(wsLib, 'rp-cards'));
     check('卡库：来源标为 workspace', def.json.rootSource, 'workspace');
     check('卡库：能列到工作区里的卡', def.json.items?.some((i) => i.name === '工作区卡'), true);
-    // 拿不到工作区时回落到内置大卡库（兜底，不至于什么都列不出来）
+    // 拿不到工作区、配置也没写根目录时：不再猜路径，直接说清「缺工作区」
     const noWs = await callGet('/rp-tools/cards', '?limit=1');
+    check('卡库：无工作区时不猜路径', noWs.json.root, '');
+    check('卡库：无工作区时来源标为 none', noWs.json.rootSource, 'none');
+    check('卡库：无工作区时给出提示', String(noWs.json.hint).includes('工作区'), true);
+
+    // ★ 回归：这种「空根目录」状态下解析某张卡，必须是明确的 400 提示，
+    // 而不是把 '' resolve 成进程 cwd 后报 ENOENT（'<AppData>/同人/某卡.png'）。
+    // 之前真机上就是这么炸的：客户端没传 workspace → 后端 stat 了一个人类看不懂的路径。
+    const noRoot = await callGet('/rp-tools/card', `?path=${encodeURIComponent('同人/SCP-C收容设施.png')}`);
+    check('card：无工作区无根目录时明确报错', noRoot.status, 400);
+    check('card：错误提示指向工作区', String(noRoot.json.error).includes('工作区'), true);
+    check('card：错误里没有 cwd 拼出来的路径', /ENOENT|AppData/.test(String(noRoot.json.error)), false);
+    // 同一个相对路径，带上工作区就能解析到 <工作区>/rp-cards 下
+    mkdirSync(join(wsLib, 'rp-cards', '同人'), { recursive: true });
+    writeFileSync(join(wsLib, 'rp-cards', '同人', 'SCP-C收容设施.png'), simpleCardPng('SCP-C收容设施'));
+    const withWs = await callGet('/rp-tools/card', `?path=${encodeURIComponent('同人/SCP-C收容设施.png')}&workspace=${encodeURIComponent(wsLib)}`);
+    check('card：带上工作区后同一相对路径可解析', withWs.json.name, 'SCP-C收容设施');
+
     // 相对路径的 cards.root 按工作区解析
     await callPost('/rp-tools/config', { cards: { root: 'my-cards' } });
     const relRoot = await callGet('/rp-tools/cards', `?limit=1&workspace=${encodeURIComponent(wsLib)}`);

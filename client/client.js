@@ -1692,11 +1692,23 @@ window.__ModuleLoader__.load({
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [draftText]);
 
+      /** 卡库根默认跟着会话工作区 —— 拿不到 cwd 时回宿主问一次（宿主的 sessionCwd 一定有）。 */
+      async function ensureCwd() {
+        const local = live.current.cwd || propsRef.current?._cwd || '';
+        if (local) return local;
+        try {
+          const res = await API.session(live.current.sessionId);
+          const cwd = typeof res?.cwd === 'string' ? res.cwd : '';
+          if (cwd) live.current = { ...live.current, cwd };
+          return cwd;
+        } catch { return ''; }
+      }
+
       async function load(query, cat = category) {
         setLoading(true);
         try {
           // 卡库默认在会话工作区下的 rp-cards/ → 把 cwd 一起报上去
-      const res = await API.cards({ q: query, category: cat, limit: 60, workspace: propsRef.current?._cwd ?? '' });
+      const res = await API.cards({ q: query, category: cat, limit: 60, workspace: await ensureCwd() });
           if (!res?.ok) throw new Error(res?.error ?? '读取卡库失败');
           setLib({ root: res.root, exists: res.exists, indexSource: res.indexSource, librarySize: res.librarySize, categories: res.categories ?? [] });
           setItems(res.items ?? []);
@@ -1723,7 +1735,7 @@ window.__ModuleLoader__.load({
         setResult(null);
         setBusy('preview');
         try {
-          const res = await API.card(cardPath, propsRef.current?._cwd ?? '');
+          const res = await API.card(cardPath, await ensureCwd());
           if (!res?.ok) throw new Error(res?.error ?? '解析失败');
           setPreview(res);
           applyDiscoveredMacros(res.macros);
@@ -1775,7 +1787,7 @@ window.__ModuleLoader__.load({
           const preset = await selectDmPreset(targetId);
           const res = await API.cardImport({
             sessionId: targetId,
-            workspace: live.current.cwd || undefined,
+            workspace: (await ensureCwd()) || undefined,
             path: opts.path,
             greetingIndex: opts.greetingIndex ?? greetingIndex,
             // 宏表：导入表单里填的值，按会话保存（默认值已在界面里预填全局玩家称呼）
