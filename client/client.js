@@ -2758,6 +2758,16 @@ window.__ModuleLoader__.load({
     function RpHeaderButton(props) {
       const { isDm } = useDmSession(props);
       const isOpen = useRpPanelOpen();
+      /**
+       * 「RP 面板」这个右栏页签类型**只在 DM 会话存在**。
+       *
+       * 非 DM 时把它撤掉，否则右栏展开的引导页会在每个会话都列着「🎲 RP 跑团面板」
+       * ——引导页列的是所有已注册类型，而类型注册是应用级的（不按会话）。
+       * 由这个组件驱动是有意的：它是本会话「是不是 DM」的唯一判定点（闸门 + 预设订阅
+       * 都在 useDmSession 里），而且它本身就是 RP 面板唯一的入口 —— 它没挂载时，
+       * 面板本来也打不开。
+       */
+      React.useEffect(() => (isDm ? acquireRpSidebarTab() : undefined), [isDm]);
       if (!isDm) return null;   // 非 DM 会话：一个像素都不渲染
       return h('button', {
         key: 'btn',
@@ -3437,44 +3447,100 @@ window.__ModuleLoader__.load({
      */
     const ctxRef = { current: null };
 
-    function registerSidebarTab(injected) {
-      const tabs = injected.sidebarRightTabs;
-      if (!tabs || typeof tabs.register !== 'function') return;
-      const service = injected.sidebarRight;
-      if (service && typeof service.openTab === 'function') {
-        openRpTab = () => {
-          try {
-            service.openTab(RP_TAB_KIND);
-          } catch (error) {
-            // 没有挂载的右栏座位（极窄视口等）→ 至少试着把右栏打开
-            console.warn('[rp-tools] 打开 RP 右栏页签失败，退回直接展开右栏:', error?.message ?? error);
-            try { service.toggleExpanded(); } catch { /* 放弃 */ }
-          }
-        };
-      }
+    /**
+     * 把「RP 面板」注册成右栏的一种**页签类型**（外加两个座位），返回撤销这一切的函数。
+     *
+     * ⚠️ 为什么必须能撤下来：右栏展开时的引导页列的是**所有已注册类型**的条目，而类型
+     * 注册是**应用级**的（`tabs.register` 不按会话）—— 注册一次不撤，非 DM 会话展开右栏
+     * 也会看到「🎲 RP 跑团面板」。用户报的就是这个（右侧栏 3 个选项里那个多出来的）。
+     *
+     * 运行中注册/撤销是宿主契约允许的：`tabs.register` 与两个 `slots.inject` 都返回
+     * disposer，dsh-context 用它自己的 placement 开关做的正是同一件事。
+     */
+    function mountRpSidebarTab() {
+      const ctx = ctxRef.current;
+      if (!ctx || typeof ctx.inject !== 'function') return null;
+      let disposeInject = null;
       try {
-        tabs.register({
-          id: RP_TAB_ID,
-          kind: RP_TAB_KIND,
-          title: () => '🎲 RP',
-          guide: [{
-            order: 30,
-            title: () => '🎲 RP 跑团面板',
-            description: () => '世界设定 / 角色卡 / 随机表 / 本会话生图配置',
-          }],
+        disposeInject = ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => {
+          const disposers = [];
+          const own = (result) => { if (typeof result === 'function') disposers.push(result); };
+          const release = () => {
+            openRpTab = null;
+            for (const dispose of disposers) { try { dispose(); } catch { /* 单个失败不影响其余 */ } }
+          };
+          const tabs = injected.sidebarRightTabs;
+          const service = injected.sidebarRight;
+          if (service && typeof service.openTab === 'function') {
+            openRpTab = () => {
+              try {
+                service.openTab(RP_TAB_KIND);
+              } catch (error) {
+                // 没有挂载的右栏座位（极窄视口等）→ 至少试着把右栏打开
+                console.warn('[rp-tools] 打开 RP 右栏页签失败，退回直接展开右栏:', error?.message ?? error);
+                try { service.toggleExpanded(); } catch { /* 放弃 */ }
+              }
+            };
+          }
+          if (!tabs || typeof tabs.register !== 'function') return release;
+          try {
+            own(tabs.register({
+              id: RP_TAB_ID,
+              kind: RP_TAB_KIND,
+              title: () => '🎲 RP',
+              guide: [{
+                order: 30,
+                title: () => '🎲 RP 跑团面板',
+                description: () => '世界设定 / 角色卡 / 随机表 / 本会话生图配置',
+              }],
+            }));
+          } catch (error) {
+            console.warn('[rp-tools] 注册右栏页签类型失败:', error?.message ?? error);
+            release();
+            return undefined;
+          }
+          own(injected.slots.inject('sidebar.right.pane.tab', () => injected.slots.register({
+            name: 'sidebar.right.pane.tab',
+            key: RP_TAB_ID,
+          }, (props) => h(RpSidebarTabBody, props))));
+          own(injected.slots.inject('sidebar.right.pane.tab.title', () => injected.slots.register({
+            name: 'sidebar.right.pane.tab.title',
+            key: RP_TAB_ID,
+          }, () => h(RpTabTitle))));
+          return release;
         });
       } catch (error) {
-        console.warn('[rp-tools] 注册右栏页签类型失败:', error?.message ?? error);
-        return;
+        console.warn('[rp-tools] 注入右栏服务失败:', error?.message ?? error);
+        return null;
       }
-      injected.slots.inject('sidebar.right.pane.tab', () => injected.slots.register({
-        name: 'sidebar.right.pane.tab',
-        key: RP_TAB_ID,
-      }, (props) => h(RpSidebarTabBody, props)));
-      injected.slots.inject('sidebar.right.pane.tab.title', () => injected.slots.register({
-        name: 'sidebar.right.pane.tab.title',
-        key: RP_TAB_ID,
-      }, () => h(RpTabTitle)));
+      return () => { try { if (typeof disposeInject === 'function') disposeInject(); } catch { /* 忽略 */ } };
+    }
+
+    /**
+     * 右栏页签的全局挂载点（**引用计数**）。
+     *
+     * 由「当前显示的会话是不是 DM」驱动：DM 会话的头部按钮挂载时 acquire、卸载（或不再是
+     * DM）时 release。引用计数是必需的 —— 万一同时挂着多个会话头部，重复注册同一个
+     * `id` 会被页签注册表判为接线错误直接抛错。
+     */
+    let rpTabMount = null;   // { dispose, refs }
+    function acquireRpSidebarTab() {
+      if (!rpTabMount) {
+        const dispose = mountRpSidebarTab();
+        rpTabMount = { dispose: typeof dispose === 'function' ? dispose : () => {}, refs: 0 };
+      }
+      rpTabMount.refs += 1;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (!rpTabMount) return;
+        rpTabMount.refs -= 1;
+        if (rpTabMount.refs > 0) return;
+        const { dispose } = rpTabMount;
+        rpTabMount = null;
+        try { dispose(); } catch (error) { console.warn('[rp-tools] 撤销右栏页签失败:', error?.message ?? error); }
+      };
     }
 
     function apply(ctx) {
@@ -3522,9 +3588,9 @@ window.__ModuleLoader__.load({
         label: () => 'PNG 故事书',
       }, (props) => h(RpCardImport, props)));
 
-      // 把 RP 面板注册成右侧栏的一种页签：入口按钮调 openTab 打开它，
-      // 右栏自带的收起 / 浮动 / 关闭都由 DSH 负责，插件不再自己画浮层。
-      ctx.inject(['sidebarRightTabs', 'sidebarRight'], registerSidebarTab);
+      // 右栏页签（RP 面板本体）**不在这里注册**：它是应用级的类型注册，注册一次就会让
+      // 每个会话的右栏引导页都列着「🎲 RP 跑团面板」。改由会话头部按钮按「本会话是不是 DM」
+      // 挂载/撤销 —— 见 acquireRpSidebarTab 与 RpHeaderButton 里的 effect。
     }
 
     module.exports.name = name;

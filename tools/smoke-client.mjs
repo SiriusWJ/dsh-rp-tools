@@ -48,13 +48,20 @@ globalThis.document = {
 //    落在 B 组件的槽位上 —— 我加了几个 hook 之后，dock 组件的 `open` 读到了 RP 面板的
 //    `lib` 值，测试开始报「面板没打开」这种假失败（查了半天才发现是测试桩的锅）。
 const rt = { cells: [], cellStore: new Map(), cursor: 0, effects: [], cleanups: [], dirty: false };
-/** 重新挂载（等价于把整棵树卸载重来）：清掉所有组件的钩子状态。 */
+/**
+ * 重新挂载（等价于把整棵树卸载重来）：先跑**清理函数**，再清掉钩子状态。
+ *
+ * ⚠️ 早先这里只是把 cleanups 丢掉 —— 于是「卸载时要做什么」这条路径**从来没被走过**。
+ *    RP 右栏页签的挂/撤就是靠 effect 清理做的（DM 会话注册、切走撤销），
+ *    不跑清理的话那条路测不到、也可能假绿。真实 React 卸载时一定跑清理。
+ */
 function resetHooks() {
+  const pending = rt.cleanups.splice(0);
+  for (const cleanup of pending) { try { cleanup(); } catch { /* 清理失败不该让测试挂掉 */ } }
   rt.cellStore.clear();
   rt.cells = [];
   rt.cursor = 0;
   rt.effects = [];
-  rt.cleanups = [];
   rt.dirty = false;
 }
 const resetSignals = () => { rt.cursor = 0; rt.effects = []; };
@@ -85,6 +92,8 @@ const React = {
     // ⚠️ 必须与真实 React 一样**按依赖决定跑不跑**：早先这里无条件 push，于是每次 render()
     //    都把「挂载时的 reload()」又跑一遍 —— 它会把 draft 铺回宿主版本，测试里刚改的字段
     //    被静默冲掉（加角色浮窗用例时就是这么被打中的）。真实 React 不会这样。
+    // ⚠️ 依赖变化时还必须**先跑上一次的清理函数**：这里曾经只 push 新 effect、把旧清理丢掉，
+    //    于是「依赖变化 / 卸载时的清理」从来没被执行过（和当年测试桩凭空给 ctx.agent 同类）。
     const cells = rt.cells;
     const i = rt.cursor++;
     const prev = cells[i];
@@ -93,8 +102,16 @@ const React = {
       || (list === null) !== (prev.list === null)
       || (list !== null && (list.length !== prev.list.length || list.some((d, k) => !Object.is(d, prev.list[k]))));
     if (changed) {
-      cells[i] = { list };
-      rt.effects.push(fn);
+      if (typeof prev?.cleanup === 'function') {
+        try { prev.cleanup(); } catch { /* 清理失败不该让测试挂掉 */ }
+      }
+      cells[i] = { list, cleanup: null };
+      rt.effects.push(() => {
+        const cleanup = fn();
+        const cell = cells[i];
+        if (cell) cell.cleanup = typeof cleanup === 'function' ? cleanup : null;
+        return cleanup;
+      });
     }
   },
   useLayoutEffect(fn, deps) { React.useEffect(fn, deps); },
@@ -195,6 +212,8 @@ const stateStub = {
  * 正是「客户端投影坏了、宿主是对的」（切预设会把投影基线重放、清掉没有的键）。
  */
 let gateReply = { ok: true, dm: true, started: false };
+/** `/rp-tools/session` 回复里的 isDm（宿主登记表的答案）。用例可切，默认是 DM。 */
+let sessionReplyIsDm = true;
 globalThis.fetch = async (url, options = {}) => {
   const method = options.method ?? 'GET';
   calls.push({ url: String(url), method, body: options.body ? JSON.parse(options.body) : undefined });
@@ -284,7 +303,10 @@ globalThis.fetch = async (url, options = {}) => {
   }
   if (target.startsWith('/rp-tools/session')) {
     return reply({
-      ok: true, isDm: true, preset: 'dm',
+      // 宿主登记表说这是不是 DM 会话。**必须可切** —— 组件的兜底判定读的就是它
+      // （`useDmSession` 在预设投影还没就绪时问 /rp-tools/session）；写死 true 的话
+      // 「切到非 DM 会话」这条路径永远走不到，测试会假绿。
+      ok: true, isDm: sessionReplyIsDm, preset: 'dm',
       // 界面 ensureCwd 的兜底来源：会话工作区（真机上是 resolveWorkspaceDir 那四级链的结果）
       cwd: 'D:\\Story',
       session: sessionStub,
@@ -430,27 +452,61 @@ assert.deepEqual(plugin.inject, ['slots']);
 // ── 关键断言 ①：apply 一跑，样式就该在 head 里 ─────────────────────────────
 const registered = [];
 const slotRegs = [];
+/**
+ * 插槽桩。`register` / `inject` 都必须**可撤销**：
+ *   · `register` 返回的 disposer 要把注册项从 slotRegs 里摘掉；
+ *   · `inject(key, cb)` 返回的 disposer 要跑 cb 返回的清理函数（Cordis 的语义）。
+ * 早先两个都返回空操作 —— 于是「运行中撤销一个槽位注册」这条路测试里永远走不到，
+ * 而 RP 右栏页签正是靠它按会话挂/撤的。
+ */
 const slotsStub = {
-  inject: (key, cb) => { registered.push(key); cb(); return () => {}; },
-  register: (spec, component) => { slotRegs.push({ ...spec, component }); return () => {}; },
+  inject: (key, cb) => {
+    registered.push(key);
+    const inner = cb();
+    return () => { if (typeof inner === 'function') inner(); };
+  },
+  register: (spec, component) => {
+    const row = { ...spec, component };
+    slotRegs.push(row);
+    return () => {
+      const at = slotRegs.indexOf(row);
+      if (at >= 0) slotRegs.splice(at, 1);
+    };
+  },
 };
 // ctx 桩：remote / uiWorkspace 都给上，让「切预设」与「新建会话」两条路都能被走到
 let startedSessions = 0;
 const selectedPresets = [];
 // 宿主转发给客户端的事件（`remote.$on`）：预设切换就靠它触发「重新判断入口」
 const remoteEventHandlers = new Map();
+/** 已注册的右栏页签类型（`register` 返回的撤销函数会把它移出去）。 */
+const tabRegistrations = [];
 const ctx = {
   slots: slotsStub,
-  // 右栏那两个服务：回调要真的跑，否则 `sidebar.right.pane.tab` 不会被注册（面板也就无从渲染）
+  // 右栏那两个服务：回调要真的跑，否则 `sidebar.right.pane.tab` 不会被注册（面板也就无从渲染）。
+  // `register` 必须**可撤销**并记录定义 —— RP 页签类型现在按「本会话是不是 DM」挂/撤，
+  // 测试要能断言「非 DM 会话的引导页里没有 RP 那条」。
   inject: (names, fn) => {
+    // ⚠️ 必须**保留回调的返回值**并在撤销时调用它 —— Cordis 里 `ctx.inject(deps, cb)` 返回的
+    //    disposer 会连带跑 cb 返回的清理函数。早先这里返回一个空操作，于是「运行中撤销注入」
+    //    这条路径在桩里从来没生效过（RP 右栏页签的挂/撤正是靠它）。
+    let inner = null;
     if (typeof fn === 'function' && Array.isArray(names) && names.includes('sidebarRightTabs')) {
-      fn({
+      inner = fn({
         slots: slotsStub,
-        sidebarRightTabs: { register: () => () => {} },
+        sidebarRightTabs: {
+          register: (def) => {
+            tabRegistrations.push(def);
+            return () => {
+              const at = tabRegistrations.indexOf(def);
+              if (at >= 0) tabRegistrations.splice(at, 1);
+            };
+          },
+        },
         sidebarRight: { openTab: () => {}, isExpanded: () => false, active: () => null },
       });
     }
-    return () => {};
+    return () => { if (typeof inner === 'function') inner(); };
   },
   effect: () => () => {},
   get: (name) => {
@@ -603,6 +659,26 @@ const render = (props, Component = dockReg.component) => {
 };
 const tick = (ms = 25) => new Promise((r) => setTimeout(r, ms));
 const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-import'));
+
+/**
+ * 确保右栏的「RP 面板」页签**已注册**，返回它的注册项。
+ *
+ * 页签类型不再由 apply 注册，而是跟「当前显示的会话是不是 DM」走 —— 所以任何要渲染
+ * 面板本体的用例，都得先把 DM 会话的头部按钮挂上（那正是不变量本身：非 DM 会话没有这个页签）。
+ */
+async function ensureSidebarTab() {
+  const headerReg = slotRegs.find((r) => r.name === 'conversation.session.header.utilities');
+  assert.ok(headerReg, '应注册头部入口（页签类型由它按 DM 判定挂载）');
+  sessionReplyIsDm = true;
+  gateReply = { ok: true, dm: true, started: false };
+  let seat = slotRegs.find((r) => r.name === 'sidebar.right.pane.tab');
+  for (let i = 0; i < 8 && !seat; i += 1) {
+    render(propsFor({ preset: 'dm', blank: false }), headerReg.component);
+    await tick(20);
+    seat = slotRegs.find((r) => r.name === 'sidebar.right.pane.tab');
+  }
+  return seat;
+}
 
 {
   const DM_PROPS = () => propsFor({ blank: true, preset: 'dm' });
@@ -795,10 +871,76 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   assert.equal(chips2[0].props.style?.left, '306px', '横向应接在那一行最后一个 chip 后面（right+6）');
 }
 
+// ── 右栏页签类型只在 DM 会话注册（用户报的「右侧栏每个会话都有 RP 跑团面板」）──
+// 根因：右栏展开时的引导页列的是**所有已注册类型**的条目，而类型注册是**应用级**的
+// （`tabs.register` 不按会话）。以前在 apply 里注册一次就再也不撤 —— 非 DM 会话也照样列着。
+// 现在由会话头部按钮按「本会话是不是 DM」挂/撤，并带引用计数（重复注册同一 id 会抛错）。
+{
+  const headerReg = slotRegs.find((r) => r.name === 'conversation.session.header.utilities');
+  const tabSeat = () => slotRegs.some((r) => r.name === 'sidebar.right.pane.tab');
+  const rpGuide = () => tabRegistrations.filter((d) => d.kind === 'dsh-rp-tools');
+
+  // 从干净状态开始：先卸载（跑清理）→ 应彻底撤掉
+  resetHooks();
+  assert.equal(rpGuide().length, 0, '没有任何会话头部挂载时，不该注册 RP 页签类型');
+  assert.equal(tabSeat(), false, '…也不该留下页签座位');
+
+  // ① DM 会话：挂上头部 → 注册，且引导页里就有 RP 那条
+  sessionReplyIsDm = true;
+  gateReply = { ok: true, dm: true, started: false };
+  render(propsFor({ preset: 'dm', blank: false }), headerReg.component);
+  for (let i = 0; i < 8 && rpGuide().length === 0; i += 1) {
+    await tick(20);
+    render(propsFor({ preset: 'dm', blank: false }), headerReg.component);
+  }
+  assert.equal(rpGuide().length, 1, 'DM 会话应注册 RP 页签类型');
+  assert.ok(rpGuide()[0].guide.some((g) => String(g.title()).includes('RP 跑团面板')),
+    '引导页条目里应有「🎲 RP 跑团面板」');
+  assert.equal(tabSeat(), true, 'DM 会话要注册页签座位（面板本体才有地方渲染）');
+
+  // ② 切到非 DM 会话（宿主与投影都说不是）→ **先跑清理**，撤掉
+  sessionReplyIsDm = false;
+  gateReply = { ok: true, dm: false, started: false };
+  for (let i = 0; i < 8 && rpGuide().length > 0; i += 1) {
+    await tick(20);
+    render(propsFor({ preset: 'standard', blank: false, sid: 'session-other' }), headerReg.component);
+  }
+  assert.equal(rpGuide().length, 0, '切到非 DM 会话应撤销 RP 页签类型');
+  assert.equal(tabSeat(), false, '非 DM 会话不该留下页签座位');
+
+  // ③ 再渲染一次不该重复注册（同一个组件重复提交是常态；重复注册同一个 id 会被
+  //    页签注册表判为接线错误直接抛错）。引用计数里 >1 的那条分支要「同时挂两个实例」
+  //    才走得到，而这个测试桩的钩子槽位按组件类型共享 —— 模拟不出两个实例，如实记在这里。
+  sessionReplyIsDm = true;
+  gateReply = { ok: true, dm: true, started: false };
+  for (let i = 0; i < 8 && rpGuide().length === 0; i += 1) {
+    await tick(20);
+    render(propsFor({ preset: 'dm', blank: false }), headerReg.component);
+  }
+  render(propsFor({ preset: 'dm', blank: false }), headerReg.component);
+  assert.equal(rpGuide().length, 1, '重复渲染不该注册第二份（注册表会抛错）');
+
+  // ④ 卸载整棵树 → 跑清理 → 撤掉
+  resetHooks();
+  assert.equal(rpGuide().length, 0, '全部卸载后应撤销 RP 页签类型');
+  assert.equal(tabSeat(), false, '全部卸载后座位也要撤掉');
+  gateReply = { ok: true, dm: true, started: false };
+}
+
 // ── 关键断言 ④：RP 面板要能看到世界书条目（用户提的问题）───────────────────
 {
-  const tab = slotRegs.find((r) => r.name === 'sidebar.right.pane.tab');
-  assert.ok(tab, '应注册右侧栏面板页签（RP 面板本体）');
+  // RP 页签类型**不再是 apply 时注册的**：它是按「本会话是不是 DM」挂/撤的
+  // （否则右栏引导页会在每个会话都列着「🎲 RP 跑团面板」，用户报的就是这个）。
+  // 所以这里先把 DM 会话的头部按钮挂上，触发注册，再取页签组件。
+  {
+    const headerReg = slotRegs.find((r) => r.name === 'conversation.session.header.utilities');
+    assert.ok(headerReg, '应注册头部入口（页签类型由它按 DM 判定挂载）');
+    resetHooks();
+    render(propsFor({ preset: 'dm', blank: false }), headerReg.component);
+    await tick(30);
+  }
+  const tab = await ensureSidebarTab();
+  assert.ok(tab, 'DM 会话下应注册右侧栏面板页签（RP 面板本体）');
   resetHooks();
   const store = { current: SID, byId: { [SID]: { blank: false, cwd: 'D:\\Story', projectionValues: { agentPreset: 'dm' } } } };
   const panel = render({
@@ -1522,7 +1664,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
   //   可提成某角色的立绘、可删。**DM 侧不能删**（那是玩家的事），所以删除只出现在这里。
   {
     // 自己拿一次面板页签与 store（上一块的 tab 已经出了作用域）
-    const tab = slotRegs.find((r) => r.name === 'sidebar.right.pane.tab');
+    const tab = await ensureSidebarTab();
     const store = { current: SID, byId: { [SID]: { blank: false, cwd: 'D:\\Story', projectionValues: { agentPreset: 'dm' } } } };
     const asPanel = () => render({
       sessionId: SID,
@@ -1681,7 +1823,7 @@ const importPosts = () => calls.filter((c) => c.url.startsWith('/rp-tools/card-i
 
   // ★ 备份 / 会话包（P1）：导出是一个下载链接，快照会更新恢复点清单，导入默认先问「要不要覆盖」。
   {
-    const tab = slotRegs.find((r) => r.name === 'sidebar.right.pane.tab');
+    const tab = await ensureSidebarTab();
     const store = { current: SID, byId: { [SID]: { blank: false, cwd: 'D:\\Story', projectionValues: { agentPreset: 'dm' } } } };
     const asPanel = () => render({
       sessionId: SID,
