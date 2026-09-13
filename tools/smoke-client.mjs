@@ -487,9 +487,9 @@ const ctx = {
   // `register` 必须**可撤销**并记录定义 —— RP 页签类型现在按「本会话是不是 DM」挂/撤，
   // 测试要能断言「非 DM 会话的引导页里没有 RP 那条」。
   inject: (names, fn) => {
-    // ⚠️ 必须**保留回调的返回值**并在撤销时调用它 —— Cordis 里 `ctx.inject(deps, cb)` 返回的
-    //    disposer 会连带跑 cb 返回的清理函数。早先这里返回一个空操作，于是「运行中撤销注入」
-    //    这条路径在桩里从来没生效过（RP 右栏页签的挂/撤正是靠它）。
+    // ⚠️ 必须模拟真实 Cordis 契约：`ctx.inject(deps, cb)` 返回 `{ dispose() }` 的 handle，
+    //    不是裸函数。此前桩错误地返回函数，正好掩盖了生产 bug：代码只认函数，导致真机
+    //    离开 DM 会话后没有运行 cb 的清理，应用级 RP 页签类型永久残留。
     let inner = null;
     if (typeof fn === 'function' && Array.isArray(names) && names.includes('sidebarRightTabs')) {
       inner = fn({
@@ -506,7 +506,14 @@ const ctx = {
         sidebarRight: { openTab: () => {}, isExpanded: () => false, active: () => null },
       });
     }
-    return () => { if (typeof inner === 'function') inner(); };
+    let disposed = false;
+    return {
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        if (typeof inner === 'function') inner();
+      },
+    };
   },
   effect: () => () => {},
   get: (name) => {

@@ -2718,6 +2718,20 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 撤销 `ctx.inject()` 的延迟注入。
+     *
+     * 当前 Cordis 返回的是带 `dispose()` 的 handle，不是裸 disposer 函数。旧版测试桩把它
+     * 伪造成函数，导致测试能撤、真机不能撤：DM 会话注册过一次 RP 类型后就永久留在全局
+     * 右栏注册表里。兼容函数形态只是为了旧宿主/测试，不再把它当主契约。
+     */
+    function disposeInjectHandle(handle) {
+      try {
+        if (handle && typeof handle.dispose === 'function') handle.dispose();
+        else if (typeof handle === 'function') handle();
+      } catch { /* 清理失败不该打断会话切换 */ }
+    }
+
+    /**
      * RP 面板此刻是不是正开着（右栏展开 **且** 活动页签是本插件的）。
      * 用 `ctx.inject` 拿服务：插件只硬注入 slots，右栏服务是延迟注入的。
      * 没装右栏时恒为 false，按钮就不显示按下态 —— 不会因此崩。
@@ -2726,10 +2740,10 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = React.useState(false);
       React.useEffect(() => {
         let alive = true;
-        let dispose = null;
+        let injectHandle = null;
         if (!ctxRef.current) return () => { alive = false; };
         try {
-          dispose = ctxRef.current.inject(['sidebarRight'], (injected) => {
+          injectHandle = ctxRef.current.inject(['sidebarRight'], (injected) => {
             const service = injected.sidebarRight;
             if (!service) return;
             const sync = () => {
@@ -2748,7 +2762,7 @@ window.__ModuleLoader__.load({
         } catch { /* 没有右栏服务：保持未打开 */ }
         return () => {
           alive = false;
-          if (typeof dispose === 'function') { try { dispose(); } catch { /* 忽略 */ } }
+          disposeInjectHandle(injectHandle);
         };
       }, []);
       return open;
@@ -3460,9 +3474,9 @@ window.__ModuleLoader__.load({
     function mountRpSidebarTab() {
       const ctx = ctxRef.current;
       if (!ctx || typeof ctx.inject !== 'function') return null;
-      let disposeInject = null;
+      let injectHandle = null;
       try {
-        disposeInject = ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => {
+        injectHandle = ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => {
           const disposers = [];
           const own = (result) => { if (typeof result === 'function') disposers.push(result); };
           const release = () => {
@@ -3513,7 +3527,7 @@ window.__ModuleLoader__.load({
         console.warn('[rp-tools] 注入右栏服务失败:', error?.message ?? error);
         return null;
       }
-      return () => { try { if (typeof disposeInject === 'function') disposeInject(); } catch { /* 忽略 */ } };
+      return () => { disposeInjectHandle(injectHandle); };
     }
 
     /**
