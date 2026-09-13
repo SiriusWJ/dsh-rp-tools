@@ -809,6 +809,13 @@ async function ensureSidebarTab() {
   for (const c of cardListGets) {
     assert.ok(c.url.includes(`sessionId=${SID}`), `卡库列表必须带 sessionId（实际：${c.url}）`);
   }
+  // 「刷新」不能再只是复用宿主的永久扫描缓存；必须显式要求重扫磁盘。
+  const refreshButton = findAll(tree2, (n) => n.type === 'button' && textOf(n) === '刷新')[0];
+  assert.ok(refreshButton, '导入面板应有刷新按钮');
+  refreshButton.props.onClick();
+  await tick(40);
+  const forcedRefresh = calls.filter((c) => c.url.startsWith('/rp-tools/cards?')).pop();
+  assert.ok(forcedRefresh?.url.includes('refresh=1'), `刷新按钮必须带 refresh=1（实际：${forcedRefresh?.url}）`);
 
   // ⑤ 导入：切 dm 预设 → POST 导入 → 把开场指令塞进输入框并提交
   importBtn[0].props.onClick();

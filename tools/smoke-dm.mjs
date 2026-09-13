@@ -5,7 +5,7 @@
 //    早期版本直接写 ~/.dsh/data/dsh-rp-tools/，测试记录会混进真实会话登记表，
 //    清理时极易误删真实会话 —— 别再改回去。
 import crypto from 'node:crypto';
-import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, renameSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -2337,6 +2337,38 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     check('卡库：相对路径配置按工作区解析', relRoot.json.root, join(wsLib, 'my-cards'));
     check('卡库：来源标为 config', relRoot.json.rootSource, 'config');
   }
+  // ★ 回归：卡库在插件运行期间被重命名/移动/删除后，扫描缓存必须自行失效。
+  // 真机事故是「刷新」仍列旧的英文长文件名，点进去 stat 那条死路径 → ENOENT。
+  {
+    const mutableRoot = join(TEST_HOME, 'cards-lib-mutable');
+    const mutableDir = join(mutableRoot, '新下载');
+    const oldFile = join(mutableDir, '旧文件名.png');
+    const newFile = join(mutableDir, '新文件名.png');
+    mkdirSync(mutableDir, { recursive: true });
+    writeFileSync(oldFile, simpleCardPng('可变卡'));
+    await callPost('/rp-tools/config', { cards: { root: mutableRoot } });
+
+    const beforeMove = await callGet('/rp-tools/cards', '?limit=10');
+    check('卡库变更：初次扫描列出旧文件名', beforeMove.json.items?.some((i) => i.path === '新下载/旧文件名.png'), true);
+    // 拉开目录 mtime，避免低精度文件系统把「扫描」与「重命名」记成同一个时间戳。
+    await new Promise((done) => setTimeout(done, 20));
+    renameSync(oldFile, newFile);
+
+    const afterMove = await callGet('/rp-tools/cards', '?limit=10');
+    check('卡库变更：目录 mtime 变化后自动列出新文件名', afterMove.json.items?.some((i) => i.path === '新下载/新文件名.png'), true);
+    check('卡库变更：自动刷新后不再保留旧路径', afterMove.json.items?.some((i) => i.path === '新下载/旧文件名.png'), false);
+
+    const stalePick = await callGet('/rp-tools/card', `?path=${encodeURIComponent('新下载/旧文件名.png')}`);
+    check('卡库变更：点旧路径返回 400', stalePick.status, 400);
+    check('卡库变更：点旧路径返回可识别错误码', stalePick.json.code, 'CARD_LIBRARY_CHANGED');
+    check('卡库变更：错误提示不再暴露 ENOENT', String(stalePick.json.error).includes('ENOENT'), false);
+
+    // 显式刷新必须无条件绕过缓存，即使文件系统时间戳碰巧没有变化。
+    writeFileSync(join(mutableDir, '刚加入.png'), simpleCardPng('刚加入'));
+    const forced = await callGet('/rp-tools/cards', '?limit=10&refresh=1');
+    check('卡库变更：refresh=1 强制重扫', forced.json.items?.some((i) => i.path === '新下载/刚加入.png'), true);
+  }
+
   const setRoot = await callPost('/rp-tools/config', { cards: { root: libRoot } });
   check('卡库根目录可配置', setRoot.json.config?.cards?.root, libRoot);
 

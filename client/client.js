@@ -3089,11 +3089,12 @@ window.__ModuleLoader__.load({
         } catch { return ''; }
       }
 
-      async function load(query, cat = category) {
+      async function load(query, cat = category, refresh = false) {
         setLoading(true);
         try {
-          // 卡库默认在会话工作区下的 rp-cards/ → sessionId（优先）+ cwd 一起报上去
-          const res = await API.cards({ q: query, category: cat, limit: 60, workspace: await ensureCwd(), sessionId: live.current.sessionId });
+          // 卡库默认在会话工作区下的 rp-cards/ → sessionId（优先）+ cwd 一起报上去。
+          // refresh=1 会绕过宿主扫描缓存：用户刚在磁盘上重命名/移动卡时，「刷新」必须真刷新。
+          const res = await API.cards({ q: query, category: cat, limit: 60, refresh: refresh ? '1' : undefined, workspace: await ensureCwd(), sessionId: live.current.sessionId });
           if (!res?.ok) throw new Error(res?.error ?? '读取卡库失败');
           setLib({ root: res.root, exists: res.exists, indexSource: res.indexSource, librarySize: res.librarySize, categories: res.categories ?? [] });
           setItems(res.items ?? []);
@@ -3121,6 +3122,15 @@ window.__ModuleLoader__.load({
         setBusy('preview');
         try {
           const res = await API.card(cardPath, { workspace: await ensureCwd(), sessionId: live.current.sessionId });
+          if (!res?.ok && res?.code === 'CARD_LIBRARY_CHANGED') {
+            // 选中后才发现文件刚被重命名/移动：清掉死选择并自动刷新，不让用户反复点同一条 ENOENT。
+            setSel('');
+            setPreview(null);
+            setCategory('');
+            await load(q, '', true);
+            setMsg({ kind: 'warn', text: '卡库内容已变更，列表已自动刷新，请重新选择。' });
+            return;
+          }
           if (!res?.ok) throw new Error(res?.error ?? '解析失败');
           setPreview(res);
           // 先取回默认宏列表再建行：否则预填用的是上一次的旧值（刚在设置页改过就白改）
@@ -3181,6 +3191,15 @@ window.__ModuleLoader__.load({
             // 宏表：导入表单里填的值，按会话保存（默认值已在界面里预填全局玩家称呼）
             macros: Object.fromEntries(macroRows.filter((r) => r.name && String(r.value).trim()).map((r) => [r.name, r.value])),
           });
+          if (!res?.ok && res?.code === 'CARD_LIBRARY_CHANGED') {
+            // 预览之后、真正导入之前文件也可能被整理走；回到最新列表，让用户重新选。
+            setSel('');
+            setPreview(null);
+            setCategory('');
+            await load(q, '', true);
+            setMsg({ kind: 'warn', text: '卡库内容已变更，列表已自动刷新，请重新选择后再导入。' });
+            return;
+          }
           if (!res?.ok) throw new Error(res?.error ?? '导入失败');
           setResult({ ...res, preset });
           const bits = [
@@ -3409,7 +3428,7 @@ window.__ModuleLoader__.load({
               h('option', { key: '', value: '' }, `全部分类（${lib?.librarySize ?? '…'}）`),
               ...(lib?.categories ?? []).map((c) => h('option', { key: c.name, value: c.name }, `${c.name}（${c.count}）`)),
             ]),
-            h('button', { key: 'r', onClick: () => void load(q) }, loading ? '…' : '刷新'),
+            h('button', { key: 'r', onClick: () => void load(q, category, true) }, loading ? '…' : '刷新'),
           ]),
           h('div', { key: 'meta', className: 'dim' },
             lib && lib.exists === false
