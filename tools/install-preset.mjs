@@ -20,7 +20,7 @@
  *   node tools/install-preset.mjs --yes      # 不问，直接做（CI / 脚本）
  *   node tools/install-preset.mjs --id mydm  # 装成别的预设 id（默认 dm）
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -95,15 +95,36 @@ if (hasExisting && !sameFiles && !YES) {
 }
 
 // ── 备份 ──────────────────────────────────────────────────────────────────
+/**
+ * 备份「要被覆盖的那份」，但**每个文件只保留最近一个备份**。
+ *
+ * 为什么要有这个上限：早先每跑一次就按时间戳加一份 `.bak-*`，本机跑了几轮之后
+ * 预设目录里堆了 11 个文件（4 份真文件 + 7 份历史备份）—— 而预设目录是**每次发现
+ * 预设都会扫**的地方，往里堆垃圾是实打实的副作用。清理旧的既是卫生，也让
+ * 「这个目录里哪些是当前生效的」一眼可辨。
+ */
+function backupOnce(file) {
+  const dir = dirname(file);
+  const base = file.slice(dir.length + 1);
+  let olds = [];
+  try {
+    olds = readdirSync(dir).filter((n) => n.startsWith(`${base}.bak-`)).sort();
+  } catch { /* 读不到就当没有旧的 */ }
+  // 先删掉除最新一个之外的旧备份（新的那个等会儿写）
+  for (const old of olds.slice(0, Math.max(0, olds.length))) {
+    try { rmSync(join(dir, old), { force: true }); } catch { /* 删不掉就算了 */ }
+  }
+  copyFileSync(file, `${file}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+}
+
 if (hasExisting && !sameFiles) {
   // 只备份这几份文件（不整目录拷：用户可能在里面放了自己的东西，那些不该被我们动）
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   for (const f of FILES) {
     const cur = join(DEST, f);
     if (!existsSync(cur)) continue;
-    copyFileSync(cur, `${cur}.bak-${stamp}`);
+    backupOnce(cur);
   }
-  console.log(`已备份原文件：*.bak-${stamp}`);
+  console.log('已备份被覆盖的文件（每个文件只留最近一个 .bak）');
 }
 
 // ── 落盘 ──────────────────────────────────────────────────────────────────
@@ -127,14 +148,20 @@ try {
 } catch { /* 下面统一报 */ }
 if (pluginPath) {
   console.log(`  ✓ 插件已装进 profile：${pluginPath}`);
-  // ⚠️ 判断「是不是链接到本仓库」必须比**路径段**，不能比字符串前缀：
+  // ⚠️ 判断「是不是链接/就在本仓库里」必须比**路径段**，不能比字符串前缀：
   // `<某目录>/node_modules/dsh-rp-tools` 与「仓库路径恰好是它的前缀」是两回事
   // （早先写成 startsWith(REPO) 会对着 GitHub 安装也打印「指向本仓库」，是假情报）。
   const segs = (p) => resolve(p).split(/[\\/]+/).filter(Boolean);
   const sameTree = segs(REPO).every((s, i) => segs(pluginPath)[i] === s);
+  // 注意：从 profile 里跑这个脚本时 REPO **就是** `profiles/web/node_modules/dsh-rp-tools`
+  // （安装副本本身），此时 sameTree 为真但「链接到源码仓库」不成立 —— 两种情况要分开说，
+  // 否则会像上一版那样对着安装副本宣称「改源码直接生效」（误导）。
+  const inProfile = /[\\/]node_modules[\\/]/.test(REPO);
   console.log(sameTree
-    ? '    （= 链接安装到本仓库：改这里的代码直接生效，不用重装）'
-    : '    （= 从远端装的一份拷贝：改了本仓库的代码需要重装/重新推送才会生效）');
+    ? `    （${inProfile
+      ? '= 你正在从 profile 里的**安装副本**运行本脚本；改源码后需要重装/重新推送才会生效'
+      : '= 链接安装到源码仓库：改仓库里的代码直接生效，不用重装'}）`
+    : '    （= 源码仓库与安装副本是两份：改了仓库的代码需要重装/重新推送才会生效）');
 } else {
   problems += 1;
   console.log(`  ✗ 插件**没装进** profile（找的是 ${profilePkg}）`);
