@@ -872,6 +872,55 @@ if (rpTable) {
       'edit_image,generate_image,my_image_plugin');
     check('全局工具：默认没有「未注册」的项', (listed.json.missing ?? []).length, 0);
 
+    // ①b **按来源插件归组**（用户要求：一个插件一个勾选框，而不是一堆散装工具名）。
+    //     宿主不提供归属（register 只进「当前层」、层标签是 tools.register()），所以靠映射表；
+    //     未命中的落进「其它」，**不按名字前缀乱猜**（猜错会让用户以为看的是某个插件）。
+    {
+      const groups = listed.json.groups ?? [];
+      const byKey = (k) => groups.find((g) => g.key === k);
+      check('分组：返回了 groups', Array.isArray(groups) && groups.length > 0, true);
+      check('分组：dsh-image-gen 组含生图三件',
+        (byKey('dsh-image-gen')?.tools ?? []).map((t) => t.name).join(','),
+        'canvas_state,edit_image,generate_image');
+      check('分组：dsh-genui 组含卡片渲染两件',
+        (byKey('dsh-genui')?.tools ?? []).map((t) => t.name).join(','),
+        'render_ui,validate_dsh_ui');
+      check('分组：搜索组含 web_search / web_fetch',
+        (byKey('dsh-web-search')?.tools ?? []).map((t) => t.name).join(','),
+        'web_fetch,web_search');
+      // 映射表里没有的工具落进「其它」——**不按名字前缀乱猜**（`my_image_plugin` 是模拟
+      // 「用户装了别的生图插件」：它确实该进「其它」，等有人把它加进映射表再归到生图组）
+      check('分组：未映射的工具落进「其它」',
+        (byKey('__other__')?.tools ?? []).map((t) => t.name).join(','), 'my_image_plugin');
+      // 组上的现成判断（界面据此画全勾 / 部分勾，不用自己数）
+      check('分组：全勾的组 all=true', byKey('dsh-genui')?.all, true);
+      check('分组：组上带「已勾/总数 + 工具名」摘要，勾选框要能自解释管的是哪几个',
+        /^2\/2 · render_ui、validate_dsh_ui$/.test(byKey('dsh-genui')?.summary ?? ''), true);
+      // 图片标识按**映射表点名**给，不靠逐名判断：生图组里的 `canvas_state` 名字里没有 image，
+      // 逐名判断会得出「真生图插件反而不打图」的荒唐结果（这条断言就是钉住那个坑）。
+      check('分组：生图组被点名为图片组（canvas_state 名字里没有 image）',
+        byKey('dsh-image-gen')?.image, true);
+      // 另外**兜底**那一条：整组工具名都像图片工具（这里是「其它」里只有 my_image_plugin）也算图片组。
+      // 两条路互补 —— 点名管已知插件的漏网名字，逐名管没进映射表的新插件。
+      check('分组：点名 + 「整组都像图片工具」两条路都算图片组（genui / 搜索不算）',
+        groups.filter((g) => g.image).map((g) => g.key).join(','), 'dsh-image-gen,__other__');
+      check('分组：混合组不打图片标（不能因为组里有一个生图工具就说整组是生图）',
+        byKey('dsh-web-search')?.image, false);
+      // 一个勾选框管一个插件：勾上该组全部工具
+      const imgTools = (byKey('dsh-image-gen')?.tools ?? []).map((t) => t.name);
+      const before = (await callGet('/rp-tools/global-tools')).json.allow.slice().sort().join(',');
+      await callPost('/rp-tools/global-tools', { allow: imgTools });
+      const onlyImg = await callGet('/rp-tools/global-tools');
+      check('分组：只勾 image-gen 组 → 只剩它的工具',
+        (onlyImg.json.allow ?? []).join(','), 'canvas_state,edit_image,generate_image');
+      check('分组：只勾一个插件后，别的组显示为未勾',
+        (onlyImg.json.groups ?? []).filter((g) => g.all).map((g) => g.key).join(','), 'dsh-image-gen');
+      check('分组：该组自己全勾（勾选框该是勾上的）',
+        (onlyImg.json.groups ?? []).find((g) => g.key === 'dsh-image-gen')?.all, true);
+      // 复原，免得影响下面的用例
+      await callPost('/rp-tools/global-tools', { allow: before.split(',') });
+    }
+
     // ② 换生图插件：把 my_image_plugin 勾上、去掉 generate_image
     const saved = await callPost('/rp-tools/global-tools', { allow: ['my_image_plugin', 'edit_image'] });
     check('全局工具：POST ok', saved.status, 200);
@@ -898,6 +947,15 @@ if (rpTable) {
     await callPost('/rp-tools/global-tools', { allow: ['not_installed_yet'] });
     const missing = await callGet('/rp-tools/global-tools');
     check('全局工具：未注册的名字列进 missing', (missing.json.missing ?? []).join(','), 'not_installed_yet');
+    // 未注册那组要和「其它」组**分得开**：两组都用 __other__ 当键的话，界面按 key 渲染会互相顶掉
+    // （真机上「有未映射工具 + 配了没装的名字」同时出现才会踩到，正好是这台机器的样子）。
+    {
+      const ms = (missing.json.groups ?? []).find((g) => g.missing === true);
+      check('分组：未注册的名字自成一组', (ms?.tools ?? []).map((t) => t.name).join(','), 'not_installed_yet');
+      check('分组：未注册那组的键与「其它」不撞',
+        ms?.key, '__missing__');
+      check('分组：未注册那组默认算勾上（配置里就有，用户不该看到它莫名变未勾）', ms?.all, true);
+    }
 
     // ⑥ 工具侧的等价入口（`rp_config(action:"set_global_tools")`，参数是逗号分隔字符串）
     const cfg2 = tools.get('rp_config');

@@ -1,6 +1,6 @@
 {
   "name": "dsh-rp-tools",
-  "version": "1.15.1",
+  "version": "1.15.2",
   "description": "跑团 / DM 工具插件（DeepSeek Harness）：中立随机裁决 rp_random + 按会话隔离的战役配置（世界 / 角色卡 / 随机表 / 宏表）+ 世界书与状态追踪 + 本会话图片资源库 rp_assets（收录宿主生图结果与玩家自带图，按标签/角色检索复用）+ 角色立绘位（玩家导入自己的图）+ 设置页与会话面板 + PNG 故事书（SillyTavern 角色卡）导入（世界书/卡全文/卡面落进工作区，角色与世界写进会话，自动切 dm 预设开场）。**不做图片生成** —— 需要插图时由宿主自带的 generate_image / edit_image 负责，本插件负责把结果收进资源库复用；RP 工具只在 dm 预设会话注册。",
   "type": "module",
   "main": "lib/index.js",

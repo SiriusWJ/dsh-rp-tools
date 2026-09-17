@@ -52,7 +52,8 @@ const assert = new Proxy({}, {
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-
+// 分组规则用**与宿主侧同一份**共享模块（桩不自己抄一份，否则映射表改了测试会假绿）
+import { GLOBAL_TOOL_SOURCES, GLOBAL_TOOL_SOURCE_FALLBACK } from '../lib/global-tools-defaults.js';
 const here = fileURLToPath(new URL('.', import.meta.url));
 const bundlePath = join(here, '..', 'client', 'client.js');
 
@@ -253,23 +254,47 @@ globalThis.fetch = async (url, options = {}) => {
   const reply = (json) => ({ ok: true, status: 200, json: async () => json });
   if (target.startsWith('/rp-tools/gate')) return reply(gateReply);
   // 「第三方工具管理」那张表的数据源：设置页挂载时会拉它一次。
-  // 注意**故意混入一个非注册表名字**（`ghost_tool`），用来验证「配了但本机没有」的行会显示成
-  // 「未注册」而不是消失 —— 否则用户配完看不到任何反馈，只会困惑「为什么没生效」。
+  // 分组**用宿主侧那份真逻辑**（import 同一个共享模块），不在这里手写 ——
+  // 桩自己抄一份分组规则的话，哪天映射表改了，测试会「绿着」而真机已经不对了。
   if (target.startsWith('/rp-tools/global-tools')) {
     const all = ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image', 'view_canvas'];
     const allow = globalToolsAllowStub ?? ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image'];
+    const imageLike = (name) => /(^|_)(image|img|photo|picture|draw|paint|illustrat)/i.test(name);
+    const toolOf = (name) => ({
+      name, checked: allow.includes(name), imageLike: imageLike(name),
+      hint: name === 'render_ui' ? 'DM 的卡片全靠它渲染；关掉就只能发纯文字' : '',
+    });
+    // 按映射表分组（与 lib/index.js 的 groupGlobalTools 同源）
+    const rest = [];
+    const groups = [];
+    for (const src of GLOBAL_TOOL_SOURCES) {
+      const tools = all.filter((n) => src.match.test(n));
+      if (!tools.length) continue;
+      groups.push({ key: src.key, label: src.label, tools: tools.slice().sort(), image: src.image === true });
+      rest.push(...tools);
+    }
+    const others = all.filter((n) => !rest.includes(n)).sort();
+    if (others.length) groups.push({ ...GLOBAL_TOOL_SOURCE_FALLBACK, tools: others });
+    const missing = allow.filter((n) => !all.includes(n)).sort();
+    if (missing.length) {
+      // 键与「其它」区分（同键会让界面按 key 渲染时两组互相顶掉）
+      groups.push({ key: '__missing__', label: '配置里有、本机没注册', missing: true, tools: missing });
+    }
+    for (const g of groups) {
+      g.tools = g.tools.map((t) => (typeof t === 'string' ? toolOf(t) : t));
+      g.all = g.tools.every((t) => t.checked);
+      g.some = g.tools.some((t) => t.checked);
+      g.image = g.image === true || g.tools.every((t) => t.imageLike);
+      g.summary = `${g.tools.filter((t) => t.checked).length}/${g.tools.length} · ${g.tools.map((t) => t.name).join('、')}`;
+    }
     return reply({
       ok: true,
       allow,
       defaults: ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image'],
       max: 32,
-      available: all.map((name) => ({
-        name,
-        checked: allow.includes(name),
-        imageLike: /(^|_)(image|img|photo|picture|draw|paint|illustrat)/i.test(name),
-        hint: name === 'render_ui' ? 'DM 的卡片全靠它渲染；关掉就只能发纯文字' : '',
-      })),
-      missing: allow.filter((n) => !all.includes(n)),
+      groups,
+      available: all.map(toolOf),
+      missing,
     });
   }
   if (target.startsWith('/rp-tools/cards')) {
@@ -2215,48 +2240,82 @@ async function ensureSidebarTab() {
   assert.equal(byClass(tree, 'toollist').length, 0, '不该再渲染 rp_* 的 toollist 列表');
   assert.ok(text.includes('配置文件'), '隐藏清单后，配置文件路径仍要能看到');
 
-  // ③ 一行一个：每个工具一行 gtrow（桩里 6 个全局工具）
+  // ③ **按插件聚合**：一行 = 一个插件（用户要求：装的是插件，不是散装工具名）。
+  //    桩里的 6 个工具全都在映射表里 → 分成 3 组：genui / image-gen / 搜索。
+  //    （未映射的工具会落到「其它」组 —— 那条由 smoke-dm 用 my_image_plugin 覆盖。）
   const rowsOf = (t) => findAll(t, (n) => String(n.props?.className ?? '').split(/\s+/).includes('gtrow'));
   let rows = rowsOf(tree);
-  assert.ok(rows.length >= 6, `每个工具一行（桩里 6 个，实际 ${rows.length}）`);
+  assert.equal(rows.length, 3, `一行一个插件（桩里 3 个来源插件，实际 ${rows.length} 行）`);
+  // 每行只有一个勾选框（勾它 = 该插件全部工具一起开/关）
+  for (const r of rows) {
+    assert.equal(findAll(r, (n) => n.type === 'input' && n.props?.type === 'checkbox').length, 1,
+      '一个插件一个勾选框（不是每个工具一个）');
+  }
+  // 行下方要有具体工具名（只读小字），让勾选自解释
+  const toolLines = byClass(tree, 'gttools');
+  assert.equal(toolLines.length, 3, '每组下面要列出它带的工具名');
+  const genuiRow = rows.find((r) => textOf(r).includes('dsh-genui'));
+  assert.ok(genuiRow, '应有 dsh-genui 那一组');
+  assert.ok(textOf(genuiRow).includes('render_ui') && textOf(genuiRow).includes('validate_dsh_ui'),
+    'genui 那组要列出它的两个工具名');
+  // ④ 图片标识：宿主点名「这组是生图插件」就给它「图」标。
+  //    ⚠ 断言必须看 **badge 元素**：组名里本来就写着「（生图）」，
+  //    只看整行文字的话，有没有标识都会通过 —— 那是假绿。
+  const badgesOf = (r) => findAll(r, (n) => String(n.props?.className ?? '').split(/\s+/).includes('badge'))
+    .map((n) => textOf(n));
+  assert.ok(badgesOf(rows.find((r) => textOf(r).includes('dsh-image-gen'))).includes('图'),
+    '生图那组要打「图」标（映射表点名，不靠逐名判断 —— view_canvas 名字里没有 image）');
+  assert.equal(badgesOf(genuiRow).includes('图'), false, 'genui 组不该被标成图片类（避免误导）');
   // ② 没有锁定项：不该有 disabled 的勾选框
   const boxes = findAll(tree, (n) => n.type === 'input' && n.props?.type === 'checkbox');
-  assert.ok(boxes.length >= 6, '每个工具一个勾选框');
   assert.equal(boxes.some((b) => b.props.disabled === true), false, '不该有不可取消的勾选框（固定放行已取消）');
-  // ④ 图片标识：edit_image / generate_image 标成图片类
-  const imgRows = rows.filter((r) => String(r.props?.title ?? '').includes('图片') || textOf(r).includes('图'));
-  assert.ok(imgRows.length >= 2, '生图/改图那两行要有图片标识');
-  // ⑤ 已勾选的排前面。这里做两件事：
-  //    · 勾选状态要如实反映配置（默认 5 个勾、桩里多出来的 view_canvas 不勾）
-  //    · 行序：**勾了的在前面**（取消一个之后它要沉到后面，见下面那段）
-  const isGhost = (r) => String(r.props?.className ?? '').includes('ghost');
-  const boxOf = (r) => findAll(r, (n) => n.type === 'input' && n.props?.type === 'checkbox')[0];
-  const checkedRows = rows.filter((r) => boxOf(r)?.props.checked === true);
-  const uncheckedRows = rows.filter((r) => boxOf(r)?.props.checked === false);
-  assert.equal(checkedRows.length, 5, '出厂默认应勾 5 个（卡片渲染 2 + 考据 1 + 生图/改图 2）');
-  assert.equal(uncheckedRows.length, 1, '桩里多出的 view_canvas 默认不勾');
-  assert.equal(rows.some(isGhost), false, '这一轮（勾 5 个）不该有「未注册」的幽灵行');
-  // 序：前 5 行都是勾上的，第 6 行是没勾的 —— 这就是「选中的排前面」
-  assert.ok(rows.slice(0, 5).every((r) => boxOf(r)?.props.checked === true), '前 5 行应是已勾选的');
-  assert.equal(boxOf(rows[rows.length - 1])?.props.checked, false, '未勾选的排在最后');
 
-  globalToolsAllowStub = ['render_ui'];   // 只勾一个 → 只有它该排在前面
+  // ⑤ 勾选状态与排序（按**本地草稿**算，不是读宿主那份）：
+  //    默认名单 5 个工具，桩里本机有 6 个 —— 生图组多一个 view_canvas，
+  //    所以「默认」并不等于「每行都满勾」：满勾的组勾上，缺一个的组半勾（indeterminate），
+  //    计数如实写 2/3。这是真机的情形（宿主注册的工具比默认放行的多），不能只测全勾那条。
+  const boxOf = (r) => findAll(r, (n) => n.type === 'input' && n.props?.type === 'checkbox')[0];
+  /** 半勾只是 DOM 属性（React 的 indeterminate 得直接写节点）——调它那个函数式 ref 才看得到。 */
+  const indetOf = (r) => { const el = {}; boxOf(r)?.props?.ref?.(el); return el.indeterminate; };
+  const rowOf = (t, key) => rowsOf(t).find((r) => textOf(r).includes(key));
+  assert.equal(boxOf(rowOf(tree, 'dsh-genui'))?.props.checked, true, 'genui 组默认 2/2，勾选框是勾上的');
+  assert.equal(boxOf(rowOf(tree, '联网搜索'))?.props.checked, true, '搜索组默认全勾');
+  const imgRow0 = rowOf(tree, 'dsh-image-gen');
+  assert.equal(textOf(imgRow0).includes('2/3'), true, '生图组默认 2/3（宿主还注册了 view_canvas，默认不放行）');
+  assert.equal(boxOf(imgRow0)?.props.checked, false, '只勾了 2/3 的组，勾选框不该显示满勾');
+  assert.equal(indetOf(imgRow0), true, '部分勾选的组要显示半勾（indeterminate）');
+  assert.equal(indetOf(rowOf(tree, 'dsh-genui')), false, '全勾 / 全不勾的组不该是半勾');
+
+  // 点一个插件的勾选框 = 该插件全部工具一起开/关（这是「只勾插件」的核心）
+  globalToolsAllowStub = ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image'];
   tree = await renderSettings();
   rows = rowsOf(tree);
-  const idxOf = (name) => rows.findIndex((r) => textOf(r).includes(name));
-  assert.ok(idxOf('render_ui') >= 0, 'render_ui 应在表里');
-  assert.equal(idxOf('render_ui'), 0, '已勾选的要排在最前面');
-  const firstRowChecked = rows.length > 0
-    && findAll(rows[0], (n) => n.type === 'input' && n.props?.type === 'checkbox')[0]?.props.checked === true;
-  assert.ok(firstRowChecked, '第一行应是已勾选的那个');
+  const imgRow = rows.find((r) => textOf(r).includes('dsh-image-gen'));
+  boxOf(imgRow).props.onChange({ target: { checked: false } });      // 关掉整个生图插件
+  tree = render(tree, reg.component);                               // 用本地草稿重渲染
+  const imgRowAfter = rowsOf(tree).find((r) => textOf(r).includes('dsh-image-gen'));
+  assert.ok(imgRowAfter, '关掉某插件后那一组仍要在表里（不能消失）');
+  assert.equal(textOf(imgRowAfter).includes('0/3'), true, '关掉后该组计数应变成 0/3');
+  assert.equal(boxOf(imgRowAfter)?.props.checked, false, '关掉后该插件的勾选框应取消');
+  assert.equal(indetOf(imgRowAfter), false, '一个都没勾不是半勾');
+  // 该组因此判定为「未勾」→ 应沉到列表后面（已勾的在前）
+  const rowsAfter = rowsOf(tree);
+  assert.ok(rowsAfter.findIndex((r) => textOf(r).includes('dsh-image-gen'))
+    > rowsAfter.findIndex((r) => textOf(r).includes('dsh-genui')),
+  '取消的插件要排到仍勾选的那些后面');
+  // 再打开回来 = 该插件**全部**工具一起放行（含默认没勾的 view_canvas —— 用户勾的是插件，不是散装工具名）
+  boxOf(rowsOf(tree).find((r) => textOf(r).includes('dsh-image-gen'))).props.onChange({ target: { checked: true } });
+  tree = render(tree, reg.component);
+  assert.ok(textOf(rowsOf(tree).find((r) => textOf(r).includes('dsh-image-gen'))).includes('3/3'),
+    '再勾上应是 3/3（整组一起放行）');
 
-  // 手填「未注册」的名字要显示成一行（否则用户配完没反馈，只会困惑为什么没生效）
+  // 手填「未注册」的名字要显示成一组（否则用户配完没反馈，只会困惑为什么没生效）
   globalToolsAllowStub = ['render_ui', 'ghost_tool'];
   tree = await renderSettings();
   rows = rowsOf(tree);
   const ghost = rows.find((r) => textOf(r).includes('ghost_tool'));
-  assert.ok(ghost, '配置里有、本机没注册的名字也要显示成一行');
-  assert.ok(textOf(ghost).includes('未注册'), '未注册的那行要标「未注册」');
+  assert.ok(ghost, '配置里有、本机没注册的名字也要显示成一组');
+  assert.ok(textOf(ghost).includes('未注册'), '未注册的那组要标「未注册」');
 
   // 一个都不勾时的后果要明说（不是阻止，是提醒）
   globalToolsAllowStub = [];
