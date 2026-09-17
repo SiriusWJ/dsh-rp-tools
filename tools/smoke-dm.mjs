@@ -117,12 +117,35 @@ const liveSessions = new Map();
 // 会话投影桩（`ctx.get('sessionProjections').stateOf(session, key)`）：闸门会用它拿
 // 「当前预设」与「有没有开局」；真机上这是宿主自己算的那份权威状态。
 const fakeProjections = { stateOf: (session, key) => (session?.proj ?? {})[key] };
-// 全局工具注册表桩：`GET /rp-tools/global-tools` 靠 `tools.schemas()`（**省略 scope = 全局视图**）
-// 列出「本机真实存在哪些全局工具」供设置页勾选。这里放几个真机上会有的名字，
-// 其中 `my_image_plugin` 代表「用户装了别的生图插件」。
-const fakeGlobalToolNames = ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image', 'web_fetch', 'canvas_state', 'my_image_plugin'];
+// 全局工具注册表桩：`GET /rp-tools/global-tools` 靠 `tools.schemas()` 列出「本机真实存在哪些工具」。
+// 这里**刻意分成两层**，因为真机就是两层（这条踩过）：
+//   · 全局层（`schemas()` 不带 scope）——第三方插件注册的那些；
+//   · 会话作用域（`schemas(agent)`）——宿主**内置**的 `web_search` / `web_fetch` 注册在这里，
+//     不带 scope 就看不见，于是它们被误标成「未注册」。
+// 名单照着真机来：每个已装插件各挑几个代表工具（生图 / 卡片 / MCP / 记忆 / 文档 / 插件检索）。
+// 另外三个是**假**的：
+//   · `my_image_plugin`：「用户装了别的生图插件」，映射表里没有 → 钉住兜底那条路；
+//   · `glob` / `todo_write`：**agent 自己的原生工具** —— 真机上样本 agent 就是用户当前那个
+//     对话，它的作用域里有 read/write/glob/pwsh 这 26 个；照单全收会让设置页突然多出 26 行，
+//     这两条专门钉住「只有配置里点过名的会话作用域工具才进清单」。
+const fakeGlobalToolNames = [
+  'render_ui', 'validate_dsh_ui',                                 // dsh-genui
+  'generate_image', 'edit_image', 'canvas_state', 'view_canvas',  // dsh-image-gen
+  'mcp_tool_search',                                              // dsh-mcp
+  'memory_entry', 'memory_recall', 'calendar_add', 'cron_add',    // dsh-lite-memory
+  'dsh_docs_search', 'dsh_docs_read',                             // dsh-updater-npm
+  'find_dsh_plugin',                                              // dsh-find-plugin
+  'my_image_plugin',                                              // 假的：映射表里没有 → 兜底组（宿主内置 · 其它）
+];
+/** 只在**会话作用域**可见的工具（真机：`web_search` / `web_fetch` 就是这样）。 */
+const fakeScopedToolNames = ['web_search', 'web_fetch'];
+/** 同样只在作用域里、但**不该进设置页**的：本插件自己的 rp_* + agent 的原生工具。 */
+const fakeScopedNoiseToolNames = ['rp_random', 'rp_state', 'glob', 'pwsh', 'todo_write'];
 const hostToolsService = {
-  schemas: () => fakeGlobalToolNames.map((name) => ({ name })),
+  schemas: (scope) => [
+    ...fakeGlobalToolNames,
+    ...(scope === undefined ? [] : [...fakeScopedToolNames, ...fakeScopedNoiseToolNames]),
+  ].map((name) => ({ name })),
   register: (t) => { tools.set(t.name, t); globalTools.push(t.name); },
 };
 const hostCtx = {
@@ -861,37 +884,47 @@ if (rpTable) {
     check('全局工具：不再有 base（固定放行已取消）', 'base' in (listed.json ?? {}), false);
     check('全局工具：没有任何项被锁定（全部可取消）',
       (listed.json.available ?? []).some((a) => a.locked) === true, false);
-    check('全局工具：列出了本机真实存在的全局工具',
+    check('全局工具：列出了本机真实存在的全局工具（会话作用域那几个见 ①c）',
       (listed.json.available ?? []).map((a) => a.name).sort().join(','),
-      'canvas_state,edit_image,generate_image,my_image_plugin,render_ui,validate_dsh_ui,web_fetch,web_search'.split(',').sort().join(','));
-    check('全局工具：默认项标记为已勾选（含 render_ui 那三项）',
+      fakeGlobalToolNames.slice().sort().join(','));
+    check('全局工具：默认项标记为已勾选（含 render_ui 那三项；web_search 是会话作用域，见 ①c）',
       (listed.json.available ?? []).filter((a) => a.checked).map((a) => a.name).sort().join(','),
-      'edit_image,generate_image,render_ui,validate_dsh_ui,web_search');
+      'edit_image,generate_image,render_ui,validate_dsh_ui');
     check('全局工具：生图类工具被标成 imageLike（界面打「图」标）',
       (listed.json.available ?? []).filter((a) => a.imageLike).map((a) => a.name).sort().join(','),
       'edit_image,generate_image,my_image_plugin');
-    check('全局工具：默认没有「未注册」的项', (listed.json.missing ?? []).length, 0);
+    // 没有样本 agent 时，配置里的 web_search 会显示成「本机没注册」—— ①c 里补上样本后它归位。
+    check('全局工具：默认「未注册」的只有会话作用域那个 web_search',
+      (listed.json.missing ?? []).join(','), 'web_search');
 
     // ①b **按来源插件归组**（用户要求：一个插件一个勾选框，而不是一堆散装工具名）。
-    //     宿主不提供归属（register 只进「当前层」、层标签是 tools.register()），所以靠映射表；
-    //     未命中的落进「其它」，**不按名字前缀乱猜**（猜错会让用户以为看的是某个插件）。
+    //     宿主不提供归属（register 只进「当前层」、层标签是 tools.register()），所以靠映射表。
+    //     ⚠️ **不再有「其它」那种大杂烩组**：每个真实插件的工具都归到它自己的组；
+    //     只有映射表还没覆盖到的（这里的 my_image_plugin）才进「宿主内置 · 其它」兜底组。
     {
       const groups = listed.json.groups ?? [];
       const byKey = (k) => groups.find((g) => g.key === k);
+      const namesOf = (k) => (byKey(k)?.tools ?? []).map((t) => t.name).join(',');
       check('分组：返回了 groups', Array.isArray(groups) && groups.length > 0, true);
-      check('分组：dsh-image-gen 组含生图三件',
-        (byKey('dsh-image-gen')?.tools ?? []).map((t) => t.name).join(','),
-        'canvas_state,edit_image,generate_image');
-      check('分组：dsh-genui 组含卡片渲染两件',
-        (byKey('dsh-genui')?.tools ?? []).map((t) => t.name).join(','),
-        'render_ui,validate_dsh_ui');
-      check('分组：搜索组含 web_search / web_fetch',
-        (byKey('dsh-web-search')?.tools ?? []).map((t) => t.name).join(','),
-        'web_fetch,web_search');
-      // 映射表里没有的工具落进「其它」——**不按名字前缀乱猜**（`my_image_plugin` 是模拟
-      // 「用户装了别的生图插件」：它确实该进「其它」，等有人把它加进映射表再归到生图组）
-      check('分组：未映射的工具落进「其它」',
-        (byKey('__other__')?.tools ?? []).map((t) => t.name).join(','), 'my_image_plugin');
+      check('分组：dsh-image-gen 组含生图四件（含名字里看不出图片的 canvas_state / view_canvas）',
+        namesOf('dsh-image-gen'), 'canvas_state,edit_image,generate_image,view_canvas');
+      check('分组：dsh-genui 组含卡片渲染两件', namesOf('dsh-genui'), 'render_ui,validate_dsh_ui');
+      check('分组：宿主内置联网组 —— 没样本时只剩全局层里的 web_search（+ 配置里的那个）',
+        namesOf('dsh-host-web'), 'web_search');
+      // 这一批就是原来「其它」里的常客 —— 现在各自回到自己的插件组
+      check('分组：dsh-mcp 自成一组', namesOf('dsh-mcp'), 'mcp_tool_search');
+      check('分组：dsh-lite-memory 的记忆/日历/定时合成一组',
+        namesOf('dsh-lite-memory'), 'calendar_add,cron_add,memory_entry,memory_recall');
+      check('分组：dsh-updater-npm 的文档工具一组', namesOf('dsh-updater-npm'), 'dsh_docs_read,dsh_docs_search');
+      check('分组：dsh-find-plugin 一组', namesOf('dsh-find-plugin'), 'find_dsh_plugin');
+      // 映射表没覆盖到的才落兜底组——**不按名字前缀乱猜**
+      // （`my_image_plugin` 模拟「用户装了别的生图插件」：等有人把它加进映射表再归到生图组）
+      check('分组：没有「其它」那种大杂烩组（键里不该再有 __other__）',
+        groups.some((g) => g.key === '__other__'), false);
+      check('分组：映射表没覆盖的工具落进兜底组',
+        namesOf('__unmapped__'), 'my_image_plugin');
+      check('分组：兜底组叫「宿主内置 · 其它」（不叫「其它」、也不叫给维护者看的「未登记归属」）',
+        byKey('__unmapped__')?.label, '宿主内置 · 其它');
       // 组上的现成判断（界面据此画全勾 / 部分勾，不用自己数）
       check('分组：全勾的组 all=true', byKey('dsh-genui')?.all, true);
       check('分组：组上带「已勾/总数 + 工具名」摘要，勾选框要能自解释管的是哪几个',
@@ -900,25 +933,89 @@ if (rpTable) {
       // 逐名判断会得出「真生图插件反而不打图」的荒唐结果（这条断言就是钉住那个坑）。
       check('分组：生图组被点名为图片组（canvas_state 名字里没有 image）',
         byKey('dsh-image-gen')?.image, true);
-      // 另外**兜底**那一条：整组工具名都像图片工具（这里是「其它」里只有 my_image_plugin）也算图片组。
+      // 另外**兜底**那一条：整组工具名都像图片工具（这里是兜底组里只有 my_image_plugin）也算图片组。
       // 两条路互补 —— 点名管已知插件的漏网名字，逐名管没进映射表的新插件。
       check('分组：点名 + 「整组都像图片工具」两条路都算图片组（genui / 搜索不算）',
-        groups.filter((g) => g.image).map((g) => g.key).join(','), 'dsh-image-gen,__other__');
+        groups.filter((g) => g.image).map((g) => g.key).join(','), 'dsh-image-gen,__unmapped__');
       check('分组：混合组不打图片标（不能因为组里有一个生图工具就说整组是生图）',
-        byKey('dsh-web-search')?.image, false);
+        byKey('dsh-host-web')?.image, false);
       // 一个勾选框管一个插件：勾上该组全部工具
       const imgTools = (byKey('dsh-image-gen')?.tools ?? []).map((t) => t.name);
       const before = (await callGet('/rp-tools/global-tools')).json.allow.slice().sort().join(',');
       await callPost('/rp-tools/global-tools', { allow: imgTools });
       const onlyImg = await callGet('/rp-tools/global-tools');
       check('分组：只勾 image-gen 组 → 只剩它的工具',
-        (onlyImg.json.allow ?? []).join(','), 'canvas_state,edit_image,generate_image');
+        (onlyImg.json.allow ?? []).join(','), 'canvas_state,edit_image,generate_image,view_canvas');
       check('分组：只勾一个插件后，别的组显示为未勾',
         (onlyImg.json.groups ?? []).filter((g) => g.all).map((g) => g.key).join(','), 'dsh-image-gen');
       check('分组：该组自己全勾（勾选框该是勾上的）',
         (onlyImg.json.groups ?? []).find((g) => g.key === 'dsh-image-gen')?.all, true);
       // 复原，免得影响下面的用例
       await callPost('/rp-tools/global-tools', { allow: before.split(',') });
+    }
+
+    // ①c **映射表覆盖本机全部工具**（这道闸门是这次改动的意义所在）。
+    //     用户的原话：「其它里面的内容我看是很多插件的，把其它去掉，按插件分类」——
+    //     所以「不许有工具落在兜底组」是一个**可执行**的要求，不是口头承诺。
+    //     这里把本机真实存在的 22 个全局工具名喂进去（含宿主内置、dsh-mcp、dsh-lite-memory、
+    //     dsh-updater-npm、dsh-find-plugin），要求它们**一个都不落进 `__unmapped__`**。
+    //     以后装了新插件、映射表没跟上，这条就会红 —— 补一条 `GLOBAL_TOOL_SOURCES` 即可。
+    {
+      const kn = fakeGlobalToolNames.length;
+      fakeGlobalToolNames.push(
+        'mcp_servers',
+        'memory_range', 'memory_status', 'calendar_list', 'calendar_done', 'calendar_remove',
+        'cron_list', 'cron_remove', 'cron_run', 'cron_toggle',
+      );
+      // 关键：**得有样本 agent**，否则只看全局层 → 会话作用域里的内置工具（web_search）
+      // 会被当成「本机没有」。真机上 `/rp-tools/global-tools` 就是靠 apply() / 装配里记的样本。
+      // 测试夹具里 `agent/created` 也发过，所以先显式清掉，才测得到「没有样本」那条。
+      const fakeAgent = { id: 'session-scope-sample' };
+      mod.__debug.setToolScopeSampleAgent(null);
+      const probe = await callGet('/rp-tools/global-tools');    // 先测「没有样本」的老行为
+      const namesOfAll = (json) => (json.available ?? []).map((a) => a.name);
+      check('覆盖：没有样本 agent 时看不到会话作用域的工具（web_search / glob 都不在）',
+        ['web_search', 'glob'].some((n) => namesOfAll(probe.json).includes(n)), false);
+      check('覆盖：此时 web_search 被列进「未注册」（这正是用户看到的那句「明明是内置的」）',
+        (probe.json.missing ?? []).includes('web_search'), true);
+      await callPost('/rp-tools/global-tools', { allow: ['web_search', 'web_fetch'] });
+      const cfgGet = await callGet('/rp-tools/global-tools');
+      check('覆盖：没有样本时，配置里的 web_search 会显示成「未注册」',
+        (cfgGet.json.missing ?? []).includes('web_search'), true);
+      check('覆盖：没有样本时它仍会出现在「宿主内置 · 联网搜索」组里（不丢行）',
+        (cfgGet.json.groups ?? []).find((g) => g.key === 'dsh-host-web')?.tools.map((t) => t.name).join(','),
+        // 配置里已经有 web_search（迁移 union 进来的），加上这次 POST 的 web_fetch —— 两个都在
+        // 全局层看不见，所以都走 `missing` 那条路进组（组名仍落在「宿主内置 · 联网搜索」）
+        'web_fetch,web_search');
+      // 现在塞进样本 agent：清单 = 全局层 ∪ 会话作用域里**配置中点过名的**那几个
+      mod.__debug.setToolScopeSampleAgent(fakeAgent);
+      const probe2 = await callGet('/rp-tools/global-tools');
+      const allNames = namesOfAll(probe2.json);
+      check('覆盖：有了样本 agent 就能看见会话作用域的内置工具（这就是「web_search 是内置的」那条）',
+        ['web_fetch', 'web_search'].every((n) => allNames.includes(n)), true);
+      check('覆盖：web_search 不再被标成「未注册」',
+        (probe2.json.missing ?? []).includes('web_search'), false);
+      // ⚠️ 这条是**倒过来的坑**：样本 agent 就是用户当前那个对话，它的作用域里有
+      //    read/write/glob/pwsh 这 26 个自己的工具。照单全收会让设置页突然多出 26 行
+      //    「宿主内置 · 其它」—— 这张表的语义是「全局注册的工具」，agent 的原生工具不属于它。
+      check('覆盖：agent 自己的原生工具（glob / pwsh / todo_write）不进这张表',
+        ['glob', 'pwsh', 'todo_write'].some((n) => allNames.includes(n)), false);
+      check('覆盖：rp_* 是本插件自己的工具，也不进这张表（否则用户会以为勾它有什么用）',
+        allNames.some((n) => n.startsWith('rp_')), false);
+      const unmapped = (probe2.json.groups ?? []).find((g) => g.key === '__unmapped__');
+      check('覆盖：本机全部实际工具都有归属（只有那个假的 my_image_plugin 落在兜底组）',
+        (unmapped?.tools ?? []).map((t) => t.name).join(','), 'my_image_plugin');
+      check('覆盖：归组后一组一插件（8 组：6 个真插件 + 宿主联网 + 兜底）',
+        (probe2.json.groups ?? []).map((g) => g.key).join(','),
+        'dsh-image-gen,dsh-genui,dsh-host-web,dsh-mcp,dsh-lite-memory,dsh-updater-npm,dsh-find-plugin,__unmapped__');
+      // 名单里 web_search + web_fetch 都点过名，加上样本后宿主联网那组是 2/2 全勾
+      const web = (probe2.json.groups ?? []).find((g) => g.key === 'dsh-host-web');
+      check('覆盖：宿主联网那组 2/2 全勾（两个内置工具都在清单里且都点了名）',
+        web?.summary?.startsWith('2/2'), true);
+      check('覆盖：web_fetch 也在（内置的不止 web_search 一个）',
+        (web?.tools ?? []).map((t) => t.name).join(','), 'web_fetch,web_search');
+      mod.__debug.setToolScopeSampleAgent(null);   // 复原（后面的用例按「没有样本」写）
+      fakeGlobalToolNames.length = kn;
     }
 
     // ② 换生图插件：把 my_image_plugin 勾上、去掉 generate_image
@@ -943,18 +1040,41 @@ if (rpTable) {
     const notArray = await callPost('/rp-tools/global-tools', { allow: 'generate_image' });
     check('全局工具：allow 不是数组 → 400', notArray.status, 400);
 
-    // ⑤ 配置里有、但注册表里没有的名字要能被看见（否则用户只看到「为什么没生效」）
+    // ⑤ 配置里有、但注册表里没有的名字要能被看见（否则用户只看到「为什么没生效」）。
+    //    这条用例刻意**不用样本 agent**（上面的 ①c 已经用过了），所以此时本机可见的只有全局层，
+    //    而 `web_search` 只在会话作用域里 —— 于是它是「配置里有、本机看上去没注册」的那个名字。
+    //    ⚠️ 它**不再自成一组**（那是把同一个插件的工具劈成两处）—— 混进它该在的那一组，
+    //    并且在工具上带 `missing`，界面据此在组上点名「未注册 xxx」。
+    // 先写一次把「旧配置 → 完整名单」的一次性迁移标记打上（它只加不减），再写要测的那份
     await callPost('/rp-tools/global-tools', { allow: ['not_installed_yet'] });
+    await callPost('/rp-tools/global-tools', { allow: ['web_search', 'not_installed_yet'] });
     const missing = await callGet('/rp-tools/global-tools');
-    check('全局工具：未注册的名字列进 missing', (missing.json.missing ?? []).join(','), 'not_installed_yet');
-    // 未注册那组要和「其它」组**分得开**：两组都用 __other__ 当键的话，界面按 key 渲染会互相顶掉
-    // （真机上「有未映射工具 + 配了没装的名字」同时出现才会踩到，正好是这台机器的样子）。
+    check('全局工具：未注册的名字列进 missing（顺序按配置里的顺序）',
+      (missing.json.missing ?? []).join(','), 'web_search,not_installed_yet');
     {
-      const ms = (missing.json.groups ?? []).find((g) => g.missing === true);
-      check('分组：未注册的名字自成一组', (ms?.tools ?? []).map((t) => t.name).join(','), 'not_installed_yet');
-      check('分组：未注册那组的键与「其它」不撞',
-        ms?.key, '__missing__');
-      check('分组：未注册那组默认算勾上（配置里就有，用户不该看到它莫名变未勾）', ms?.all, true);
+      const web = (missing.json.groups ?? []).find((g) => g.key === 'dsh-host-web');
+      check('分组：未注册的 web_search 留在「宿主内置 · 联网搜索」组里（不再单独劈一组）',
+        (web?.tools ?? []).map((t) => t.name).join(','), 'web_search');
+      check('分组：组上的 missing 标记点出是它没注册',
+        (web?.tools ?? []).filter((t) => t.missing === true).map((t) => t.name).join(','), 'web_search');
+      check('分组：没被映射覆盖的名字才进兜底组（宿主内置 · 其它）',
+        (missing.json.groups ?? []).find((g) => g.key === '__unmapped__')?.tools.map((t) => t.name).join(','),
+        // `my_image_plugin` 是夹具里那个「用户装了的别的生图插件」，本机有但它没进映射表
+        'my_image_plugin,not_installed_yet');
+      check('分组：未注册的名字默认算勾上（配置里就有，用户不该看到它莫名变未勾）',
+        (web?.tools ?? []).find((t) => t.name === 'web_search')?.checked, true);
+      check('分组：任何一个「未注册」都不再自成一组（没有 __missing__ 那个键了）',
+        (missing.json.groups ?? []).some((g) => g.key === '__missing__'), false);
+    }
+
+    // ⑤b 另一种「本机没注册」：配了、本机**真的没有**（插件没装）。
+    //     它和上面那个（注册在别的作用域）在界面上是同一种观感，所以走同一条路 —— 归到该在的组。
+    {
+      const probe = await callGet('/rp-tools/global-tools');
+      const unmapped = (probe.json.groups ?? []).find((g) => g.key === '__unmapped__');
+      check('分组：本机真没有的名字进兜底组，并在工具上带 missing',
+        (unmapped?.tools ?? []).filter((t) => t.missing === true).map((t) => t.name).join(','),
+        'not_installed_yet');
     }
 
     // ⑥ 工具侧的等价入口（`rp_config(action:"set_global_tools")`，参数是逗号分隔字符串）
@@ -970,7 +1090,7 @@ if (rpTable) {
     check('rp_config：get 报出出厂默认（设置页「恢复默认」用的就是它）',
       getGt.lines.some((l) => l.startsWith('出厂默认') && l.includes('render_ui')), true);
     check('rp_config：get 报出本机实际存在的全局工具（供核对名字）',
-      getGt.lines.some((l) => l.includes('本机实际存在的全局工具：') && l.includes('my_image_plugin')), true);
+      getGt.lines.some((l) => l.includes('本机实际存在的全局工具：') && l.includes('dsh_docs_search')), true);
 
     // ⑦ 复原成默认，免得影响后面读同一份配置的用例
     await callPost('/rp-tools/global-tools', { allow: ['generate_image', 'edit_image'] });
@@ -1694,9 +1814,24 @@ const onCreated = (payload) => emit('agent/created', payload);
 if (onCreated) {
   onCreated({ agent: { id: `session-${VIA_PRESET}`, options: { preset: 'dm' }, session: { id: VIA_PRESET } } });
   check('agent/created 自动识别 dm 预设', (await callGet('/rp-tools/session', `?sessionId=${VIA_PRESET}`)).json.isDm, true);
+  // 顺带断言：这次 agent/created 也被记成了设置页的**样本 agent**（清单要取它的作用域）。
+  check('agent/created 记下样本 agent（设置页据此取会话作用域的工具）',
+    (mod.__debug.listToolNames(null, ['web_search']) ?? []).includes('web_search'), true);
+  // ⚠️ 这条是**倒过来的坑**：真机上样本就是用户当前那个对话，它的作用域里有
+  //    read/write/glob/pwsh 这些**自己的**工具。只有配置里点过名的才补进来 —— 这里故意
+  //    把 `glob` 当成「没点过名」的（传的名单里没有它），它必须不出现。
+  check('样本只补「配置里点过名」的会话作用域工具（agent 原生的 glob 不进来）',
+    (mod.__debug.listToolNames(null, ['web_search']) ?? []).includes('glob'), false);
   // 非 dm 预设不该被误登记
   onCreated({ agent: { id: `session-${NOT_DM}`, options: { preset: 'standard' } } });
   check('agent/created 不误登记非 dm', (await callGet('/rp-tools/session', `?sessionId=${NOT_DM}`)).json.isDm, false);
+  // 会话结束 → 放掉样本（那是「长期持有已结束的会话对象」；下次 agent/created 会重新记）
+  const SAMPLE_SID = crypto.randomUUID();
+  onCreated({ agent: { id: `session-${SAMPLE_SID}`, options: { preset: 'standard' } } });
+  check('样本 agent 记的是最近那个', (mod.__debug.listToolNames(null, ['web_search']) ?? []).includes('web_search'), true);
+  emit('session/disposed', { id: SAMPLE_SID, header: { id: SAMPLE_SID } });
+  check('会话结束会放掉样本 agent（不留长期引用）',
+    (mod.__debug.listToolNames(null, ['web_search']) ?? []).includes('web_search'), false);
 } else { console.log('WARN: 未捕获 agent/created 监听'); fail++; }
 
 // ── fork 会话继承 RP 配置 ────────────────────────────────────────────────
@@ -1939,6 +2074,16 @@ if (onSessionCreated) {
     const t3 = (out3?.sections ?? []).find((s) => s?.name === 'rp:standing')?.text ?? '';
     check('无配置会话不泄露上一会话的设定', t3.includes('诸神陨落'), false);
     check('无配置会话仍带占位文案（段没被清掉）', t3.length > 0, true);
+
+    // 装配也顺手记「样本 agent」：插件是**运行中重新装载**的，已经在跑的会话不会再发
+    // agent/created —— 只靠那条事件的话样本会一直是空，会话作用域的内置工具（web_search）
+    // 就继续被设置页标成「未注册」。装配每轮都发生，正好补上这个空档。
+    mod.__debug.setToolScopeSampleAgent(null);
+    const sidSample = crypto.randomUUID();
+    await onAssemble(mkAssembly(null, sidSample), assembleCtx(sidSample), nextOf(mkAssembly(null, sidSample)));
+    check('装配会记下样本 agent（否则热重载后内置工具仍被标「未注册」）',
+      (mod.__debug.listToolNames(null, ['web_search']) ?? []).includes('web_search'), true);
+    mod.__debug.setToolScopeSampleAgent(null);   // 复原：后面的用例按「没有样本」写
   } else { console.log('WARN: 未捕获 system-prompt/assemble 监听'); fail++; }
 }
 

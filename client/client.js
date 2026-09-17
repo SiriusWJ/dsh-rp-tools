@@ -230,11 +230,12 @@ window.__ModuleLoader__.load({
 .rpt .rpsec .macrorow input[type=text] { height: 30px; padding: 0 8px; font-size: 12.5px; }
 /* 第三方工具管理：**一行一个插件**（用户要求：装的是插件，不是散装工具名），
    勾选框管该插件全部工具；行下面一行小字列具体工具名（只读，让勾选自解释）。
-   已勾选的插件排前面（排序在 JS 里做）。 */
+   已勾选的插件排前面（排序在 JS 里做）。
+   ⚠️ 允许换行（flex-wrap）：组上要带「未注册 xxx、yyy」这种点名徽标，窄侧栏下不换行会被挤爆。 */
 .rpt .gtrow { padding: 6px 8px; border-radius: 6px; border: 1px solid transparent; }
 .rpt .gtrow:hover { background: var(--dsw-alias-interactive-bg-hover, color-mix(in oklab, currentColor 5%, transparent)); }
 .rpt .gtrow.on { border-color: color-mix(in oklab, currentColor 22%, transparent); }
-.rpt .gtpick { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer; }
+.rpt .gtpick { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; cursor: pointer; }
 .rpt .gtpick input[type=checkbox] { margin: 0; flex: none; }
 .rpt .gtpick .gticon { flex: none; width: 16px; text-align: center; opacity: .95; filter: grayscale(1); }
 .rpt .gtrow.on .gticon { filter: none; }
@@ -243,9 +244,8 @@ window.__ModuleLoader__.load({
 .rpt .gttools { margin: 2px 0 0 24px; font-size: 11px; line-height: 1.5; opacity: .62; word-break: break-word; }
 .rpt .gtWarn { margin: 6px 0 0; padding: 5px 8px; border-radius: 6px;
   background: color-mix(in oklab, currentColor 7%, transparent); }
-.rpt .gtAct { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-.rpt .gtdraft { display: flex; gap: 8px; align-items: center; margin: 8px 0 0; flex-wrap: wrap; }
-.rpt .gtdraft input[type=text] { flex: 1 1 220px; min-width: 160px; height: 30px; padding: 0 8px; font-size: 12.5px; }
+/* （gtAct / gtdraft 两条样式随那张表自己的按钮与「手填工具名」输入框一起删了：
+   用户要求这一页只用最上面的保存 —— 见 RpSettings 的 save()/reset()。） */
 .rpt .nums { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .rpt .nums label { display: flex; gap: 5px; align-items: center; font-size: 12px; opacity: .85; }
 .rpt .nums input[type=number] { width: 64px; }
@@ -596,9 +596,10 @@ window.__ModuleLoader__.load({
       const [autoMacros, setAutoMacros] = React.useState([]);
       // 全局工具放行名单（DM 会话能看见哪些**全局**工具）。`gt` = 服务端返回的完整视图：
       // { base, allow, defaults, max, available|null, missing }；`gtDraft` = 本地未保存的勾选。
+      // 「第三方工具管理」那张表的数据源（`gt`）与本地勾选草稿（`gtDraft`）。
+      // 勾选**不再就地提交** —— 与卡库配置一起交给页面最上面那个「保存」（用户要求统一入口）。
       const [gt, setGt] = React.useState(null);
       const [gtDraft, setGtDraft] = React.useState([]);
-      const [gtBusy, setGtBusy] = React.useState(false);
 
       React.useEffect(() => { injectStyles(); void reload(); }, []);
 
@@ -623,38 +624,15 @@ window.__ModuleLoader__.load({
         } finally { setBusy(''); }
       }
 
-      /** 勾选/取消一个全局工具（底线上那几个不可取消，界面上是 disabled）。 */
-      function toggleGlobalTool(name, on) {
-        setGtDraft((cur) => (on ? [...cur.filter((n) => n !== name), name] : cur.filter((n) => n !== name)));
-      }
-
-      /** 手填一个名字（发现列表里没有的工具：插件没装、或名字不在注册表里）。 */
-      function addGlobalTool(name) {
-        const n = String(name ?? '').trim().toLowerCase();
-        if (!/^[a-z][a-z0-9_]*$/.test(n)) { setMsg({ kind: 'err', text: `工具名不合法：${name}（只允许小写字母开头 + 小写字母/数字/下划线）` }); return; }
-        // 已经在列表里（本机注册过）→ 直接勾上，不再当成「未注册」的手填项
-        if ((gt?.available ?? []).some((a) => a.name === n)) { toggleGlobalTool(n, true); setMsg({ kind: 'ok', text: `${n} 已在列表里，已勾上` }); return; }
-        if (gtDraft.includes(n)) { setMsg({ kind: 'ok', text: `${n} 已经在名单里了` }); return; }
-        setGtDraft((cur) => [...cur, n]);
-        setMsg({ kind: 'ok', text: `已加入 ${n}（本机注册表里还没有，装上对应插件即生效）` });
-      }
-
-      async function saveGlobalTools() {
-        setGtBusy(true);
-        try {
-          const res = await API.saveGlobalTools({ allow: gtDraft });
-          if (!res?.ok) throw new Error(res?.error ?? '保存失败');
-          setGt((g) => ({ ...(g ?? {}), ...res }));
-          setGtDraft(Array.isArray(res.allow) ? res.allow : []);
-          // 把结果写回 config 草稿，避免下次「保存」用旧值把它覆盖掉
-          setDraft((d) => (d ? { ...d, globalToolsAllow: res.allow } : d));
-          setMsg({ kind: 'ok', text: `已保存放行名单（${res.allow.length} 个额外工具）—— 换一个 DM 会话或重进即生效` });
-          if (res.note) setMsg({ kind: 'ok', text: res.note });
-        } catch (error) {
-          setMsg({ kind: 'err', text: String(error?.message ?? error) });
-        } finally { setGtBusy(false); }
-      }
-
+      /**
+       * 最上面那个「保存」：把**这一页的全部改动**一次写好 —— 卡库配置 + 第三方工具放行名单。
+       *
+       * 为什么合并成一个（用户要求「rp 工具统一用最上面的保存」，原来那张表里有自己的一排
+       * 保存 / 全部放行 / 全部取消 / 恢复默认）：两个入口会让人不确定「我改的到底存了没」。
+       * 放行名单走的是另一条路由（`/rp-tools/global-tools`），所以这里是两次请求 ——
+       * 它们是两件事（一次改卡库、一次改名单），**不做成一个"原子事务"**：任一步失败就报出来，
+       * 没写的那半保持在磁盘上的旧值，界面重读后能看到真实状态。
+       */
       async function save() {
         if (!draft) return;
         setBusy('save');
@@ -666,20 +644,50 @@ window.__ModuleLoader__.load({
           if (!res?.ok) throw new Error(res?.error ?? '保存失败');
           setState((s) => ({ ...s, config: res.config }));
           setDraft(JSON.parse(JSON.stringify(res.config)));
-          setMsg({ kind: 'ok', text: '已保存' });
+
+          // 第三方工具放行名单：只在读到过那份数据（`gt`）时才提交，免得没加载就把它清空
+          let savedTools = null;
+          if (gt) {
+            const gtRes = await API.saveGlobalTools({ allow: gtDraft });
+            if (!gtRes?.ok) throw new Error(gtRes?.error ?? '放行名单保存失败');
+            savedTools = gtRes;
+            setGt((g) => ({ ...(g ?? {}), ...gtRes }));
+            setGtDraft(Array.isArray(gtRes.allow) ? gtRes.allow : []);
+            // 同一份配置在两条路由上都写：把结果写回草稿，免得下次保存用旧值覆盖回去
+            setDraft((d) => (d ? { ...d, globalToolsAllow: gtRes.allow } : d));
+          }
+          setMsg({
+            kind: 'ok',
+            text: savedTools
+              ? `已保存（放行名单 ${savedTools.allow.length} 个工具）—— 放行名单换一个 DM 会话或重进才生效`
+              : '已保存',
+          });
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }
       }
 
+      /**
+       * 最上面那个「恢复默认」：卡库配置与放行名单**一起**回到出厂。
+       *
+       * 放行名单的出厂值由宿主给（`gt.defaults`），界面不自己抄一份 ——
+       * 抄一份就会跟 `GLOBAL_TOOLS_DEFAULT` 走散。
+       */
       async function reset() {
-        if (!window.confirm('恢复默认的卡库配置（卡库目录 / 默认宏列表）？各会话的角色卡、世界、随机表不受影响。')) return;
+        if (!window.confirm('恢复默认？（卡库目录 / 默认宏列表 / 放行给 DM 的第三方工具名单）各会话的角色卡、世界、随机表不受影响。')) return;
         setBusy('reset');
         try {
           const res = await API.reset();
           if (!res?.ok) throw new Error(res?.error ?? '恢复失败');
           setState((s) => ({ ...s, config: res.config }));
           setDraft(JSON.parse(JSON.stringify(res.config)));
+          // 名单的「出厂默认」要从宿主那份视图里取（它知道 GLOBAL_TOOLS_DEFAULT 是什么）
+          if (gt) {
+            const gtRes = await API.saveGlobalTools({ allow: [...(gt.defaults ?? [])] });
+            if (!gtRes?.ok) throw new Error(gtRes?.error ?? '放行名单恢复失败');
+            setGt((g) => ({ ...(g ?? {}), ...gtRes }));
+            setGtDraft(Array.isArray(gtRes.allow) ? gtRes.allow : []);
+          }
           setMsg({ kind: 'ok', text: '已恢复默认' });
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
@@ -804,7 +812,11 @@ window.__ModuleLoader__.load({
         section('第三方工具管理', `放行给 DM 的插件${gt ? `（${groupStats.on}/${groupStats.total}）` : ''}`, [
           h('div', { key: 'd', className: 'dim' },
             'DM 预设会隐藏所有第三方工具，只有这里勾选的插件才在 DM 会话里可见。'
-            + '一个勾选框管一个插件，下面的小字是它带的工具；**改完换一个 DM 会话或重进才生效**。'),
+            + '一个勾选框管一个插件，下面的小字是它带的工具；'
+            + '**这一节没有自己的按钮 —— 勾完点最上面的「保存」**（「恢复默认」也在那里，'
+            + '放行名单的出厂默认由宿主给）。**改完换一个 DM 会话或重进才生效**。'
+            + '清单 = 本机**全局注册**的工具 ∪ 会话里可见的内置工具（如 `web_search`，它注册在会话作用域）——'
+            + '一直在用的内置工具不会被误标成「未注册」。'),
           gt === null
             ? h('div', { key: 'loading', className: 'dim' }, '读取中…')
             : h('div', { key: 'body' }, (() => {
@@ -833,6 +845,8 @@ window.__ModuleLoader__.load({
                   // 逐名判断会漏 —— 生图插件带的 view_canvas / canvas_state 名字里没有 image。
                   const isImage = g.image === true || (g.tools.length > 0 && g.tools.every((t) => t.imageLike));
                   const hint = g.tools.map((t) => t.hint).find(Boolean) ?? '';
+                  // 本机没注册的（配置里有、插件没装或改了名）在**组内**点名 —— 勾了也不生效的那些
+                  const missingNames = g.tools.filter((t) => t.missing).map((t) => t.name);
                   // 一个勾选框管一个插件：点它 = 该插件全部工具一起开/关
                   const setGroup = (on) => setGtDraft((cur) => {
                     const names = g.tools.map((t) => t.name);
@@ -852,7 +866,14 @@ window.__ModuleLoader__.load({
                       h('span', { key: 'ic', className: 'gticon', 'aria-hidden': 'true' }, isImage ? '🖼' : '🧩'),
                       h('span', { key: 'n', className: 'gttname' }, g.label),
                       isImage ? h('span', { key: 'tag', className: 'badge ok' }, '图') : null,
-                      g.missing ? h('span', { key: 'w', className: 'badge warn', title: '本机注册表里没有这些工具：插件没装、或名字改了' }, '未注册') : null,
+                      // 「本机没注册」不再自成一组（那是把同一个插件的工具劈成两处），
+                      // 改成**组上点名是哪几个**：勾了也不生效的才要用户看清。
+                      missingNames.length
+                        ? h('span', {
+                          key: 'w', className: 'badge warn',
+                          title: `本机注册表里没有这些工具：插件没装、或名字改了 —— ${missingNames.join('、')}`,
+                        }, `未注册 ${missingNames.join('、')}`)
+                        : null,
                       h('span', { key: 'c', className: 'dim gtcount' }, `${g.onCount}/${g.tools.length}`),
                     ]),
                     // 具体工具名（只读）：勾选框要能自解释管的是哪几个
@@ -869,36 +890,9 @@ window.__ModuleLoader__.load({
                   : null,
               ];
             })()),
-          gt === null ? null : h('div', { key: 'manual', className: 'row gtdraft' }, [
-            h('input', {
-              key: 'i', type: 'text', placeholder: '手填工具名（如 generate_image），回车加入',
-              onKeyDown: (e) => {
-                if (e.key !== 'Enter') return;
-                addGlobalTool(e.target.value);
-                e.target.value = '';
-              },
-            }),
-            h('span', { key: 'h', className: 'dim' }, '清单里没有的工具名也能先配上（插件之后装了就会生效）'),
-          ]),
-          gt === null ? null : h('div', { key: 'act', className: 'row gtAct' }, [
-            h('button', {
-              key: 's', className: 'primary', disabled: gtBusy,
-              onClick: () => { void saveGlobalTools(); },
-            }, gtBusy ? '保存中…' : '保存'),
-            h('button', {
-              key: 'a', className: 'tiny', disabled: gtBusy,
-              onClick: () => setGtDraft((cur) => [...(gt.available ?? []).map((x) => x.name),
-                ...cur.filter((n) => !(gt.available ?? []).some((x) => x.name === n))]),
-            }, '全部放行'),
-            h('button', {
-              key: 'n', className: 'tiny', disabled: gtBusy,
-              onClick: () => setGtDraft([]),
-            }, '全部取消'),
-            h('button', {
-              key: 'd', className: 'tiny', disabled: gtBusy,
-              onClick: () => setGtDraft([...(gt.defaults ?? [])]),
-            }, '恢复默认'),
-          ]),
+          // 这一节**没有自己的按钮**（用户要求「rp 工具统一用最上面的保存」）：
+          // 原来的「手填工具名」输入框与「保存 / 全部放行 / 全部取消 / 恢复默认」整排都删了 ——
+          // 勾选直接改本地草稿，由页面最上面那颗「保存」与「恢复默认」一起提交。
         ], 'gttools'),
 
         // ══ 诊断 ══ rp_* 工具面板隐藏后，只留配置文件与一句数量说明 ─────────────

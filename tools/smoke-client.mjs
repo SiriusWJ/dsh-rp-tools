@@ -52,8 +52,9 @@ const assert = new Proxy({}, {
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-// 分组规则用**与宿主侧同一份**共享模块（桩不自己抄一份，否则映射表改了测试会假绿）
-import { GLOBAL_TOOL_SOURCES, GLOBAL_TOOL_SOURCE_FALLBACK } from '../lib/global-tools-defaults.js';
+// 分组规则用**与宿主侧同一份**共享模块（桩不自己抄一份，否则映射表改了测试会假绿）：
+// `groupGlobalTools` 就是 lib/index.js 调用的那个函数。
+import { groupGlobalTools } from '../lib/global-tools-defaults.js';
 const here = fileURLToPath(new URL('.', import.meta.url));
 const bundlePath = join(here, '..', 'client', 'client.js');
 
@@ -230,7 +231,7 @@ const sessionStub = {
   macros: { user: '阿岚', place: '长安' },
 };
 /** `/rp-tools/state` 返回的全局配置（设置页/导入表单都读它）；空列表那条用例会临时改它。 */
-const stateStub = {
+let stateStub = {
   defaultStyle: 'manga', styles: { manga: { label: '黑白漫画' } }, comfyui: {}, negative: '',
   cards: { root: '', userLabel: '阿岚', macros: { user: '阿岚', place: '长安' } },
   // 全局图像尺寸（设置页「图像」里那三行）
@@ -254,34 +255,34 @@ globalThis.fetch = async (url, options = {}) => {
   const reply = (json) => ({ ok: true, status: 200, json: async () => json });
   if (target.startsWith('/rp-tools/gate')) return reply(gateReply);
   // 「第三方工具管理」那张表的数据源：设置页挂载时会拉它一次。
-  // 分组**用宿主侧那份真逻辑**（import 同一个共享模块），不在这里手写 ——
+  // 分组**用宿主侧那份真逻辑**（import 同一个共享模块的 `groupGlobalTools`），不在这里手写 ——
   // 桩自己抄一份分组规则的话，哪天映射表改了，测试会「绿着」而真机已经不对了。
   if (target.startsWith('/rp-tools/global-tools')) {
-    const all = ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image', 'view_canvas'];
+    // 本机注册的全局工具（挑一条代表每个来源插件）：
+    // 生图 4 件、genui 2 件、宿主联网（web_search 是**会话作用域**注册的，不在全局视图里，
+    // 所以它走「配置里有、本机没注册」那条路，见下面的 missing）、mcp / 记忆各一件。
+    const all = [
+      'canvas_state', 'edit_image', 'generate_image', 'view_canvas',
+      'render_ui', 'validate_dsh_ui',
+      'mcp_tool_search', 'memory_entry', 'cron_add',
+    ];
+    // 默认勾选 = 出场默认那 5 件：genui 2 + 生图 2 + web_search。
+    // 生图组因此是 2/4 半勾、记忆组 0/3 —— 与真机一样（宿主注册的工具比默认放行的多）。
     const allow = globalToolsAllowStub ?? ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image'];
     const imageLike = (name) => /(^|_)(image|img|photo|picture|draw|paint|illustrat)/i.test(name);
-    const toolOf = (name) => ({
-      name, checked: allow.includes(name), imageLike: imageLike(name),
+    const toolOf = (name, missing) => ({
+      name, checked: allow.includes(name), imageLike: imageLike(name), missing: missing === true,
       hint: name === 'render_ui' ? 'DM 的卡片全靠它渲染；关掉就只能发纯文字' : '',
     });
-    // 按映射表分组（与 lib/index.js 的 groupGlobalTools 同源）
-    const rest = [];
-    const groups = [];
-    for (const src of GLOBAL_TOOL_SOURCES) {
-      const tools = all.filter((n) => src.match.test(n));
-      if (!tools.length) continue;
-      groups.push({ key: src.key, label: src.label, tools: tools.slice().sort(), image: src.image === true });
-      rest.push(...tools);
-    }
-    const others = all.filter((n) => !rest.includes(n)).sort();
-    if (others.length) groups.push({ ...GLOBAL_TOOL_SOURCE_FALLBACK, tools: others });
+    // 归组：与 lib/index.js 的同一口径 —— **本机可见 ∪ 配置里有的**一起归，
+    // 没注册的名词混进它该在的那一组（不再自成「未注册」一组）。
     const missing = allow.filter((n) => !all.includes(n)).sort();
-    if (missing.length) {
-      // 键与「其它」区分（同键会让界面按 key 渲染时两组互相顶掉）
-      groups.push({ key: '__missing__', label: '配置里有、本机没注册', missing: true, tools: missing });
-    }
+    const groups = groupGlobalTools([...all, ...missing]).map((g) => ({
+      key: g.key, label: g.label, image: g.image === true,
+      tools: g.tools.map((n) => toolOf(n, missing.includes(n))),
+    }));
     for (const g of groups) {
-      g.tools = g.tools.map((t) => (typeof t === 'string' ? toolOf(t) : t));
+      g.missing = g.tools.some((t) => t.missing);
       g.all = g.tools.every((t) => t.checked);
       g.some = g.tools.some((t) => t.checked);
       g.image = g.image === true || g.tools.every((t) => t.imageLike);
@@ -293,9 +294,21 @@ globalThis.fetch = async (url, options = {}) => {
       defaults: ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image'],
       max: 32,
       groups,
-      available: all.map(toolOf),
+      available: all.map((n) => toolOf(n)),
       missing,
     });
+  }
+  // 「恢复默认」走这条（含放行名单写回出厂默认那两个断言 —— 桩里以前**没有**这条，
+  // 于是 API.reset() 拿到 `{ok:false}`，代码直接跳进 catch，新加的断言就永远看不到第二次请求）。
+  if (target.startsWith('/rp-tools/reset')) {
+    return reply({ ok: true, config: { cards: { root: '', userLabel: '玩家', macros: { user: '玩家' } } } });
+  }
+  // 保存卡库配置。桩里以前也**没有**这条 → 落到末尾的 `{ok:false}`，于是
+  // 「保存」在第一步就抛错，**第二发（放行名单）永远不会发出** —— 多请求的用例必须先补桩。
+  if (target.startsWith('/rp-tools/config')) {
+    const body = JSON.parse(options.body ?? '{}');
+    stateStub = { ...stateStub, ...(body.cards ?? {}) };
+    return reply({ ok: true, file: `${FAKE_WS}\\styles.json`, config: { ...stateStub } });
   }
   if (target.startsWith('/rp-tools/cards')) {
     return reply({
@@ -2190,6 +2203,8 @@ async function ensureSidebarTab() {
   const saveBtn = findAll(tree, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '保存');
   assert.ok(saveBtn.length >= 1, '设置页要有保存');
   await saveBtn[0].props.onClick();
+  // 两次请求（配置 + 放行名单）是**串行**的：pump 两轮桩，让第二发的 promise 也结算
+  await tick(60);
   await tick(60);
   const post = calls.filter((c) => c.url === '/rp-tools/config' && c.method === 'POST').pop();
   assert.ok(post, '保存应 POST /rp-tools/config');
@@ -2201,6 +2216,23 @@ async function ensureSidebarTab() {
   //    宿主侧也只是忽略，但新客户端不该发。
   assert.equal(Object.hasOwn(post.body, 'imageSizes'), false, '不该再提交 imageSizes（图像尺寸没了）');
   assert.equal(Object.hasOwn(post.body, 'styles'), false, '不该再提交 styles（风格库没了）');
+  // 同一颗「保存」把放行名单**一起**写（用户要求：rp 工具统一用最上面的保存）——
+  // 名单走另一条路由，所以是两次串行请求，两个都要发生。
+  // ⚠️ 坑：`/rp-tools/global-tools` 的 GET 与 POST 是**同一个 URL**，必须按 method 过滤 ——
+  //    只写「calls 里有这个 url」会被挂载时那次 GET 绕过（假绿）。
+  const gtPost = calls.filter((c) => c.url === '/rp-tools/global-tools' && c.method === 'POST').pop();
+  assert.ok(gtPost, '最上面的「保存」要连放行名单一起提交（POST /rp-tools/global-tools）');
+  assert.deepEqual(gtPost.body.allow, ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image'],
+    '提交的就是界面上那份勾选（这里是出厂默认）');
+  // 用户要求「rp 工具统一用最上面的保存」：那张表自己的「保存 / 全部放行 / 全部取消 / 恢复默认」
+  // 与「手填工具名」输入框整排删了 —— 这几条是**防回归闸门**（删掉的东西不许再长回来）。
+  assert.equal(findAll(tree, (n) => String(n.props?.className ?? '').includes('gtdraft')).length, 0,
+    '不该再有 gtdraft 那一行（手填工具名输入框已删）');
+  assert.equal(findAll(tree, (n) => String(n.props?.className ?? '').includes('gtAct')).length, 0,
+    '不该再有 gtAct 那一排按钮');
+  assert.equal(textOf(tree).includes('手填工具名'), false, '「手填工具名」输入框已删');
+  assert.equal(textOf(tree).includes('全部放行'), false, '「全部放行」按钮已删');
+  assert.equal(textOf(tree).includes('全部取消'), false, '「全部取消」按钮已删');
 
   // 空列表时要说人话：直接给出 `user -> 玩家` 这个例子，而不是留一个空白块让人猜
   stateStub.cards = { root: '', userLabel: '', macros: {} };
@@ -2241,11 +2273,14 @@ async function ensureSidebarTab() {
   assert.ok(text.includes('配置文件'), '隐藏清单后，配置文件路径仍要能看到');
 
   // ③ **按插件聚合**：一行 = 一个插件（用户要求：装的是插件，不是散装工具名）。
-  //    桩里的 6 个工具全都在映射表里 → 分成 3 组：genui / image-gen / 搜索。
-  //    （未映射的工具会落到「其它」组 —— 那条由 smoke-dm 用 my_image_plugin 覆盖。）
+  //    桩里 9 个工具 + 1 个「配置里有、本机没注册」的名字 → 恰好 5 组。
+  //    ⚠️ **不该再有任何「其它」大杂烩组** —— 映射表已覆盖本机全部工具，
+  //    漏网的才进兜底组「宿主内置 · 其它」（那条由 smoke-dm 用没映射的假工具覆盖）。
   const rowsOf = (t) => findAll(t, (n) => String(n.props?.className ?? '').split(/\s+/).includes('gtrow'));
   let rows = rowsOf(tree);
-  assert.equal(rows.length, 3, `一行一个插件（桩里 3 个来源插件，实际 ${rows.length} 行）`);
+  assert.equal(rows.length, 5, `一行一个插件（桩里 5 个来源插件，实际 ${rows.length} 行）`);
+  assert.equal(text.includes('其它'), false, '不该再有「其它」那种大杂烩组');
+  assert.equal(text.includes('宿主内置 · 其它'), false, '映射表覆盖到的工具不该落进兜底组');
   // 每行只有一个勾选框（勾它 = 该插件全部工具一起开/关）
   for (const r of rows) {
     assert.equal(findAll(r, (n) => n.type === 'input' && n.props?.type === 'checkbox').length, 1,
@@ -2253,11 +2288,16 @@ async function ensureSidebarTab() {
   }
   // 行下方要有具体工具名（只读小字），让勾选自解释
   const toolLines = byClass(tree, 'gttools');
-  assert.equal(toolLines.length, 3, '每组下面要列出它带的工具名');
+  assert.equal(toolLines.length, 5, '每组下面要列出它带的工具名');
   const genuiRow = rows.find((r) => textOf(r).includes('dsh-genui'));
   assert.ok(genuiRow, '应有 dsh-genui 那一组');
   assert.ok(textOf(genuiRow).includes('render_ui') && textOf(genuiRow).includes('validate_dsh_ui'),
     'genui 那组要列出它的两个工具名');
+  // ⑤ **一行一个插件**：装了新插件就该多一行（记忆 / 日历 / 定时三件合成一个插件行）
+  const memRow = rows.find((r) => textOf(r).includes('dsh-lite-memory'));
+  assert.ok(memRow, 'dsh-lite-memory 应自成一组（不是把它的 3 个工具撒进「其它」）');
+  assert.ok(textOf(memRow).includes('memory_entry') && textOf(memRow).includes('cron_add'),
+    '记忆那组要列出它带的工具名');
   // ④ 图片标识：宿主点名「这组是生图插件」就给它「图」标。
   //    ⚠ 断言必须看 **badge 元素**：组名里本来就写着「（生图）」，
   //    只看整行文字的话，有没有标识都会通过 —— 那是假绿。
@@ -2271,19 +2311,19 @@ async function ensureSidebarTab() {
   assert.equal(boxes.some((b) => b.props.disabled === true), false, '不该有不可取消的勾选框（固定放行已取消）');
 
   // ⑤ 勾选状态与排序（按**本地草稿**算，不是读宿主那份）：
-  //    默认名单 5 个工具，桩里本机有 6 个 —— 生图组多一个 view_canvas，
-  //    所以「默认」并不等于「每行都满勾」：满勾的组勾上，缺一个的组半勾（indeterminate），
-  //    计数如实写 2/3。这是真机的情形（宿主注册的工具比默认放行的多），不能只测全勾那条。
+  //    期望：genui 2/2 全勾、宿主联网 1/1（web_search 是配置里有、本机没注册的那个）、
+  //    生图 2/4 半勾、mcp 与记忆都是 0/1、0/2 未勾 —— 真机就是「宿主注册的比默认放行的多」这个样子。
   const boxOf = (r) => findAll(r, (n) => n.type === 'input' && n.props?.type === 'checkbox')[0];
   /** 半勾只是 DOM 属性（React 的 indeterminate 得直接写节点）——调它那个函数式 ref 才看得到。 */
   const indetOf = (r) => { const el = {}; boxOf(r)?.props?.ref?.(el); return el.indeterminate; };
   const rowOf = (t, key) => rowsOf(t).find((r) => textOf(r).includes(key));
   assert.equal(boxOf(rowOf(tree, 'dsh-genui'))?.props.checked, true, 'genui 组默认 2/2，勾选框是勾上的');
-  assert.equal(boxOf(rowOf(tree, '联网搜索'))?.props.checked, true, '搜索组默认全勾');
+  assert.equal(boxOf(rowOf(tree, '联网搜索'))?.props.checked, true, '宿主联网那组默认全勾');
   const imgRow0 = rowOf(tree, 'dsh-image-gen');
-  assert.equal(textOf(imgRow0).includes('2/3'), true, '生图组默认 2/3（宿主还注册了 view_canvas，默认不放行）');
-  assert.equal(boxOf(imgRow0)?.props.checked, false, '只勾了 2/3 的组，勾选框不该显示满勾');
+  assert.equal(textOf(imgRow0).includes('2/4'), true, '生图组默认 2/4（宿主还注册了 view_canvas / canvas_state，默认不放行）');
+  assert.equal(boxOf(imgRow0)?.props.checked, false, '只勾了 2/4 的组，勾选框不该显示满勾');
   assert.equal(indetOf(imgRow0), true, '部分勾选的组要显示半勾（indeterminate）');
+  assert.equal(textOf(rowOf(tree, 'dsh-lite-memory')).includes('0/2'), true, '记忆那组默认一个都没勾（不在默认名单里）');
   assert.equal(indetOf(rowOf(tree, 'dsh-genui')), false, '全勾 / 全不勾的组不该是半勾');
 
   // 点一个插件的勾选框 = 该插件全部工具一起开/关（这是「只勾插件」的核心）
@@ -2295,7 +2335,7 @@ async function ensureSidebarTab() {
   tree = render(tree, reg.component);                               // 用本地草稿重渲染
   const imgRowAfter = rowsOf(tree).find((r) => textOf(r).includes('dsh-image-gen'));
   assert.ok(imgRowAfter, '关掉某插件后那一组仍要在表里（不能消失）');
-  assert.equal(textOf(imgRowAfter).includes('0/3'), true, '关掉后该组计数应变成 0/3');
+  assert.equal(textOf(imgRowAfter).includes('0/4'), true, '关掉后该组计数应变成 0/4');
   assert.equal(boxOf(imgRowAfter)?.props.checked, false, '关掉后该插件的勾选框应取消');
   assert.equal(indetOf(imgRowAfter), false, '一个都没勾不是半勾');
   // 该组因此判定为「未勾」→ 应沉到列表后面（已勾的在前）
@@ -2303,24 +2343,61 @@ async function ensureSidebarTab() {
   assert.ok(rowsAfter.findIndex((r) => textOf(r).includes('dsh-image-gen'))
     > rowsAfter.findIndex((r) => textOf(r).includes('dsh-genui')),
   '取消的插件要排到仍勾选的那些后面');
-  // 再打开回来 = 该插件**全部**工具一起放行（含默认没勾的 view_canvas —— 用户勾的是插件，不是散装工具名）
+  // 再打开回来 = 该插件**全部**工具一起放行（含默认没勾的 view_canvas / canvas_state ——
+  // 用户勾的是插件，不是散装工具名）
   boxOf(rowsOf(tree).find((r) => textOf(r).includes('dsh-image-gen'))).props.onChange({ target: { checked: true } });
   tree = render(tree, reg.component);
-  assert.ok(textOf(rowsOf(tree).find((r) => textOf(r).includes('dsh-image-gen'))).includes('3/3'),
-    '再勾上应是 3/3（整组一起放行）');
+  assert.ok(textOf(rowsOf(tree).find((r) => textOf(r).includes('dsh-image-gen'))).includes('4/4'),
+    '再勾上应是 4/4（整组一起放行）');
 
-  // 手填「未注册」的名字要显示成一组（否则用户配完没反馈，只会困惑为什么没生效）
+  // 「本机没注册」的名字不再自成一组（那是把同一个插件的工具劈成两处）——
+  // 它混进它该在的那一组，并在组上**点名**是哪几个（勾了也不生效的必须看得见）。
   globalToolsAllowStub = ['render_ui', 'ghost_tool'];
   tree = await renderSettings();
   rows = rowsOf(tree);
   const ghost = rows.find((r) => textOf(r).includes('ghost_tool'));
-  assert.ok(ghost, '配置里有、本机没注册的名字也要显示成一组');
-  assert.ok(textOf(ghost).includes('未注册'), '未注册的那组要标「未注册」');
+  assert.ok(ghost, '配置里有、本机没注册的名字也要显示出来');
+  assert.ok(textOf(ghost).includes('宿主内置 · 其它'),
+    '没被映射覆盖的名字才落兜底组（组名是给用户看的「宿主内置 · 其它」，不是给维护者看的「未登记归属」）');
+  assert.ok(findAll(ghost, (n) => String(n.props?.className ?? '').split(/\s+/).includes('badge'))
+    .map((n) => textOf(n)).some((x) => x.includes('未注册') && x.includes('ghost_tool')),
+  '组上要标「未注册 ghost_tool」（不再靠单独一组，界面得点名）');
+  // 「本机没注册」与「没被映射覆盖」是两件事：配了没装的 web_search 归它该在的宿主联网组
+  globalToolsAllowStub = ['render_ui', 'web_search'];
+  tree = await renderSettings();
+  const webRow = rowsOf(tree).find((r) => textOf(r).includes('联网搜索'));
+  assert.ok(webRow && textOf(webRow).includes('web_search'),
+    '未注册的 web_search 要留在「宿主内置 · 联网搜索」组里，不再单独劈出一组');
+  assert.ok(textOf(webRow).includes('未注册'), '并在组上点名它是未注册的那个');
 
   // 一个都不勾时的后果要明说（不是阻止，是提醒）
   globalToolsAllowStub = [];
   tree = await renderSettings();
   assert.ok(textOf(tree).includes('一个都没勾'), '全不勾时要给出明确后果提示');
+
+  // ⑦ 这一节**自己没有按钮**（用户要求「rp 工具统一用最上面的保存」）：
+  //    删掉的东西已在 ③/⑦ 断言过，这里只钉「整页有且只有一颗保存」，以及顶部那颗
+  //    「恢复默认」要**两件事一起做**（配置 reset + 放行名单写回出厂默认）。
+  globalToolsAllowStub = null;
+  tree = await renderSettings();
+  const saveButtons = findAll(tree, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '保存');
+  assert.equal(saveButtons.length, 1, `整页只该有一颗「保存」（实际 ${saveButtons.length} 颗）`);
+  // 顶部那颗要负责「恢复默认」：点它 = 配置 reset + 放行名单写成宿主给的出厂默认
+  const realConfirm2 = globalThis.window.confirm;
+  globalThis.window.confirm = () => true;
+  const resetBtn = findAll(tree, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '恢复默认')[0];
+  assert.ok(resetBtn, '顶部要有「恢复默认」');
+  await resetBtn.props.onClick();
+  await tick(60);
+  await tick(60);
+  assert.ok(calls.some((c) => c.url === '/rp-tools/reset' && c.method === 'POST'), '恢复默认要 POST /rp-tools/reset');
+  // ⚠️ 坑：`/rp-tools/global-tools` 的 GET 与 POST 是**同一个 URL**，必须按 method 过滤 ——
+  //    只写「calls 里有这个 url」会被挂载时那次 GET 绕过（假绿）。
+  const gtReset = calls.filter((c) => c.url === '/rp-tools/global-tools' && c.method === 'POST').pop();
+  assert.ok(gtReset, '恢复默认也要把放行名单写回出厂');
+  assert.deepEqual(gtReset.body.allow, ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image'],
+    '放行名单的出厂默认由宿主给（界面不自己抄一份）');
+  globalThis.window.confirm = realConfirm2;
 
   globalToolsAllowStub = null;
   resetHooks();
