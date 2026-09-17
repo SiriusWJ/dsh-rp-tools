@@ -16,3 +16,7 @@ temp_output/
 # 一次性/手术后留下的备份文件
 *.bak
 *.bak[0-9]
+
+# 排障时写的一次性脚本与提交信息文件（tools/_probe.mjs、tools/_msg1.txt 之类）——
+# 别再让它们被 `git add -A` 顺手提交进去（踩过一次）
+tools/_*
