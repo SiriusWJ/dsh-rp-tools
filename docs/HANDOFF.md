@@ -2,21 +2,28 @@
 
 > 目标读者：**没有任何上文的新会话**。读完这一份即可继续改这个插件。
 > 快照：2026-09-12 · v1.4.0 · commit 见 `git log`
+>
+> **⚠️ v1.15.0：本插件的本地生图链路（ComfyUI）已完全移除。** 出图改由宿主的 `generate_image` / `edit_image` 承担，
+> 插件侧只保留「图片的入口与复用」（`rp_assets` 的 `list`/`get`/`tag`/`import`、立绘位、玩家导入图片）；
+> 工具面 11 → **8**（删 `rp_styles` / `rp_illustrate` / `rp_scenes`），路由 29 → **25**，设置页与面板不再有风格库 / 生图配置。
+> 本文与生图、风格库、设置页/面板相关的段落已按新现实改写；§6 里涉及 ComfyUI 内部的条目是**历史记录**（已标注）。
+> 权威来源：`docs/REMOVE-IMAGE-GEN.md`、`docs/STATUS.md` §7 变更历史。
 
 ---
 
 ## 0. 一句话现状
 
-插件**已可用且已实测**：10 个 `rp_*` 工具、10 种风格、会话级战役配置、世界书、状态追踪、
+插件**已可用且已实测**：8 个 `rp_*` 工具、会话级战役配置、世界书、状态追踪、
 角色卡 8 字段、设置页与右侧栏 DM 面板，以及**PNG 故事书（角色卡）导入**——
 在工作区那一行点「📖 导入 PNG 故事书」→ 选卡 → 自动切 dm 预设 + 写世界书 + 开场。
+（~~10 个工具 / 10 种内置风格 / 本地出图~~ —— **1.15.0 移除生图**：出图交给宿主的 `generate_image` / `edit_image`，插件只管图的入口与复用。）
 
 **架构已收敛为「一切都在 dm 预设作用域」**：host 组合里**不注册任何模型工具**，
-全部 10 个工具（含 `rp_random`）与两条提示词注入通道都由 dm 预设的 `rp-bridge.mjs`
+全部 8 个工具（含 `rp_random`）与两条提示词注入通道都由 dm 预设的 `rp-bridge.mjs`
 在 agent 作用域注册 —— 非 dm 会话既看不到工具，上下文里也不会出现跑团内容。
 
-冒烟测试 **262 条断言全绿**（`tools/smoke-dm.mjs` 194 + `tools/smoke-card.mjs` 64 +
-`tools/smoke-client.mjs` 4 项 + `tools/verify-roundtrip.mjs` 4 条）。
+冒烟测试**全绿（0 失败）**：`tools/smoke-dm.mjs` 1004 条 + `tools/smoke-client.mjs` 427 条 +
+`tools/smoke-card.mjs` 256 条 + `tools/verify-roundtrip.mjs` 10 条。
 **待界面确认**：右栏 RP 面板与故事书导入面板的实际渲染（见 §5.1 / §5.2）。
 
 ---
@@ -25,51 +32,48 @@
 
 | 用途 | 路径 |
 |---|---|
-| 源码（权威） | `D:\Code\dsh\rp-tools-plugin` |
+| 源码（权威） | 本 checkout（写这份快照时的路径是 `D:\Code\dsh\rp-tools-plugin`，**已改名**；实际以你 clone 到的目录为准，如 `D:\code\dsh\dsh-rp-tools`） |
 | GitHub | `https://github.com/SiriusWJ/dsh-rp-tools`（public，分支 `main`，topics 含 `dsh-plugin`） |
 | 安装位置（profile） | `~/.dsh/profiles/web/node_modules/dsh-rp-tools`（`file:` 依赖 = **安装期拷贝，不会自动跟随源码**） |
-| 数据目录 | `~/.dsh/data/dsh-rp-tools/`（`styles.json` / `sessions/<id>.json` / `dm-sessions.json` / `_agent-probe.json` / `_standing-probe.json`） |
+| 数据目录 | `~/.dsh/data/dsh-rp-tools/`（`styles.json`（**1.15.0 起只剩卡库根 + 默认宏列表**；旧的 `styles` / `negative` / `comfyui` / `imageSizes` / `defaultStyle` 键可能还在盘上，但已不再读） / `sessions/<id>.json` / `dm-sessions.json` / `_agent-probe.json` / `_standing-probe.json`） |
 | 世界书（**按会话隔离**） | `<会话工作区>/rp-sessions/<会话 id>/rp-worldbook.md` —— 工作区取自 `session.header.cwd`（如 `D:\Story`）。老版本在工作区根目录，首次读取时会**一次性迁移**一份过来（旧文件保留） |
 | PNG 卡库（导入源） | `D:\Story\sillytavernassets`（3269 张，`cards/<分类>/*.png`）—— 设置页「卡库目录」可改，存 `styles.json` 的 `cards.root` |
 | 导入产物（按会话） | `<会话工作区>/rp-sessions/<会话 id>/cards/<slug>.{md,json,png}`（卡全文 / 规范化结果 / 卡面） |
 | 卡库目录 | `cards.root`（设置页）；**留空 = 会话工作区下的 `rp-cards/`**。不再有任何固定路径兜底，也不再有私有索引 |
 | dm 预设 | `~/.dsh/.agent-presets/dm/agent.cordis.yml`、`~/.dsh/.agent-presets/dm/session-filter-v2.mjs`、`~/.dsh/.agent-presets/dm/rp-bridge.mjs`（仓库内 `preset/` 有同名副本，**权威仍在预设目录**） |
-| ComfyUI | Comfy Desktop **0.35.0** · `http://127.0.0.1:8188` · RTX 5080 16GB |
-| 模型 | `E:\AI\Models\models\{diffusion_models,text_encoders,vae,loras}`（`Documents\ComfyUI\models` 是指向它的 junction） |
-| 重启器 | 计划任务 `dsh-rp-restart` → `D:\Code\dsh\comfyui-workflows\rp-restart.cmd`（延迟 75 秒后 POST dsh-restart-btn 的重启接口） |
+| ~~ComfyUI~~ | **与本插件无关了（1.15.0 移除本地生图）**。历史记录：Comfy Desktop **0.35.0** · `http://127.0.0.1:8188` · RTX 5080 16GB |
+| ~~模型~~ | **与本插件无关了（1.15.0 移除本地生图）**。历史记录：`E:\AI\Models\models\{diffusion_models,text_encoders,vae,loras}`（`Documents\ComfyUI\models` 是指向它的 junction） |
+| 重启器 | 计划任务 `dsh-rp-restart` → `D:\Code\dsh\comfyui-workflows\rp-restart.cmd`（延迟 75 秒后 POST dsh-restart-btn 的重启接口；目录名里的 `comfyui-` 只是历史命名，与生图无关） |
 
 ---
 
-## 2. 当前功能（10 个工具，**全部只在 dm 预设作用域**）
+## 2. 当前功能（8 个工具，**全部只在 dm 预设作用域**）
 
 | 工具 | 作用 |
 |---|---|
 | `rp_random` | 骰子 / 区间 / 加权抽取 / 布尔；`seed` 可复现 |
-| `rp_styles` | 列出风格（触发词 / CFG / 步数 / 尺寸预设） |
-| `rp_illustrate` | 按风格出一张图（`prompt`* `style?` `seed?` `aspect?` `width?` `height?`） |
-| `rp_character` | 角色卡增删查 + 立绘（8 个字段，含 `first_mes` / `mes_example` 两个**样本字段**） |
+| `rp_character` | 角色卡增删查（8 个字段，含 `first_mes` / `mes_example` 两个**样本字段**）；`appearance` 是配图时保持一致的主要手段（~~立绘生成~~ **1.15.0 移除**） |
 | `rp_state` | 状态追踪：场景 / 时间 / 地点 / 在场 / 线索 + 队伍（状态·持有·伤病·目标）+ 自由旗标 |
 | `rp_lore` | 世界书：`list` 目录 / `find` 按条取 / `template` 生成模板（在会话工作区） |
-| `rp_session` | 本会话配置：世界 / 前缀 / 会话默认风格 / 风格备注 / 战役名 |
-| `rp_scenes` | 按 `scenes[].panels[]` 逐格批量出图 |
-| `rp_config` | **全局**配置：负面词 / 全局默认风格 / ComfyUI 地址 / 单风格字段 |
+| `rp_session` | 本会话配置：世界 / 提示词前缀 / 战役名 / DM 设定 / 宏（~~会话默认风格 / 风格备注~~ **1.15.0 移除**） |
+| `rp_assets` | 本会话**图片资源库**：`list` / `get` / `tag` / **`import`**（把宿主 `generate_image` 出的图、或玩家导入的图收进库，之后按 `kind`/`characters`/`tags`/`q` 查出来复用） |
+| `rp_config` | **全局**卡库配置：卡库根目录 + 默认宏列表（~~负面词 / 全局默认风格 / ComfyUI 地址 / 单风格字段~~ **1.15.0 移除**） |
 | `rp_table` | 随机表（表名 + 骰式 + 条目）定义与掷表 |
 
-⚠️ **全部 10 个都在 dm 预设作用域**（连 `rp_random` 也是）—— 由 `rp-bridge.mjs` 调
+⚠️ **全部 8 个都在 dm 预设作用域**（连 `rp_random` 也是）—— 由 `rp-bridge.mjs` 调
 `registerRpTools(ctx)` 注册。**host 组合里一个模型工具都不注册。**
-早先 `rp_random` 是全局的，为此 dm 预设的白名单还得放行它；现在白名单只剩 3 项
-（`render_ui` / `validate_dsh_ui` / `web_search`）。
+dm 预设的 `keepGlobalTools` 白名单现在有 **5 项**：`render_ui` / `validate_dsh_ui` / `web_search` /
+**`generate_image`** / **`edit_image`** —— 后两个是宿主 `dsh-image-gen` 的**全局**工具，而 dm-filter
+会 deny 掉所有没被放行的全局工具，所以**必须写进白名单**；否则 persona 里那句「用 `generate_image` 配图」
+就是一句空话（模型看不到工具）。
+早先 `rp_random` 是全局的，为此白名单还得放行它；现在它也在 dm 作用域了。
 
-**界面**：设置页「RP工具」（全局配置 + 风格库卡片 + 工具列表：只列名字与一句话说明）；DM 会话头部**右上角**「🎲 RP」按钮 → 把 RP 面板作为**右侧栏页签**打开（世界 / 角色卡 / 随机表 / 本会话生图配置），右栏自带收起与浮动。**工作区那一行**（`conversation.input.dock`，id `rp-card-import`，order 15）还有「📖 导入 PNG 故事书」入口 —— 见 §3 ⑩。
+**界面**：设置页「RP工具」（全局卡库配置：卡库目录 + 默认宏列表，外加工具列表：只列名字与一句话说明）；DM 会话头部**右上角**「🎲 RP」按钮 → 把 RP 面板作为**右侧栏页签**打开（DM 设定 / 世界设定 / 宏变量 / 世界书 / 角色卡 / **资源库** / 备份·会话包 / RP 表格 / 当前状态），右栏自带收起与浮动。**工作区那一行**（`conversation.input.dock`，id `rp-card-import`，order 15）还有「📖 导入 PNG 故事书」入口 —— 见 §3 ⑩。
 
-**风格库可增删**（设置页）：
-- 卡片里每条风格的 **LoRA 用下拉选取**（清单来自 ComfyUI `/object_info/LoraLoaderModelOnly`，经 `/rp-tools/loras` 代理；非 krea2 的 LoRA 会标注出来）。
-- 「＋ 新增风格」填 key / 显示名 / LoRA / 触发词 → 点「加入风格库」→ 再点「保存」才落盘。
-- 自定义风格可「删除」；**内置 10 种不给删**（客户端不给按钮，`applyStyleOps()` 里也独立挡了一层）。
-- ⚠️ 提交顺序很关键：`/rp-tools/config` 里 **`applyStyleOps()` 必须跑在字段补丁之前**，
-  否则新增的风格还不存在，`if (!st) continue` 会把它的全部字段静默丢掉（踩过）。
-  同理，add/duplicate 失败的 key 会进 `failedKeys`，调用方据此**跳过该 key 的补丁** ——
-  不然补丁会盖到同名旧条目上，把已有风格悄悄改掉。
+**~~风格库~~（1.15.0 移除）**：本地生图链路整条删除时，风格库、LoRA 下拉（`/rp-tools/loras`）、
+全局负面词、全局默认风格与单风格字段一并删掉了 —— `styles.json` 里那几个旧键也不再读。
+设置页现在只剩**卡库目录 + 默认宏列表**；「配图风格」改由 DM 直接拼进 `generate_image` 的 prompt
+（预设 persona 里给了几组可选风格词）。
 
 ---
 
@@ -79,8 +83,8 @@
 
 | 入口 | 作用域 | 做什么 |
 |---|---|---|
-| `apply(ctx)` | 全局（host 组合） | **不注册任何模型工具**。只注册 12 条 HTTP 路由（设置页 / 客户端 / 媒体代理）+ 监听 `session/created`（fork 继承配置、记录工作区）。 |
-| `registerRpTools(ctx)` | agent（由 dm 预设的 `rp-bridge.mjs` 调用） | 注册**全部 10 个** `rp_*` 工具（每个的 `execute` 包一层 `markDmSession` 保底登记）+ 挂两条提示词注入通道。 |
+| `apply(ctx)` | 全局（host 组合） | **不注册任何模型工具**。只注册 25 条 HTTP 路由（设置页 / 客户端 / 卡库 / 资源库 / 会话包）+ 监听 `session/created`（fork 继承配置、记录工作区）。 |
+| `registerRpTools(ctx)` | agent（由 dm 预设的 `rp-bridge.mjs` 调用） | 注册**全部 8 个** `rp_*` 工具（每个的 `execute` 包一层 `markDmSession` 保底登记）+ 挂两条提示词注入通道。 |
 
 各自的依赖声明：
 
@@ -103,7 +107,8 @@ that scope's assemblies*），所以在 agent 作用域注册时，回调**只�
 现在这些代码**全部删除**，会话 id 直接取作用域自带的 `ctx.agent.id`。
 回归测试：`tools/smoke-dm.mjs` 里「全局不注册任何模型工具」+「注入只由 agent 作用域注册」。
 
-**② 生图链路**：`buildWorkflow(style, {...})` 生成 API 工作流 → `POST {baseUrl}/prompt` → 轮询 `/history/{id}` → 图片经**插件自己的同源代理** `/rp-tools/media` 返回（URL 形如 `http://127.0.0.1:3080/rp-tools/media?file=…`，前端据此渲染成聊天卡片）。**不依赖 dsh-comfyui**。
+**② ~~生图链路~~ → 配图链路（1.15.0 改）**：~~`buildWorkflow(style, …)` 生成 API 工作流 → `POST {baseUrl}/prompt` → 轮询 `/history/{id}` → 图片经插件自己的同源代理 `/rp-tools/media` 返回~~ —— **这套已整条删除**，插件不再和 ComfyUI 说话（`DSH_RP_COMFY_URL` / `DSH_RP_COMFY_ORIGIN` 两个环境变量也一并没了；`DSH_HOME` 与 `DSH_RP_PROFILE_PACKAGE` 还在）。
+现在：DM 直接用宿主自带的 **`generate_image`**（改图 `edit_image`）出图 → 图**自动作为附件挂在对话里**（工具结果带 image 内容块，模型拿不到可用的 `src`，所以新图**不必**再用 `dsh-ui` 的 image 组件贴一遍）→ 想把图留起来复用，就调 `rp_assets(action:"import", path:"<generate_image 返回的 savedTo>", label, tags, kind)` 收进本会话资源库；**只有从资源库重放的图**才需要用 image 组件显示。
 
 **③ 会话 id 归一化**（关键，刚修）：工具侧 `exec.agent.id` 形如 `session-<uuid>`，而会话目录 / 客户端 `useSessions().current` 是裸 `<uuid>`。`normalizeSessionId()` 统一剥掉 `session-` 前缀，`loadSession` 兼容旧文件名，`isDmSession()` 两种写法都能命中。
 
@@ -112,7 +117,7 @@ that scope's assemblies*），所以在 agent 作用域注册时，回调**只�
 - `conversation.session.header.utilities` id `rp-tools` → 会话头部**右上角**的「🎲 RP」入口（只在 DM 会话渲染，非 DM 返回 `null`）；
 - `sidebar.right.pane.tab` / `sidebar.right.pane.tab.title` key `dsh-rp-tools` → **RP 面板本体，作为右侧栏页签**。
 
-  **面板为什么在右栏而不是浮层**：早期版本用 `shell.overlay` 自己画浮层（ComfyUI 面板也是这个做法），
+  **面板为什么在右栏而不是浮层**：早期版本用 `shell.overlay` 自己画浮层（ComfyUI 面板当年也是这个做法，这里只作历史对照），
   既丑又不能收缩。现在改为注册成右栏的一种页签，**收起 / 浮动 / 关闭 / 拖拽全由 DSH 右栏负责**，插件不再自己管定位。
   接线三件套（缺一不可）：
 
@@ -148,7 +153,7 @@ that scope's assemblies*），所以在 agent 作用域注册时，回调**只�
   `useSessions` 的 store 是 `@deepseek-ai/dsh-api-session-controller` 的 `list`，`current` 存**裸 id 字符串**。
   （为什么不用 `conversation.view` 页签：它**无法按会话条件注册**，一注册就所有会话都出现。）
 
-**⑤ 全局 vs 会话**：全局 = 风格库 / ComfyUI 地址 / 负面词 / 全局默认风格（`styles.json`）；会话 = 世界 / 角色卡 / 随机表 / 前缀 / 会话默认风格 / 风格备注 / 战役名（`sessions/<id>.json`）。
+**⑤ 全局 vs 会话**：全局 = 卡库根目录 + 默认宏列表（`styles.json`）—— ~~风格库 / ComfyUI 地址 / 负面词 / 全局默认风格~~ **（1.15.0 移除生图时一并删掉）**；会话 = 世界 / 角色卡 / 资源库 / 随机表 / 提示词前缀 / 战役名 / DM 设定 / 宏（`sessions/<id>.json`）—— ~~会话默认风格 / 风格备注~~ **（1.15.0 移除）**。
 
 **⑥ fork 分叉要继承会话配置**（`copyRpSessionFromParent()` + `session/created` 监听）。
 RP 配置按会话 id 存，而 fork 出来的是**新 id** —— 不处理的话用户分叉后世界/角色卡/随机表全「消失」。
@@ -219,12 +224,13 @@ RP 配置按会话 id 存，而 fork 出来的是**新 id** —— 不处理的�
 都是参考实现花大代价的部分，与「轻量」定位不符。
 
 **面板里各字段由谁编辑**（改界面时注意）：
-- 面板直接给了输入框的：世界设定、角色卡、随机表、**生图配置卡片里的「会话默认风格」**。
-- **只由 DM 用 `rp_session` 工具维护、面板不放输入框的**：提示词前缀 / 风格备注 / 战役名。
-  面板保存时把这些字段**原样回写**（`save()` 里送的是 `draft.campaign` / `draft.styleNotes`），
+- 面板直接给了输入框的：世界设定 / DM 设定 / 宏变量 / 角色卡 / 资源库 / 随机表 / 当前状态。
+- **只由 DM 用 `rp_session` 工具维护、面板不放输入框的**：提示词前缀 / 战役名。
+  面板保存时把这些字段**原样回写**（`save()` 里送的是 `draft.campaign`），
   所以精简界面**不会**清掉 DM 已经设好的值 —— 别为了「干净」改成发送空串。
-- **负面词只属于全局**（设置页「RP工具」），会话面板里不该出现它的说明或入口。
-  面板的「生图配置」卡片只留「会话默认风格」。
+- ~~生图配置卡片（会话默认风格）~~ 与 ~~全局负面词~~ **（1.15.0 随本地生图一并移除）**。
+  会话面板里不再有「生图」这一类卡片；配图相关的东西只剩**资源库**与角色卡上的立绘位
+  （立绘只来自**玩家导入**的图或导入卡的卡面 —— 老版本那条「生成出来的立绘」已不再被读取）。
 
 **⑩ PNG 故事书（角色卡）导入**（`lib/card-png.js` + `lib/card-import.js` + 4 条路由 + 客户端一个槽位）
 
@@ -273,7 +279,7 @@ RP 配置按会话 id 存，而 fork 出来的是**新 id** —— 不处理的�
   去掉就撞成同一个 slug，导入第二张会覆盖第一张的全文与卡面。
 - 卡面同时进会话配置 `session.portraits[角色名] = { card: <卡库相对路径>, file: <工作区相对路径> }`：
   `card` 给界面拼 `/rp-tools/card-image` 的 URL（只服务卡库内的文件），`file` 是工作区自带的那份。
-  面板的立绘区因此变成「生成的立绘优先，导入的卡面垫在后面」。
+  面板的立绘区因此变成「玩家导入的立绘优先，**导入卡的卡面**垫在后面」（~~生成出来的立绘~~ **已随 1.15.0 移除生图一并删除**）。
 
 **真卡库探针**（不是单测，是手动诊断）：`node tools/probe-cardlib.mjs [每类抽样数]` ——
 拿本机 3269 张真卡跑列表 / 搜索 / 抽样解析 / 真导入，用来抓合成 PNG 测不到的脾气
@@ -284,7 +290,7 @@ RP 配置按会话 id 存，而 fork 出来的是**新 id** —— 不处理的�
 ## 4. 开发流程（照抄即可）
 
 ```powershell
-# 1) 改源码：D:\Code\dsh\rp-tools-plugin\{lib/index.js, client/client.js}
+# 1) 改源码：<你的 checkout>\{lib/index.js, client/client.js}
 
 # 2) 语法检查
 node --check lib/index.js ; node --check client/client.js
@@ -307,8 +313,8 @@ Copy-Item preset/session-filter-v2.mjs  "$env:USERPROFILE\.dsh\.agent-presets\dm
 schtasks /Run /TN dsh-rp-restart
 
 # 5) 冒烟测试（宿主逻辑不必等重启就能验）
-node tools/smoke-dm.mjs        # 445 条断言：作用域隔离、装配注入（含会话 id 来源）、工具/路由注册、dm 判定、世界书、状态、风格库、LoRA、卡库导入
-node tools/smoke-card.mjs      # 196 条：合成 PNG 解码（三种文本块 / ccv3 优先 / 截断容错）+ 广告过滤 + 世界书限量/空壳过滤 + 开场指令
+node tools/smoke-dm.mjs        # 1004 条断言：作用域隔离、装配注入（含会话 id 来源）、工具/路由注册、dm 判定、世界书、状态、图片资源库、卡库导入
+node tools/smoke-card.mjs      # 256 条：合成 PNG 解码（三种文本块 / ccv3 优先 / 截断容错）+ 广告过滤 + 世界书限量/空壳过滤 + 开场指令
 node tools/smoke-client.mjs    # 客户端：样式在 apply 时就注入（防 FOUC 回归）、槽位注册（含 id/order）、bundle 工厂可跑
 #    ★ 数据隔离：smoke-dm.mjs 把 DSH_HOME 指向临时目录，跑完就删 —— 绝不碰真实 ~/.dsh/data。
 #      （早期版本直接写真实数据目录，测试记录混进真实会话登记表，清理时极易误删
@@ -326,7 +332,7 @@ node tools/probe-cardlib.mjs 12   # 真卡库：列表/搜索/抽样解析/真�
 
 # 6) 往返一致性（要在 profile 的 node_modules 目录里跑：那里才解析得到 @deepseek-ai/dsh-tools）
 Copy-Item tools/verify-roundtrip.mjs "$dst\_roundtrip.mjs" -Force
-cd $dst ; node _roundtrip.mjs "D:\Code\dsh\rp-tools-plugin\lib\card-import.js"
+cd $dst ; node _roundtrip.mjs "<你的 checkout>\lib\card-import.js"
 Remove-Item "$dst\_roundtrip.mjs"
 ```
 
@@ -363,14 +369,14 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen |
      `rp-sessions/<会话 id>/` 下的世界书与 `cards/`；④ RP 面板的角色卡下面出现卡面立绘。
    - 已知**未在浏览器里跑过**的部分：`remote.agentPresets.select()` 与 `uiWorkspace.startSession()`
      都只能在页面里验证（宿主侧没有等价入口）。若切预设失败，面板会**显示原因**而不是静默 —— 先看那行字。
-3. **`rp_scenes` 未用真实 `scenes_*.json` 实跑过**（逻辑同 `rp_illustrate`；样例文件在 `~/.dsh/.../userdata/workflows/manga_pipeline/scenes_*.json`）。
-4. **角色一致性只做了第一版**：目前是「角色名→外观锚点」+ **每角色固定 seed**（`characterSeed()`，
-   多角色同框时不固定）。要真正锁五官需接参考图 —— 本机已确认有
-   `qwen_image_2512_fp8_e4m3fn` + Qwen VL 编码器 + `Qwen-Image-Edit-2509-Lightning-4steps` LoRA
-   + **`ReferenceLatent` 节点**（**没有** `IPAdapterModelLoader`，别走 IPAdapter 那条路）。
-   代价：要新增第二个工作流模板（现在 krea2-only）+ 首次加载 ~20GB 模型。
-5. **LoRA 强度未暴露**：模板已支持 `st.loraStrength`，设置页/工具未开放。
-6. 大尺寸（1664×928 等）未压测；媒体代理会把整图读进内存（仅适合图片）。
+3. ~~**`rp_scenes` 未用真实 `scenes_*.json` 实跑过**~~ **（作废：`rp_scenes` 已随 1.15.0 移除生图一并删除，相关样例文件也不再与插件有关）**。
+4. ~~**角色一致性只做了第一版**~~ **（作废：1.15.0 移除生图，`characterSeed()` / `characterInPrompt()` 都没了）**。
+   现在的一致性手段只剩 persona 里那条纪律：**把角色卡的 `appearance` 写进 `generate_image` 的画面描述**
+   （顺序：发型颜色 → 眼睛 → 肤色体型 → 身高 → 穿着 → 配饰）。历史记录：当时的想法是接参考图
+   （本机有 `qwen_image_2512_fp8_e4m3fn` + Qwen VL 编码器 + `Qwen-Image-Edit-2509-Lightning-4steps` LoRA
+   + `ReferenceLatent` 节点；**没有** `IPAdapterModelLoader`），代价是新增第二个工作流模板 + 首次加载 ~20GB 模型。
+5. ~~**LoRA 强度未暴露**~~ **（作废：LoRA 与工作流模板已随 1.15.0 删除）**。
+6. ~~大尺寸（1664×928 等）未压测；媒体代理会把整图读进内存~~ **（作废：尺寸体系与 `/rp-tools/media` 代理已随 1.15.0 删除）**。
 7. 面板「掷表」走独立路由 `/rp-tools/roll`，与 `rp_table` 工具共享 `parseDice`/`rollDice`。
 8. **预设 id 目前硬编码为 `dm`**：若把预设目录改名，判定会失效（客户端、`markDmSession`、
    导入的 `select()` 都写死 `'dm'`）。要支持改名就把预设 id 提成一个常量或配置项。
@@ -396,19 +402,24 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen |
 
 ## 6. 踩过的坑（别再踩）
 
+> **历史标注（1.15.0）**：下表里凡涉及 **ComfyUI / 本地生图 / 风格库 / 负面词 / 图像尺寸体系** 的条目，
+> 都是**本地生图被整条移除之前**踩的坑 —— 那些功能已经不在本插件里了（对应的工具与路由都没了），
+> 但「为什么会那样」的教训仍然成立，所以原样保留，只在现象列加了 **（历史）** 标记。
+> 新会话读到这里时：**别照着这些条目去找已经删掉的代码**。
+
 | 现象 | 根因 / 解法 |
 |---|---|
 | 客户端卡片/按钮完全不渲染 | bundle 的 `factory` **必须自己声明** `var module = { exports: {} }`（官方 bundle 同样），否则 `module.exports.*` 赋给了错误对象 |
 | 按钮「静默不出现」且无报错 | 用 `String(fromHook \|\| props.sessionId \|\| '')` 取会话 id 时，钩子的**空串**会把后面兜底短路 → 查询落到未知 id → `isDm:false`。空串要当「真值缺失」跳过：`[a, b, c].find(v => typeof v === 'string' && v !== '')` |
 | 同源路由测试里 POST 被 403 | `sameOrigin()` 比对 `new URL(origin).host === request.headers.host`——**假请求必须同时给 `origin` 和 `host` 两个头**（浏览器会强制覆盖 Host，所以真实 CSRF 场景里两者必然不一致） |
-| 面板又丑又不能收缩 | 别用 `shell.overlay` 自己画浮层（ComfyUI 面板就是这么做的，属于反面教材）。要「右侧常驻 + 可收起」就注册 `sidebar.right.pane.tab`，外壳交给 DSH |
+| 面板又丑又不能收缩 | 别用 `shell.overlay` 自己画浮层（ComfyUI 面板当年就是这么做的，属于反面教材；这条与本插件现状无关）。要「右侧常驻 + 可收起」就注册 `sidebar.right.pane.tab`，外壳交给 DSH |
 | 下拉框白底看不清 | 原生 `<select>` 的**弹出列表由浏览器绘制**，不继承我们的半透明背景 → 必须显式给 `option` 上色。用主题 token（`--dsw-alias-bg-layer-2` / `--dsw-alias-label-primary`），别写死深色，否则浅色主题下又不一致。别用 `color-scheme: dark` 图省事，那会写死外观 |
 | 插件按钮跟旁边「不搭」 | 头部右上角那排是宿主的设计系统组件（参考 `dsh-client-ui-open-in-app` 的 split 按钮）：**28px 高 / 14px 圆角 / 0.5px 边框 `--dsw-alias-border-l4` / 透明底 / 11px 字 / hover 用 `--dsw-alias-interactive-bg-hover`**。裸 `<button>` 继承的是全局灰底方角样式，一眼就看得出是外来的。用这些 token 抄规格即可（都在 `dsh-web-frontend` 的 CSS 里有定义） |
 | 共享 class 互相污染 | 给头部按钮写的 `.rpt-hbtn` 挂在浮层根元素 `.rpt` 上，结果把浮层的 `font-size: 13px` 带进了按钮。**独立根元素要用独立的无前缀 class**（现在是 `.rph-btn`） |
 | 「第一次启动样式不对，后面就好了」 | **FOUC**：`injectStyles()` 只在设置页 / 会话面板的 `useEffect` 里调用，而头部按钮属于第三个组件、从不调用它 → 首屏按钮先以裸 `<button>` 外观出现，等某个组件挂载后才恢复。**样式必须在 `apply()` 里就注入**（已这么做），别依赖「某个组件挂载时顺手注入」。回归测试：`node tools/smoke-client.mjs`（做过变异验证：撤掉这行它会红） |
-| 「试出」点了像没反应 | 预览卡片原本渲染在面板**顶部**，而「试出」按钮在卡片组**底部** —— 出图后不主动滚动，用户看着画面纹丝不动，会以为图没出。**现在每个「出图」入口都把结果渲染在自己旁边**：角色卡「立绘」→ 挂在该角色下方；「生图配置」的「试出一张」→ 卡片内按钮下方；设置页「试出」→「全局生图配置」卡片内。`useScrollToPreview()` 只作兜底滚动；等待期按钮显示「出图中…」（本机一张 ~18s）。以后再加出图入口，**让图出现在按钮附近**，不要又放到别处 |
+| **（历史，1.15.0 已删「试出」路由）** 「试出」点了像没反应 | 预览卡片原本渲染在面板**顶部**，而「试出」按钮在卡片组**底部** —— 出图后不主动滚动，用户看着画面纹丝不动，会以为图没出。**当时每个「出图」入口都把结果渲染在自己旁边**：角色卡「立绘」→ 挂在该角色下方；「生图配置」的「试出一张」→ 卡片内按钮下方；设置页「试出」→「全局生图配置」卡片内。`useScrollToPreview()` 只作兜底滚动；等待期按钮显示「出图中…」（本机一张 ~18s）。教训仍然成立：以后再加任何「耗时动作入口」，**让结果出现在按钮附近**，不要又放到别处 |
 | 立绘串到别人身上 | 立绘存在 `portraits[角色名]`，**不能按数组下标存** —— 删掉中间一个角色后下标整体前移，图就会挂到隔壁角色。角色改名等于换了 key（旧图留在内存里，重新出图即可） |
-| 预览标题显示成「预览：（18.1s）」 | `/rp-tools/preview` 返回的是 `styleKey` / **`styleLabel`**，**没有 `style` 字段**。客户端早期读 `res.style` → undefined。按接口实际字段名读 |
+| **（历史，路由 1.15.0 已删）** 预览标题显示成「预览：（18.1s）」 | `/rp-tools/preview` 返回的是 `styleKey` / **`styleLabel`**，**没有 `style` 字段**。客户端早期读 `res.style` → undefined。按接口实际字段名读 |
 | `ctx.sidebarRight` 是 undefined | 新服务要在**延迟注入回调的 ctx** 上取（`ctx.inject(['sidebarRightTabs'], (injected) => injected.sidebarRight.openTab(...))`），根 ctx 上没有 |
 | 假 request 让 `readJsonBody` 报 400 | 它用 `for await (const chunk of request)` → 请求体必须是真正的 `Readable` 流（`Readable.from([Buffer...])`），手搓的 `on('data')` 对象不行 |
 | 冒烟测试第二次跑就假失败 | 测试写的是**真实数据目录**：上一轮登记进 `dm-sessions.json` 的记录会让「未登记」用例返回 true。修法不是换随机 id，而是把 `DSH_HOME` 指向临时目录（现在这么做了） |
@@ -421,12 +432,12 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen |
 | `__debug` 放文件顶部 → 模块直接加载失败 | 它引用了下面定义的 `const`，命中**暂时性死区**（`Cannot access 'X' before initialization`）。放在文件**末尾**并注明原因 |
 | 大段编辑把相邻代码吃掉 | 用 `edit` 替换大段时，`old_string` 若不精确会**连带删掉紧邻的函数注释头、`return` 或闭括号**（本轮踩了 3 次：`world:` 那行被替换而非追加、`buildTurnContext` 的 return 被删、`characterInPrompt` 的注释头被吃）。改完**立刻 `node --check`**，别攒着 |
 | 测试退出时报 `UV_HANDLE_CLOSING` | Windows 上同步 `process.exit()` 会在 libuv 句柄收尾途中断言失败 —— 那是**收尾时序**问题、不是测试失败。改成 `process.exitCode = ...` 让事件循环自然收尾 |
-| `comfyui_run` 的 `inputs` 覆盖报错 | 那是 dsh-comfyui 的坑（对象被冻结）；本插件不用它——出图直接 `POST /prompt`，参数自己注入 |
-| 面板/工具传参"静默失效" | 早期版本把风格存成 dsh-comfyui 工作流时，参数清单没保存 → 覆盖值被忽略。现在参数由插件自己注入工作流，不存在该问题 |
+| **（历史）** `comfyui_run` 的 `inputs` 覆盖报错 | 那是 dsh-comfyui 的坑（对象被冻结）；本插件从不用它——当年出图是直接 `POST /prompt`，参数自己注入（1.15.0 起连这条路也没有了） |
+| **（历史）** 面板/工具传参"静默失效" | 早期版本把风格存成 dsh-comfyui 工作流时，参数清单没保存 → 覆盖值被忽略。后来参数由插件自己注入工作流；1.15.0 移除本地生图后这个问题连同相关代码一起消失 |
 | PowerShell 里 `@(a + $b * 360, c + $d * 170)` 报 `Object[] 不包含 op_Multiply` | 逗号优先级坑，**每个表达式加括号** |
 | `schtasks` 的 `/TR` 超 261 字符 | 把命令写进 `.cmd`，`/TR` 指向该 cmd |
 | 从 pwsh 里 `Stop-Process` 匹配到自己 | 过滤 `CommandLine` 时别让当前命令自身的文本命中模式（用拼接绕过） |
-| 负面词"不起作用" | Krea-2 Turbo 默认 CFG=1，负向被 `(1-cfg)=0` 消掉；把该风格 `cfg` 调到 1.5~2.5 才生效 |
+| **（历史，负面词 1.15.0 已删）** 负面词"不起作用" | Krea-2 Turbo 默认 CFG=1，负向被 `(1-cfg)=0` 消掉；把该风格 `cfg` 调到 1.5~2.5 才生效 |
 | 两个会话的世界书混到一起 | 世界书原先放在**工作区根目录**的 p-worldbook.md，而工作区是**按目录共享**的 —— 同工作区的两个会话读到同一个文件，A 导入的卡组条目就出现在 B 的上下文里。现在世界书按会话隔离：<工作区>/rp-sessions/<会话 id>/rp-worldbook.md；老文件首次读取时一次性迁移一份（旧文件保留不删），之后各会话互不影响。回归测试：smoke-dm.mjs 的「隔离：」系列（两个会话同一个工作区，条目、注入、常驻段路径三处都要互不可见） |
 | 装了插件后**同工作区**会话互相串设定 | 见上一条。凡是「按会话」承诺的东西，路径里就必须有会话 id —— 别放在工作区根这种共享位置上 |
 | 换了卡库目录却列出 3269 张老卡 | 私有索引 `card-index.js` 里的相对路径是**相对内置默认根**生成的，换根之后完全不适用。只在 `resolve(root) === resolve(CARD_DEFAULT_ROOT)` 时才用索引，否则扫目录（踩过一次：测试用临时卡库，却列出真卡库的卡） |
@@ -443,7 +454,7 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen |
 | 用 PowerShell `.Replace` 改含反引号的 JS | 模板字符串里的反引号会被 PowerShell 当转义符，吃掉引号后直接语法报错（本轮踩了两次，一次把 `tools/smoke-dm.mjs` 弄坏到必须 `git checkout` 恢复）。**改代码只用 `edit` 工具**，PowerShell 只用来跑命令和查文件。 |
 | 切走 agent 预设再切回 dm，导入入口永久消失 | 入口可见性原先只看**客户端投影**（`byId[id].projectionValues.agentPreset` + 摘要里的 `blank`）。切预设会让会话作用域重新挂载、投影基线重放，而 `ProjectionValueStore.seed()` 对「基线里没有的键」是**删除**语义 —— `agentPreset` 于是读成空串，判定「不是 DM」，入口再也不出现（刷新页面才回来）。修法：加宿主路由 `/rp-tools/gate`（宿主手里是活着的会话对象 + 自己的投影状态，回答「现在是不是 dm」「有没有真的开局」），客户端把投影只当**快速路径**；宿主答复**带 key 缓存**，key（会话+blank+预设）一变旧答复立刻作废。**教训：别把「界面缓存里的投影值」当成会话事实** —— 凡是决定「要不要显示某个功能」的判断，都要有一条问宿主的权威路径 |
 | 摘要没到就当成「已开局」 | 同一条可见性逻辑里写过 `blank === true` 才算新会话，摘要缺席时读成 `false` → 重挂载后入口闪一下就没。**缺省要落在「功能可见」那一侧**，再让权威路径纠正；落在「功能消失」那侧用户根本找不回来，多显示一次则没有损失 |
-| 尺寸改了但出图没变 | 图像尺寸现在是**全局**的（`config.imageSizes`，设置页「图像」那三行），解析顺序 `resolveImageSizes()` = **全局优先 → 风格自己的 `sizes` → 兜底**。风格里的旧尺寸只在「全局缺该用途」时才生效 —— 这是刻意的：若风格优先，用户在设置页改了全局会完全没反应。要单风格特例就直接写 `styles.json`。将来加第 4 档用途要同时改三处：`IMAGE_SIZE_SLOTS`、`DEFAULT_IMAGE_SIZES`、设置页的 `sizeRow(...)` |
+| **（历史，尺寸体系 1.15.0 已删）** 尺寸改了但出图没变 | 图像尺寸当时是**全局**的（`config.imageSizes`，设置页「图像」那三行），解析顺序 `resolveImageSizes()` = **全局优先 → 风格自己的 `sizes` → 兜底**。风格里的旧尺寸只在「全局缺该用途」时才生效 —— 这是刻意的：若风格优先，用户在设置页改了全局会完全没反应。要单风格特例就直接写 `styles.json`。当时加第 4 档用途要同时改三处：`IMAGE_SIZE_SLOTS`、`DEFAULT_IMAGE_SIZES`、设置页的 `sizeRow(...)`。现在尺寸由宿主的 `generate_image` 自己管，本插件不再有任何尺寸配置 |
 | 「重启了还是没按钮」 | 单点判据时，任一侧给出错误值入口就消失。**判据要往「显示」方向合并**：dm 用 `storeDm \|\| gateDm`，开局用 `storeStarted && gateStarted`（只有两侧都说已开局才收起）。更要紧的是补一条**结构性保底通道**：RP 面板里的「PNG 故事书导入 → 展开卡库」，与 chip 共用面板主体但不判定预设/开局 —— 会话开局后 chip 必然消失，而「再导一张卡」恰恰是开工之后的需求。教训：凡是「只在某状态下出现」的入口，都要有一个**不依赖那个状态**的备用入口。面板顶部还留了一行**入口判据诊断**（界面侧 vs 宿主侧），排查先看它 |
 | 「值都对，按钮就是不回来」 | 定位这类问题要**先分三问**（这次靠用户的三句话一次锁定）：① 刷新页面能回来吗？（能 ⇒ 数据源没错，是「没重新判断」）② 切换真的生效了吗？（RP 面板能打开 ⇒ 生效）③ 按钮原本出现在什么状态？（新对话首屏 ⇒ 它属于首屏的预设选择）。结论：**客户端那份 `projectionValues.agentPreset` 在切走之后可能不再更新**（官方 chip 显示正确，是因为它自己持有 staged 值，不是投影更新了），组件入参一个不变 → 不重渲染 → 判定永远停在旧值。正确触发源是宿主广播的 **`agent-preset/selected`**（在 `dsh-api-remotes` 的转发白名单里，客户端 `ctx.remote.$on(...)` 收得到；`dsh-client-ui-skill` / `ui-commands` 都这么用）。教训：**别把「某个 store 值会变」当成前提**，凡是要跟随别的 UI 变化的东西，就订阅那个变化的广播 |
 | React 的 hook 不能写在早退之后 | `RpCardImport` 里 `useRef`/`useState`/`useLayoutEffect` 原本写在两个 `return null` **之后** —— 等于按条件调用 hook。真实 React 下状态可能错位，测试桩（槽位按序号存）里直接表现为「面板打不开」。**所有 hook 提到早退之前**，早退只决定「渲染什么」。顺带修了测试桩：钩子槽位原先**跨组件共用一个数组**，我加两个 hook 之后 dock 组件的 `open` 就读到了 RP 面板的 `lib`，报了一个完全不相关的假失败 —— 现在 `rt.cellStore` 按组件类型隔离，重挂载用 `resetHooks()` |
@@ -459,11 +470,15 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen |
 | 导入的条目质量靠不住（不像世界书，像历史状态） | 卡里的「当前进度 / 前情提要 / 物品清单 / 好感现状」会被当成世界书条目（无 keys 的还被补 `constant`），既每轮占上下文又是**会过期**的信息。规则只能挡一层（类别标签 + 空壳过滤），**判断力有限**；DM 手里有卡全文、又在局内，所以正确做法是让它收一次尾：`buildTidyPrompt()` 的指令随开场一起发（`buildOpeningPrompt` 的 `tidy` 段，默认开），已开局的会话用面板「整理设定」按钮再发（`POST /rp-tools/tidy` 给措辞，界面只 `setDraft` **不自动发送**）。措辞只有一处，改它就能同时改两条路径。**不要**为此再起一个临时 agent：卡全文已经在 `rp-sessions/<id>/cards/<slug>.md` 里 |
 | 卡库里有一类卡**不是角色，是 DM 自己的规则** | 名字就是模型名（`lust Adventure`）、描述通篇第三人称「<卡名> will …」、开场白在对玩家说「给我一个故事背景，我来给你建世界」。按角色卡导，它就会变成一条**名叫 DM 的角色**，既污染角色索引又跟 persona 抢话语权（用户报的「角色卡第一条似乎写错了，这是 dm 预设吧」）。判据收在 `isDmCardData()`：强信号（「你是一名 DM/主持人」「扮演所有 NPC」…）任一即算，否则要中**两个**弱信号（自称主持人/旁白 · 第三人称「<卡名> will」· 对玩家说「带你玩/给你建世界」）。刻意要求两个信号，是因为单看「旁白」二字会把正常角色卡的关系描述也判进来。导进来的正文进 `session.dm.prompt`（面板「DM 设定」），**不建角色**；老数据在 `loadSession()` 里**内存迁移**（不偷偷写盘，用户保存才落盘），并给出 `dm.migrated` 让界面提示 |
 | 面板不会自己刷新（DM 用工具填完还要手动刷） | 触发源要用宿主官方那份状态：`useSessions().byId[id].running`（来自 `api-session/status` 广播，agent 起停）与 `updatedAt`（`api-session/activity`，**只在玩家发消息时**变）。所以**不能**只等 `updatedAt` —— DM 一轮里用 `rp_character`/`rp_state` 写的改动，要等 `running` 落回 `false` 才来。两条保护缺一不可：`dirtyRef`（用户有未保存改动就**绝不覆盖表单**）与「状态签名只处理一次」（否则 effect 每次重跑都刷 → 自激）。⚠️ `api-session/activity` 只在 `event.type === 'user/message'` 且 `source.kind === 'user'` 时发，工具调用**不发**这个事件。测试这条时注意：**桩在「跨 render 的异步 setState」上不可靠**（软刷新的写入会落进上一代 hook cell），所以 smoke-client 断言的是**接线本身**（源码里有 running 下降沿订阅、dirtyRef 保护、签名去重），别去断言渲染结果 —— 会得到一个假失败 |
-| 生图要「首次出场 / 重要场景」自动配图，但开关得能关 | 规则写在 dm 预设 persona 的「## 插画」（拿到 `media[0]` 必须用 `dsh-ui` 的 image 组件显示出来，否则玩家看不到图；已有立绘的角色**不要重复生成**）。**开关按会话存**在 `session.dm.images`（`enabled`/`firstAppearance`/`keyScenes`，默认全开），由常驻段【本会话设定】**逐字告诉 DM**（写「关」它就不该调 `rp_illustrate`）。「谁能直接用哪张图」也由宿主算：常驻段里给出 `portraits` 里现成的 `/rp-tools/media?...` 或 `/rp-tools/card-image?...` 相对地址，DM 原样放进 image 组件即可 —— 这正是「角色卡本身有立绘就直接用」的落地方式 |
+| 配图要「首次出场 / 重要场景」自动配，~~但开关得能关~~ **（1.15.0 起没有这个开关了）** | **已改（1.15.0）**：规则现在写在 dm 预设 persona 的「## 配图（用宿主的生图工具）」一节里，**不再有「按会话存的生图开关」** —— ~~`session.dm.images`（`enabled`/`firstAppearance`/`keyScenes`）~~ 已不再解析（盘上老数据被忽略、不删），`rp_session` 也不再有 `images_*` 参数，常驻段里不再逐字告诉 DM「写关就不配图」。新的落点是两条：**「什么时候配」交给 persona 的纪律**（角色第一次出场一张立绘、重要场景一张氛围图）；**「谁能直接用哪张图」仍由宿主算** —— 常驻段给出「已有可用图」一行（玩家导入的立绘 / 导入卡的卡面，走 `/rp-tools/portrait-image` / `/rp-tools/card-image`）加资源库条数摘要。让玩家看到图的方式也变了：**新图靠 `generate_image` 自动挂附件**，只有**从资源库重放**的图才用 `dsh-ui` 的 image 组件 + `rp_assets` 返回的地址 |
 
 ---
 
-## 7. 环境侧的既有资产（可复用）
+## 7. ~~环境侧的既有资产（可复用）~~ **环境侧资产（1.15.0 起与本插件无关）**
+
+> ⚠️ 本节是**本机 ComfyUI 环境的备忘**。**自 1.15.0 起本插件不再做本地生图**，
+> 下面这些与本插件**已经没有关系**（保留只是因为做别的事可能还用得上；别以为插件还在调它们）。
+> 插件里现在唯一与「图」有关的资产是**各会话工作区里的图片资源库**与导入卡的卡面。
 
 - **模型**：`krea2_turbo_fp8_scaled`（12.2GB）、`qwen3vl_4b_fp8_scaled`（4.9GB）、`qwen_image_vae`、9 个 `krea2_*` 风格 LoRA（各 ~448MB）、`z_image_turbo_bf16`、`qwen_image_2512_fp8_e4m3fn` 等。
 - **官方模板**（可参考构图/参数）：`~/.dsh/.../site-packages/comfyui_workflow_templates_json/templates/image_krea2_turbo_t2i.json`、`image_z_image_int8.json`。
@@ -479,7 +494,11 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen |
    正常的话把 `docs/STATUS.md` 的对应条目标为已解决。
 2. 让 DM 首轮把导入的 `personality` 拆成 `appearance` / `speech` / `behavior` / `relations`
    （`rp_character` 已支持；别在插件里猜）。
-3. `rp_scenes` 用真实场景文件实跑一次。
-4. 接 Qwen-Image-Edit 做角色一致性（卡面已经在工作区里了，可以直接当参考图）。
-5. 暴露 LoRA 强度；给 `rp_table` 加「掷出结果 → 顺手出图」。
+3. 走一遍新的配图闭环：DM 调 `generate_image` 出图（确认角色卡 `appearance` 真的进了画面描述、
+   多张图真的并行发）→ 再调 `rp_assets(action:"import")` 收进资源库 → 下一场景让它从库里重放。
+   这一步同时验证 persona 的「## 配图」节与 `keepGlobalTools` 白名单是否真的生效（模型得**看得见**生图工具）。
+4. ~~`rp_scenes` 用真实场景文件实跑一次~~ / ~~接 Qwen-Image-Edit 做角色一致性~~ / ~~暴露 LoRA 强度~~ ——
+   **三项全部作废**：它们依赖的本地生图链路已随 1.15.0 整条移除
+   （`rp_scenes`、工作流模板、`characterSeed()`、LoRA 支持都不在仓库里了）。
+5. 给 `rp_table` 加「掷出结果 → 顺手配一张图」：DM 掷完表可以直接 `generate_image` + `rp_assets(import)`，不需要插件新增工具。
 6. 满 1 天后可向 `awesome-dsh-plugin` 提收录（用户自己维护该列表）。
