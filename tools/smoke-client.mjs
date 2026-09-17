@@ -17,6 +17,20 @@
  * 调 apply()（此时一个组件都还没渲染）拿到注册的槽位与组件，再手动渲染。
  */
 import nodeAssert from 'node:assert/strict';
+
+/**
+ * 测试夹具里用的**假工作区路径**。
+ *
+ * 为什么要有这个常量，而不是各处直接写字面量：
+ *  ① 这些路径只是喂给桩的输入，**与任何真实机台无关** —— 但只要它长得像某个人的真实目录，
+ *     后来的人就分不清「这是夹具还是漏进来的机台路径」。用 `X:` 这种不存在的盘符一眼可辨。
+ *  ② 仓库曾经栽在机台固定路径上（某处默认值写死了开发机的 profile 路径，换机器上
+ *     8 个工具全不生效），所以新增了 `tools/check-no-machine-paths.mjs` 扫这类字面量。
+ *     集中成一处声明后，扫描器只需认这一个带 `machine-path-ok` 标注的位置。
+ *  ③ 桩与断言共用同一个值，改的时候不会漏改某一处（拼 URL 的断言尤其容易漏）。
+ */
+const FAKE_WS = 'X:\\ws';   // machine-path-ok：中性假路径，与真实机台无关
+
 /**
  * 本文件用 `assert.*`（失败即抛、立刻停），与 smoke-dm 的 `check()` 不同 —— 所以这里
  * 包一层只为**统计通过/失败数**并给出与 smoke-dm 一致的收尾摘要行（失败照旧抛出去）。
@@ -234,7 +248,7 @@ globalThis.fetch = async (url, options = {}) => {
   if (target.startsWith('/rp-tools/gate')) return reply(gateReply);
   if (target.startsWith('/rp-tools/cards')) {
     return reply({
-      ok: true, root: 'D:\\Story\\cards', exists: true, indexSource: 'index', librarySize: 3269,
+      ok: true, root: `${FAKE_WS}\\cards`, exists: true, indexSource: 'index', librarySize: 3269,
       categories: [{ name: '古风', count: 133 }], total: 1,
       items: [{
         path: 'cards/古风/长安.card.png', name: '长安', kind: 'v3', creator: '某人',
@@ -288,7 +302,7 @@ globalThis.fetch = async (url, options = {}) => {
     }
     if (wanted) return reply({ ok: false, error: `找不到条目：${wanted}` });
     return reply({
-      ok: true, exists: true, file: 'D:\\Story\\rp-worldbook.md', relative: 'rp-worldbook.md',
+      ok: true, exists: true, file: `${FAKE_WS}\\rp-worldbook.md`, relative: 'rp-worldbook.md',
       chars: 1234, total: 3, constant: 1, keyed: 1,
       // 总览数字（宿主 loreOverview）：面板顶部要显示「常驻 N 条 ≈ M 字/轮」与「隐藏了几条空壳」
       empty: 1, emptyChars: 18, constantChars: 46,
@@ -320,7 +334,7 @@ globalThis.fetch = async (url, options = {}) => {
       // 「切到非 DM 会话」这条路径永远走不到，测试会假绿。
       ok: true, isDm: sessionReplyIsDm, preset: 'dm',
       // 界面 ensureCwd 的兜底来源：会话工作区（真机上是 resolveWorkspaceDir 那四级链的结果）
-      cwd: 'D:\\Story',
+      cwd: FAKE_WS,
       session: sessionStub,
     });
   }
@@ -428,7 +442,7 @@ globalThis.fetch = async (url, options = {}) => {
   }
   if (target.startsWith('/rp-tools/state')) {
     return reply({
-      ok: true, file: 'C:\\...\\styles.json',
+      ok: true, file: `${FAKE_WS}\\styles.json`,
       // 默认宏列表（设置页）：导入表单的预填值来源。userLabel 是宿主同步出来的老字段。
       // stateStub 可变：空列表那条用例会临时清空它。
       config: stateStub,
@@ -592,7 +606,7 @@ const inputActions = {
   removeAttachment: () => {},
   pruneAttachments: () => {},
 };
-function propsFor({ blank = true, preset = '', cwd = 'D:\\Story', sid = SID } = {}) {
+function propsFor({ blank = true, preset = '', cwd = FAKE_WS, sid = SID } = {}) {
   const store = { current: sid, byId: { [sid]: { blank, cwd, projectionValues: preset ? { agentPreset: preset } : {} } } };
   return {
     sessionId: sid,
@@ -830,7 +844,7 @@ async function ensureSidebarTab() {
   assert.equal(selectedPresets.length, 0, '会话已经是 dm 预设 → 不该再重复切一次（入口本来就只在 dm 新会话上出现）');
   assert.equal(importPosts().length, 1, '应 POST /rp-tools/card-import');
   assert.equal(importPosts()[0].body.path, 'cards/古风/长安.card.png', 'POST 应带上选中的卡路径');
-  assert.equal(importPosts()[0].body.workspace, 'D:\\Story', 'POST 应带上会话工作区（宿主据此落盘）');
+  assert.equal(importPosts()[0].body.workspace, FAKE_WS, 'POST 应带上会话工作区（宿主据此落盘）');
   assert.equal(actions.drafts.length, 1, '应把开场指令写进输入框');
   assert.ok(actions.drafts[0].includes('不要再问世界从哪来'), '开场指令必须拦住 dm persona 的开场提问');
   assert.equal(actions.submitted, 1, '开场指令应被提交（自动开始游戏）');
@@ -961,7 +975,7 @@ async function ensureSidebarTab() {
   const tab = await ensureSidebarTab();
   assert.ok(tab, 'DM 会话下应注册右侧栏面板页签（RP 面板本体）');
   resetHooks();
-  const store = { current: SID, byId: { [SID]: { blank: false, cwd: 'D:\\Story', projectionValues: { agentPreset: 'dm' } } } };
+  const store = { current: SID, byId: { [SID]: { blank: false, cwd: FAKE_WS, projectionValues: { agentPreset: 'dm' } } } };
   const panel = render({
     sessionId: SID,
     useSessions: (sel) => sel(store),
@@ -1718,7 +1732,7 @@ async function ensureSidebarTab() {
   {
     // 自己拿一次面板页签与 store（上一块的 tab 已经出了作用域）
     const tab = await ensureSidebarTab();
-    const store = { current: SID, byId: { [SID]: { blank: false, cwd: 'D:\\Story', projectionValues: { agentPreset: 'dm' } } } };
+    const store = { current: SID, byId: { [SID]: { blank: false, cwd: FAKE_WS, projectionValues: { agentPreset: 'dm' } } } };
     const asPanel = () => render({
       sessionId: SID,
       useSessions: (sel) => sel(store),
@@ -1877,7 +1891,7 @@ async function ensureSidebarTab() {
   // ★ 备份 / 会话包（P1）：导出是一个下载链接，快照会更新恢复点清单，导入默认先问「要不要覆盖」。
   {
     const tab = await ensureSidebarTab();
-    const store = { current: SID, byId: { [SID]: { blank: false, cwd: 'D:\\Story', projectionValues: { agentPreset: 'dm' } } } };
+    const store = { current: SID, byId: { [SID]: { blank: false, cwd: FAKE_WS, projectionValues: { agentPreset: 'dm' } } } };
     const asPanel = () => render({
       sessionId: SID,
       useSessions: (sel) => sel(store),
@@ -1979,7 +1993,7 @@ async function ensureSidebarTab() {
   assert.ok(textOf(tree).includes('3269'), `拿不到 cwd 时面板仍要能列出卡库（实际：${textOf(tree).slice(0, 80)}）`);
   const listGet = calls.filter((c) => c.url.startsWith('/rp-tools/cards?')).pop();
   assert.ok(listGet, '应拉过卡库列表');
-  assert.ok(/workspace=D%3A%5CStory|workspace=D:\\Story/.test(listGet.url),
+  assert.ok(listGet.url.includes('workspace=' + encodeURIComponent(FAKE_WS)),
     `cwd 缺失时应先用 /rp-tools/session 问回来再列卡库（实际：${listGet.url}）`);
   assert.ok(calls.some((c) => c.url.startsWith('/rp-tools/session?')), 'cwd 缺失时应问过 /rp-tools/session');
   // 预览请求同样要带上问回来的 cwd

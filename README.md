@@ -437,16 +437,26 @@ git push origin main
 # 2) 重装，让 profile 跟上新 commit
 dsh plugin --profile web add github:SiriusWJ/dsh-rp-tools
 
-# 3) 改了 dm 预设那一半，还要同步活动预设目录（它不属于这个包，只能手动拷）
-$dm = "$env:USERPROFILE\.dsh\.agent-presets\dm"
-Copy-Item preset\agent.cordis.yml      "$dm\agent.cordis.yml" -Force
-Copy-Item preset\session-filter-v2.mjs "$dm\session-filter-v2.mjs" -Force
-Copy-Item preset\rp-bridge.mjs         "$dm\rp-bridge.mjs" -Force
-Copy-Item preset\preset.yml            "$dm\preset.yml" -Force
+# 3) 改了 dm 预设那一半，还要同步活动预设目录（它不属于这个包）
+#    这一步有脚本，别手抄（幂等：重跑就是覆盖成当前版本，覆盖前自动备份）
+node tools\install-preset.mjs
 ```
 
 重启 `dsh web` 后生效（`lib/` 与 `preset/` 启动时装载；`client/` 只需刷新页面）。
 只改了文档时第 2 步可以跳过。仓库 tarball 必须保持小（`github:` 安装会整包下载）。
+
+> **为什么插件装完还要单独装预设**：DSH 的 agent 预设**只能是文件系统目录**
+> （`~/.dsh/.agent-presets/<id>/`，由 `@deepseek-ai/dsh-agent-presets` 发现），
+> 插件的 bundle manifest **声明不了预设**；而本插件的 8 个 `rp_*` 工具与两条注入通道
+> **故意**只在 dm 预设作用域注册（作用域隔离 = 只有 DM 会话看得到、会话之间不串台）。
+> 所以预设目录必须存在，否则工具一个都不生效 —— 这一步是架构约束，不是仪式。
+> `install-preset.mjs` 装完还会自检「插件是否装进 profile」「预设是否引用了桥接与过滤器」，
+> 让「装了但工具不出现」当场暴露。
+
+> **profile 路径不写死**：桥接与 `verify-roundtrip` 都走 `preset/rp-bridge.mjs` 的
+> `resolveProfilePackage()` —— `DSH_RP_PROFILE_PACKAGE` → `<DSH_HOME>/profiles/web` → 唯一 profile。
+> 仓库曾有硬编码机台路径的坑（换机器上工具全不生效），所以加了
+> `node tools/check-no-machine-paths.mjs` 扫这类字面量，改代码后建议顺手跑一下。
 
 测试（每个套件都是自带桩的独立脚本，全程不联网、不碰 ComfyUI —— 插件已经不和它通信了；除探针外都不碰真实数据）：
 
@@ -457,14 +467,15 @@ node tools/smoke-client.mjs    # 客户端 bundle：样式注入 / 槽位注册 
 node tools/verify-roundtrip.mjs lib/card-import.js   # 导入↔解析往返（要传 card-import.js 路径）
 node tools/verify-injection.mjs                      # 读会话日志统计每轮注入（只读）
 node tools/probe-cardlib.mjs   # 真卡库探针（只读 + 临时目录，手动跑）
+node tools/check-no-machine-paths.mjs   # 体检：代码里不该有机台固定路径（见上文）
 ```
 
 > ⚠️ **跑测试前先把插件装进某个 profile**（或让仓库能解析到 `@deepseek-ai/dsh-tools`）。
 > 这些脚本用 `createRequire(profile/package.json).resolve('dsh-rp-tools')` 找到被测模块
-> （默认取 `~/.dsh/profiles/web/package.json`，可用 `DSH_RP_PROFILE_PACKAGE` 覆盖），
+> （profile 位置自动解析：`DSH_RP_PROFILE_PACKAGE` → `~/.dsh/profiles/web` → 唯一 profile），
 > 而被测的 `lib/index.js` 自己 `import '@deepseek-ai/dsh-tools'` —— 这条是 **ESM 解析**，
 > 只认模块所在目录往上找 `node_modules`，**不看 `DSH_RP_PROFILE_PACKAGE`**。
-> 所以「装进 profile」（`npm i <本仓库路径>`，或用 `link:`/junction 把仓库挂进 profile 的 `node_modules`）是前提；
+> 所以「装进 profile」（`dsh plugin add`，或用 `link:`/junction 把仓库挂进 profile 的 `node_modules`）是前提；
 > 否则会看到 `ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/dsh-tools'`。
 
 当前开发状态、验证记录与路线图见 **[docs/STATUS.md](docs/STATUS.md)**，

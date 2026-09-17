@@ -14,6 +14,8 @@
  * 等于 `dm` 就渲染按钮，再把判定 POST 给 /rp-tools/dm-mark 落盘。
  *
  * 用 createRequire 从 profile 解析已安装的 dsh-rp-tools，避免依赖 loader 的子路径解析。
+ * profile 位置由 `resolveProfilePackage()` 动态解析（见下）——**不要在这里写死任何机台路径**：
+ * `tools/verify-roundtrip.mjs` 也复用同一个函数，两处硬编码很容易只改一处。
  */
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
@@ -24,15 +26,15 @@ import { dirname, join } from 'node:path';
 /**
  * 到哪个 profile 的 `package.json` 去找已安装的 `dsh-rp-tools`。
  *
- * ⚠️ 这里**绝不能写死绝对路径**：早先默认值是 `C:/Users/75373/.dsh/profiles/web/package.json`
- * （作者那台机器的路径），换台机器上桥接就只会打印「注册 RP 工具失败」，**8 个工具与两条注入
- * 通道一个都不生效**，而且看起来像插件本身坏了。解析顺序：
+ * ⚠️ 这里**绝不能写死绝对路径**。早先默认值是某个开发机的 `/Users/...` / `C:/Users/xxx/...`
+ * 路径 —— 换台机器上桥接就只打印「注册 RP 工具失败」，**8 个工具与两条注入通道一个都不生效**，
+ * 而且看起来像插件本身坏了。解析顺序：
  *   ① `DSH_RP_PROFILE_PACKAGE` 环境变量（多 profile / 非默认位置时用）
  *   ② `<DSH_HOME>/profiles/web/package.json`（默认 profile）
  *   ③ `<DSH_HOME>/profiles/` 下**恰好只有一个** profile 时用它（省掉环境变量）
  * 都不成立就返回第 ② 个候选（保持报错信息里有一条真实路径可看）。
  */
-function resolveProfilePackage() {
+export function resolveProfilePackage() {
   const fromEnv = String(process.env.DSH_RP_PROFILE_PACKAGE ?? '').trim();
   if (fromEnv) return fromEnv;
   const home = process.env.DSH_HOME || join(homedir(), '.dsh');

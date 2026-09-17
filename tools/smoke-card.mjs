@@ -522,7 +522,7 @@ const { makePng, textChunk, iTXtChunk, zTXtChunk, card, imagePng, cardImagePng }
 
   // 已开局的会话让面板再发一次：同一段措辞，但语气是「现在做」而不是「开局顺手做」
   const tidyNow = buildTidyPrompt({
-    worldFile: 'D:/Story/rp-sessions/abc/rp-worldbook.md',
+    worldFile: 'X:/ws/rp-sessions/abc/rp-worldbook.md',   // machine-path-ok：中性假路径，与真实机台无关
     character: '祁俊',
     loreTitles: ['世界总纲', '当前进度'],
     when: 'now',

@@ -3,21 +3,32 @@
  * → 无 keys 的条目**用标题当触发词**（而不是被补成 constant）、导入来源被认出来、
  * 注入规划把它降级到 runtime。
  *
- * 为什么要单独一个脚本：`lib/index.js` 依赖 profile 里的 `@deepseek-ai/dsh-tools`，
- * 从仓库路径直接 import 会 ERR_MODULE_NOT_FOUND。所以这个脚本要在
- * **profile 的 node_modules 目录下**运行（那里解析得到依赖）。
+ * 为什么要单独一个脚本：`lib/index.js` 依赖宿主提供的 `@deepseek-ai/dsh-tools`，
+ * 从仓库路径直接 import 可能 ERR_MODULE_NOT_FOUND。所以这个脚本要在
+ * **profile 的 node_modules 目录下**运行（那里解析得到依赖），或者让仓库自己解析得到它。
  *
  * 用法（由调用方把仓库里那份 card-import.js 的绝对路径传进来）：
  *   node verify-roundtrip.mjs <card-import.js 的绝对路径>
+ * 本体路径默认自动解析；要指定就设 `DSH_RP_PROFILE_PACKAGE=<profile>/package.json`。
  */
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const PROFILE_PACKAGE = process.env.DSH_RP_PROFILE_PACKAGE
-  || 'C:/Users/75373/.dsh/profiles/web/package.json';
+const HERE = dirname(fileURLToPath(import.meta.url));
+// ⚠️ 不要写死机台路径：与 `preset/rp-bridge.mjs` 复用同一个解析函数（那边有完整注释）。
+// 早先这里写死成某个开发机的 profile 路径，换台机器直接跑不起来。
+const { resolveProfilePackage } = await import(pathToFileURL(join(HERE, '..', 'preset', 'rp-bridge.mjs')).href);
+const PROFILE_PACKAGE = resolveProfilePackage();
 const require = createRequire(PROFILE_PACKAGE);
-// 从 profile 解析插件入口（依赖齐全），再从它取解析器
-const plugin = await import(pathToFileURL(require.resolve('dsh-rp-tools')).href);
+// 从 profile 解析插件入口（依赖齐全），再从它取解析器；profile 里没装就退回本仓库那份
+let plugin;
+try {
+  plugin = await import(pathToFileURL(require.resolve('dsh-rp-tools')).href);
+} catch {
+  plugin = await import(pathToFileURL(resolve(HERE, '..', 'lib', 'index.js')).href);
+}
 const { parseLoreMarkdown, activateLore, planLoreInjection } = plugin.__debug ?? {};
 if (typeof parseLoreMarkdown !== 'function') {
   console.error('拿不到 parseLoreMarkdown —— 插件导出的 __debug 变了？');

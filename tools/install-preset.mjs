@@ -127,7 +127,14 @@ try {
 } catch { /* 下面统一报 */ }
 if (pluginPath) {
   console.log(`  ✓ 插件已装进 profile：${pluginPath}`);
-  if (resolve(pluginPath).startsWith(REPO)) console.log('    （指向本仓库 = 链接安装，改代码直接生效）');
+  // ⚠️ 判断「是不是链接到本仓库」必须比**路径段**，不能比字符串前缀：
+  // `<某目录>/node_modules/dsh-rp-tools` 与「仓库路径恰好是它的前缀」是两回事
+  // （早先写成 startsWith(REPO) 会对着 GitHub 安装也打印「指向本仓库」，是假情报）。
+  const segs = (p) => resolve(p).split(/[\\/]+/).filter(Boolean);
+  const sameTree = segs(REPO).every((s, i) => segs(pluginPath)[i] === s);
+  console.log(sameTree
+    ? '    （= 链接安装到本仓库：改这里的代码直接生效，不用重装）'
+    : '    （= 从远端装的一份拷贝：改了本仓库的代码需要重装/重新推送才会生效）');
 } else {
   problems += 1;
   console.log(`  ✗ 插件**没装进** profile（找的是 ${profilePkg}）`);
