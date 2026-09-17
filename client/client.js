@@ -1,7 +1,7 @@
 /**
  * dsh-rp-tools client half。
  *
- *  1. settings.section「RP工具」：全局配置（ComfyUI 地址、全局负面词、全局默认风格、风格库）
+ *  1. settings.section「RP工具」：全局配置（卡库目录、默认宏列表）
  *     + 工具列表与参数说明（实时读宿主 /rp-tools/tools）。
  *  2. conversation.session.header.utilities：会话头部**右上角**的「🎲 RP」入口，只在 DM 会话渲染。
  *  3. sidebar.right.pane.tab：RP 面板本体，作为**右侧栏的一种页签**打开。
@@ -49,39 +49,29 @@ window.__ModuleLoader__.load({
     };
 
     /**
-     * 生成图的媒体 URL（同源相对路径即可，img/link 会按页面 origin 解析）。
-     *
-     * 为什么存三要素而不是 URL：`/rp-tools/media` 是 ComfyUI `/view` 的代理，
-     * 只要 (file, subfolder, type) 还在就永远能取回同一张图 —— 而 URL 里带的 origin
-     * 换个访问方式（局域网 IP / 改端口）就失效，所以会话配置里只记三要素。
+     * 会话配置里的 portraits → 面板用的立绘表（用户导入的立绘优先，其次卡面）。
+     * `sid` 用来拼导入立绘的地址（那条路由要 sessionId 才知道去哪个会话目录取文件）；
+     * `workspace` 同理——卡面在卡库里，宿主需要它把相对路径解析到同一个根。
      */
-    const mediaUrlOf = (ref) => (ref && ref.file
-      ? `/rp-tools/media?${qs({ file: ref.file, subfolder: ref.subfolder, type: ref.type })}`
-      : '');
-
-    /**
-     * 会话配置里的 portraits → 面板用的立绘表（生成立绘优先，其次外部导入的，卡面另存）。
-     * `sid` 用来拼导入立绘的地址（那条路由要 sessionId 才知道去哪个会话目录取文件）。
-     */
-    const portraitsFromSession = (raw, sid = '') => {
+    const portraitsFromSession = (raw, sid = '', workspace = '') => {
       const out = {};
       for (const [name, entry] of Object.entries(raw ?? {})) {
-        const ref = entry?.generated;
-        if (ref && ref.file) {
-          out[name] = {
-            url: mediaUrlOf(ref),
-            style: String(entry?.style ?? ''),
-            elapsedMs: Number(entry?.elapsedMs) || 0,
-            persisted: true,
-          };
-          continue;
-        }
         // 用户外部导入的立绘：文件在会话目录里，走 /rp-tools/portrait-image。
         // `v` 用导入时间：同名重导时文件名不变，浏览器会命中缓存，带上才能换图即换。
         if (entry?.imported?.file) {
           out[name] = {
             url: `/rp-tools/portrait-image?${qs({ sessionId: sid, name, v: String(entry.imported.at ?? '') })}`,
             style: '导入',
+            elapsedMs: 0,
+            persisted: true,
+          };
+          continue;
+        }
+        // 导入卡带来的那张 PNG：卡面直接当这个角色的立绘用（宿主也这么算）。
+        if (entry?.card) {
+          out[name] = {
+            url: cardImageUrl(String(entry.card), workspace, sid, { thumb: '1', width: '420' }),
+            style: '卡面',
             elapsedMs: 0,
             persisted: true,
           };
@@ -94,20 +84,18 @@ window.__ModuleLoader__.load({
       state: () => jget('/rp-tools/state'),
       save: (body) => jpost('/rp-tools/config', body),
       reset: () => jpost('/rp-tools/reset'),
-      check: () => jget('/rp-tools/check'),
-      preview: (body) => jpost('/rp-tools/preview', body),
       tools: () => jget('/rp-tools/tools'),
+      // 全局工具放行名单：GET 列本机真实存在的全局工具 + 当前勾选；POST 写勾选结果
+      globalTools: () => jget('/rp-tools/global-tools'),
+      saveGlobalTools: (body) => jpost('/rp-tools/global-tools', body),
       session: (id) => jget(`/rp-tools/session?sessionId=${encodeURIComponent(id)}`),
       saveSession: (body) => jpost('/rp-tools/session', body),
       roll: (body) => jpost('/rp-tools/roll', body),
-      loras: () => jget('/rp-tools/loras'),
       cards: (params) => jget(`/rp-tools/cards?${qs(params)}`),
       card: (path, params) => jget(`/rp-tools/card?${qs({ path, ...(params ?? {}) })}`),
       cardImport: (body) => jpost('/rp-tools/card-import', body),
-      // 立绘：把生成结果的 (file, subfolder, type) 记进会话配置，下次打开面板还在
+      // 立绘：clear 清掉会话配置里这个角色的立绘引用
       portraitSave: (body) => jpost('/rp-tools/portrait', body),
-      // 外部立绘：用户在编辑器里选一张本地图，转成 data URL 传给宿主落盘（宿主只收 png/jpeg/webp）
-      portraitUpload: (body) => jpost('/rp-tools/portrait-upload', body),
       // 资源库：列出（可按分类/角色/标签/关键词过滤）/ 改标签 / 删除 / 提取成某角色的立绘
       assets: (params) => jget(`/rp-tools/assets?${qs(params)}`),
       assetSave: (body) => jpost('/rp-tools/assets', body),
@@ -228,10 +216,7 @@ window.__ModuleLoader__.load({
 .rpt .loreempty { padding: 6px 0; }
 .rpt .loreempty .loretitle { text-decoration: line-through; opacity: .6; }
 .rpt .msg { padding: 6px 9px; border-radius: 6px; background: color-mix(in oklab, currentColor 8%, transparent); }
-.rpt img.pv { max-width: 100%; border-radius: 8px; }
-.rpt .stylecard { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: start;
-  border: 1px solid color-mix(in oklab, currentColor 11%, transparent); border-radius: 8px; padding: 10px; }
-/* ── 设置页三大类（设定 / 图像 / 工具）────────────────────────────────────
+/* ── 设置页小节（设定 / 工具）────────────────────────────────────────────
    小节标题带一条细分隔线，比一堆卡片堆叠好扫；提示文字一律 dim + 12px，别抢正文。 */
 .rpt .rpsec { gap: 14px; }
 .rpt .sechead { align-items: baseline; gap: 10px; padding-bottom: 8px;
@@ -243,27 +228,17 @@ window.__ModuleLoader__.load({
 .rpt .rpsec .macroblk { width: 100%; }
 .rpt .rpsec .macrorow { grid-template-columns: 118px minmax(0, 1fr) 22px; gap: 8px; }
 .rpt .rpsec .macrorow input[type=text] { height: 30px; padding: 0 8px; font-size: 12.5px; }
-/* 风格库：一行一个风格，用 flex-wrap 保证窄面板下自动换行而不是挤压输入框 */
-.rpt .stylegrid { display: flex; flex-direction: column; gap: 6px; }
-.rpt .stylerow { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center;
-  border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 10%, transparent));
-  border-radius: 10px; padding: 7px 10px; transition: background .14s ease; }
-.rpt .stylerow:hover { background: var(--dsw-alias-interactive-bg-hover, color-mix(in oklab, currentColor 6%, transparent)); }
-.rpt .stylerow .styname { display: flex; flex-direction: column; min-width: 120px; font-size: 13px; font-weight: 600; }
-.rpt .stylerow .styname .mono { font-size: 10.5px; font-weight: 400; }
-.rpt .stylerow .styfield { display: flex; gap: 5px; align-items: center; font-size: 11.5px;
-  color: var(--dsw-alias-label-secondary, inherit); }
-.rpt .stylerow .styfield input[type=number] { width: 58px; height: 28px; padding: 0 6px; font-size: 12px; }
-.rpt .stylerow .stylora select { max-width: 190px; height: 30px; padding: 0 8px; font-size: 12px; }
-.rpt .stylerow .stytrigger { flex: 1 1 150px; min-width: 120px; height: 30px; font-size: 12px; }
-.rpt .stylerow .styact { gap: 4px; }
-/* 图像尺寸：三行「用途 宽 × 高 px」，数字框定宽，行与行对齐 */
-.rpt .szblock { display: flex; flex-direction: column; gap: 6px; }
-.rpt .szrow { display: flex; gap: 6px; align-items: center; }
-.rpt .szrow .szlabel { flex: 0 0 42px; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); }
-.rpt .szrow input[type=number] { width: 80px; height: 28px; padding: 0 8px; }
-.rpt .szrow .szx, .rpt .szrow .szu { flex: 0 0 auto; opacity: .55; font-size: 11.5px; }
 .rpt .toollist { max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+/* 全局工具放行名单：一行一个勾选框，窄面板下自动换行 */
+.rpt .gtgroup { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; margin: 5px 0; }
+.rpt .gtitem { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; padding: 2px 6px;
+  border: 1px solid color-mix(in oklab, currentColor 16%, transparent); border-radius: 5px; }
+.rpt .gtitem.imagelike { border-color: color-mix(in oklab, currentColor 34%, transparent); }
+.rpt .gtitem.locked { opacity: .62; }
+.rpt .gtitem.on { border-color: color-mix(in oklab, currentColor 44%, transparent); }
+.rpt .gtitem input[type=checkbox] { margin: 0; }
+.rpt .gtdraft { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+.rpt .gtdraft input[type=text] { flex: 1 1 220px; min-width: 160px; height: 30px; padding: 0 8px; font-size: 12.5px; }
 .rpt .nums { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .rpt .nums label { display: flex; gap: 5px; align-items: center; font-size: 12px; opacity: .85; }
 .rpt .nums input[type=number] { width: 64px; }
@@ -375,11 +350,6 @@ window.__ModuleLoader__.load({
   .rpt .chareditform .charfields { grid-template-columns: minmax(0, 1fr); }
   .rpt .chareditform .charfields > label { padding-top: 0; }
 }
-.rpt .sessionimages { gap: 8px; }
-.rpt .sessionimages .imagecontrols { display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; }
-.rpt .sessionimages label { display: inline-flex; gap: 5px; align-items: center; white-space: nowrap; }
-.rpt .sessionimages select { width: auto; min-width: 150px; max-width: 260px; }
-.rpt .portraitsummary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rpt .dmsummary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; }
 .rpt .dupwarn { color: var(--dsw-alias-state-warning-primary, #f59e0b); }
 /* 共享编辑浮窗在 .rpt 树之外，因此遮罩自身用独立类，内容根仍带 .rpt 以复用控件样式。 */
@@ -408,10 +378,8 @@ window.__ModuleLoader__.load({
 .rpt .worldcol { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .rpt .worldcol textarea { flex: 1 1 auto; min-height: 150px; }
 .rpt textarea.worldtext { min-height: 150px; line-height: 1.6; }
-/* DM 设定：规则文本可以很长（导入 DM 卡会填进来），给足高度；生图开关一行排开 */
+/* DM 设定：规则文本可以很长（导入 DM 卡会填进来），给足高度 */
 .rpt textarea.dmtext { min-height: 130px; line-height: 1.6; }
-.rpt .dmimgs { gap: 14px; align-items: center; margin-top: 6px; }
-.rpt .dmimgs label { display: inline-flex; align-items: center; gap: 5px; }
 .rpt .cover { display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
 .rpt .cover img { width: 116px; height: 150px; object-fit: cover; border-radius: 8px;
   border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent)); }
@@ -545,22 +513,6 @@ window.__ModuleLoader__.load({
     }
 
     // ── 设置页：RP工具（全局） ────────────────────────────────────────────
-    /**
-     * 出图后把预览卡片滚进视野。
-     * 「试出」按钮在卡片组里，预览卡片紧挨着它渲染 —— 卡片组很长时（风格库在下面）
-     * 仍可能落在视野外，所以出图后主动滚一下，避免用户以为「点了没反应」。
-     * @param preview - 预览状态；变化即触发滚动
-     * @param ref - 预览卡片的 ref（由调用方创建，便于同一组件里挂多个预览）
-     */
-    function useScrollToPreview(preview, ref) {
-      React.useEffect(() => {
-        if (!preview) return;
-        const el = ref.current;
-        if (!el) return;
-        try { el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* 旧浏览器忽略 */ }
-      }, [preview]);
-    }
-
     /** 把宿主可选的重复-key诊断压成一行；字段缺失时安静返回空串。 */
     function diagnosticText(value) {
       if (!value) return '';
@@ -633,27 +585,23 @@ window.__ModuleLoader__.load({
       const [tools, setTools] = React.useState([]);
       const [busy, setBusy] = React.useState('');
       const [msg, setMsg] = React.useState(null);
-      const [preview, setPreview] = React.useState(null);
-      // 本地 LoRA 清单（读 ComfyUI）+ 新增风格表单
-      const [loras, setLoras] = React.useState(null);
-      const [loraErr, setLoraErr] = React.useState('');
       // 宿主给的自动宏名单（设置页要把「哪些宏不用填」提示出来）
       const [autoMacros, setAutoMacros] = React.useState([]);
-      // 界面里做过但还没提交的增删操作（保存时一次性交给宿主）
-      const pendingOps = React.useRef([]);
-      // 预览卡片紧贴「试出」按钮渲染；出图后滚过去
-      const previewRef = React.useRef(null);
-      useScrollToPreview(preview, previewRef);
+      // 全局工具放行名单（DM 会话能看见哪些**全局**工具）。`gt` = 服务端返回的完整视图：
+      // { base, allow, defaults, max, available|null, missing }；`gtDraft` = 本地未保存的勾选。
+      const [gt, setGt] = React.useState(null);
+      const [gtDraft, setGtDraft] = React.useState([]);
+      const [gtBusy, setGtBusy] = React.useState(false);
 
       React.useEffect(() => { injectStyles(); void reload(); }, []);
 
       async function reload() {
         setBusy('load');
         try {
-          const [data, toolData, loraData] = await Promise.all([
+          const [data, toolData, gtData] = await Promise.all([
             API.state(),
             API.tools().catch(() => ({ tools: [] })),
-            API.loras().catch((e) => ({ ok: false, loras: [], error: String(e?.message ?? e) })),
+            API.globalTools().catch(() => null),
           ]);
           if (!data?.ok) throw new Error(data?.error ?? '读取失败');
           setState(data);
@@ -661,135 +609,69 @@ window.__ModuleLoader__.load({
           // 自动宏名单由宿主给（`{{time}}` 那一族 + 年月日时分秒分量）：界面只负责提示，不自己抄一份
           setAutoMacros(Array.isArray(data.autoMacros) ? data.autoMacros : []);
           setTools(toolData?.tools ?? []);
-          setLoras(Array.isArray(loraData?.loras) ? loraData.loras : []);
-          setLoraErr(loraData?.ok === false ? String(loraData.error ?? '读不到 LoRA 清单') : '');
-          pendingOps.current = [];
+          if (gtData?.ok) { setGt(gtData); setGtDraft(Array.isArray(gtData.allow) ? gtData.allow : []); }
           setMsg(null);
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }
       }
 
-      function patchStyle(key, field, value) {
-        setDraft((d) => (d ? { ...d, styles: { ...d.styles, [key]: { ...d.styles[key], [field]: value } } } : d));
+      /** 勾选/取消一个全局工具（底线上那几个不可取消，界面上是 disabled）。 */
+      function toggleGlobalTool(name, on) {
+        setGtDraft((cur) => (on ? [...cur.filter((n) => n !== name), name] : cur.filter((n) => n !== name)));
       }
 
-      /** 从草稿里去掉一个风格；内置风格只警告不删。 */
-      function removeStyle(key) {
-        const summary = state.styles.find((s) => s.key === key);
-        if (summary?.builtin) { setMsg({ kind: 'err', text: `「${summary.label}」是内置风格，不能删；改 label / 触发词即可` }); return; }
-        if (!window.confirm(`删除风格「${summary?.label ?? key}」？（保存后生效）`)) return;
-        // 同一个 key 上只留一条操作
-        pendingOps.current = pendingOps.current.filter((o) => o.key !== key);
-        pendingOps.current.push({ action: 'remove', key });
-        setDraft((d) => {
-          const styles = { ...d.styles };
-          delete styles[key];
-          const rest = Object.keys(styles);
-          return { ...d, styles, defaultStyle: d.defaultStyle === key ? (rest[0] ?? '') : d.defaultStyle };
-        });
-        setMsg({ kind: 'ok', text: `已移除风格 ${key} —— 记得点「保存」落盘` });
+      /** 手填一个名字（发现列表里没有的工具：插件没装、或名字不在注册表里）。 */
+      function addGlobalTool(name) {
+        const n = String(name ?? '').trim().toLowerCase();
+        if (!/^[a-z][a-z0-9_]*$/.test(n)) { setMsg({ kind: 'err', text: `工具名不合法：${name}（只允许小写字母开头 + 小写字母/数字/下划线）` }); return; }
+        if ((gt?.base ?? []).includes(n)) { setMsg({ kind: 'err', text: `${n} 是预设底线，本来就放行` }); return; }
+        if (gtDraft.includes(n)) return;
+        setGtDraft((cur) => [...cur, n]);
       }
 
-      // 三档图像尺寸的内置默认值：宿主还没重启 / 配置里缺这一项时也**不显示 0**。
-      // 与宿主 `DEFAULT_IMAGE_SIZES` 保持一致（1.12.8 起调小：出图时间基本正比于像素，
-      // 聊天里用不到 1024 宽）。
-      const IMAGE_SIZE_DEFAULTS = { scene: [768, 432], portrait: [512, 768], item: [512, 512] };
-      /**
-       * 解析出当前的三个尺寸（缺就用内置默认值）。
-       *
-       * 界面显示与保存都走它：宿主还是旧版（config 里没有 `imageSizes`）时，用户看到的是
-       * 默认值而不是 0，保存时也把默认值**一起交回去** —— 旧宿主不会自己补，交回去就自愈了。
-       */
-      function resolvedImageSizes() {
-        const out = {};
-        for (const [slot, fallback] of Object.entries(IMAGE_SIZE_DEFAULTS)) {
-          const raw = draft?.imageSizes?.[slot];
-          const ok = Array.isArray(raw) && Number(raw[0]) >= 256 && Number(raw[1]) >= 256;
-          out[slot] = ok ? [Number(raw[0]), Number(raw[1])] : fallback;
-        }
-        return out;
+      async function saveGlobalTools() {
+        setGtBusy(true);
+        try {
+          const res = await API.saveGlobalTools({ allow: gtDraft });
+          if (!res?.ok) throw new Error(res?.error ?? '保存失败');
+          setGt((g) => ({ ...(g ?? {}), ...res }));
+          setGtDraft(Array.isArray(res.allow) ? res.allow : []);
+          // 把结果写回 config 草稿，避免下次「保存」用旧值把它覆盖掉
+          setDraft((d) => (d ? { ...d, globalToolsAllow: res.allow } : d));
+          setMsg({ kind: 'ok', text: `已保存放行名单（${res.allow.length} 个额外工具）—— 换一个 DM 会话或重进即生效` });
+          if (res.note) setMsg({ kind: 'ok', text: res.note });
+        } catch (error) {
+          setMsg({ kind: 'err', text: String(error?.message ?? error) });
+        } finally { setGtBusy(false); }
       }
 
       async function save() {
         if (!draft) return;
         setBusy('save');
         try {
-          const justAdded = new Set(pendingOps.current.filter((o) => o.action === 'add' || o.action === 'duplicate').map((o) => o.key));
-          const styles = {};
-          for (const [key, st] of Object.entries(draft.styles ?? {})) {
-            const orig = state.config.styles?.[key];
-            // 本次新加的风格：整份提交，否则模板 defaultValue（workflow / cfg / steps / sizes）会丢
-            if (justAdded.has(key) || !orig) { styles[key] = st; continue; }
-            const changed = {};
-            for (const field of ['label', 'trigger', 'lora', 'cfg', 'steps']) {
-              if (JSON.stringify(st[field]) !== JSON.stringify(orig[field])) changed[field] = st[field];
-            }
-            if (JSON.stringify(st.sizes) !== JSON.stringify(orig.sizes)) changed.sizes = st.sizes;
-            if (Object.keys(changed).length) styles[key] = changed;
-          }
-          const styleOps = pendingOps.current.slice();
           const res = await API.save({
-            defaultStyle: draft.defaultStyle,
-            baseUrl: draft.comfyui?.baseUrl,
-            negative: draft.negative,
             // 默认宏列表整份提交（键值对）；userLabel 由宿主从 macros.user 同步，不再单独发
             cards: { root: draft.cards?.root ?? '', macros: draft.cards?.macros ?? {} },
-            // 全局图像尺寸（场景/立绘/道具）：用**解析后**的值，缺配置时把默认值交回去自愈
-            imageSizes: resolvedImageSizes(),
-            styles,
-            styleOps,
           });
           if (!res?.ok) throw new Error(res?.error ?? '保存失败');
-          const styleErrors = res.styleErrors ?? [];
-          if (styleErrors.length) throw new Error(`部分风格操作失败：${styleErrors.join('；')}`);
-          pendingOps.current = [];
-          setState((s) => ({ ...s, config: res.config, styles: res.styles }));
+          setState((s) => ({ ...s, config: res.config }));
           setDraft(JSON.parse(JSON.stringify(res.config)));
-          const n = styleOps.length;
-          setMsg({ kind: 'ok', text: n ? `已保存到 styles.json（含 ${n} 项风格增删）` : '已保存到 styles.json' });
+          setMsg({ kind: 'ok', text: '已保存' });
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }
       }
 
       async function reset() {
-        if (!window.confirm('恢复默认全局配置（风格库 / 负面词 / 默认风格）？各会话的角色卡、世界、随机表不受影响。')) return;
+        if (!window.confirm('恢复默认的卡库配置（卡库目录 / 默认宏列表）？各会话的角色卡、世界、随机表不受影响。')) return;
         setBusy('reset');
         try {
           const res = await API.reset();
           if (!res?.ok) throw new Error(res?.error ?? '恢复失败');
-          setState((s) => ({ ...s, config: res.config, styles: res.styles }));
+          setState((s) => ({ ...s, config: res.config }));
           setDraft(JSON.parse(JSON.stringify(res.config)));
           setMsg({ kind: 'ok', text: '已恢复默认' });
-        } catch (error) {
-          setMsg({ kind: 'err', text: String(error?.message ?? error) });
-        } finally { setBusy(''); }
-      }
-
-      async function check() {
-        setBusy('check');
-        setMsg({ kind: 'ok', text: '正在检查 ComfyUI 连接…' });
-        try {
-          const res = await API.check();
-          setMsg(res?.ok
-            ? { kind: 'ok', text: `ComfyUI 在线：${res.version}｜${res.device ?? '?'}｜显存空闲 ${res.vramFreeGb ?? '?'}GB` }
-            : { kind: 'err', text: res?.error ?? '连接失败' });
-        } catch (error) {
-          setMsg({ kind: 'err', text: String(error?.message ?? error) });
-        } finally { setBusy(''); }
-      }
-
-      async function runPreview(key) {
-        setBusy(`preview:${key}`);
-        setPreview(null);
-        setMsg({ kind: 'ok', text: '出图中…（本机约 15～20 秒，出完自动滚到上方预览卡片）' });
-        try {
-          const res = await API.preview({ style: key, prompt: '一位旅人站在岔路口，远处有灯火' });
-          if (!res?.ok) throw new Error(res?.error ?? '预览失败');
-          const label = res.styleLabel || key;
-          setPreview({ key: label, url: res.media?.[0], elapsedMs: res.elapsedMs });
-          setMsg({ kind: 'ok', text: `预览完成：${label}（${(res.elapsedMs / 1000).toFixed(1)}s）—— 图在上方预览卡片里` });
         } catch (error) {
           setMsg({ kind: 'err', text: String(error?.message ?? error) });
         } finally { setBusy(''); }
@@ -800,53 +682,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'dim' }, busy === 'load' ? '读取中…' : (msg?.text ?? '未加载')));
       }
 
-      /** 本地 LoRA 下拉：选中当前值；若清单里没有它（被删了 / ComfyUI 没开）也保留为一项，免得静默改值。 */
-      function loraSelect(value, onChange, keyPrefix) {
-        const names = (loras ?? []).map((l) => l.name);
-        const has = value && names.includes(value);
-        return h('select', { key: keyPrefix, value: value ?? '', onChange: (e) => onChange(e.target.value) }, [
-          h('option', { key: '__none', value: '' }, '（不使用 LoRA）'),
-          ...(value && !has ? [h('option', { key: '__cur', value }, `${value}（当前值，清单里没有）`)] : []),
-          ...(loras ?? []).map((l) => h('option', { key: l.name, value: l.name }, l.krea2 ? l.name : `${l.name}（非 krea2）`)),
-        ]);
-      }
-
-      // ── 风格库：**紧凑一行**（名称 + 参数），名称与 key 不可编辑 ──────────────
-      // 用户明确要求：去掉「新增风格」、名称不可改、只显示名称与后面的参数。
-      // 要加风格就直接改 styles.json（设置页顶部有「打开配置文件」）。
-      const styleRows = state.styles.map((s) => {
-        const d = draft.styles[s.key] ?? {};
-        return h('div', { key: s.key, className: 'stylerow' }, [
-          h('div', { key: 'n', className: 'styname' }, [
-            h('span', { key: 'l' }, d.label ?? s.key),
-            h('span', { key: 'k', className: 'mono dim' }, s.key),
-            s.builtin ? null : h('span', { key: 'c', className: 'badge warn' }, '自定义'),
-          ]),
-          h('label', { key: 'c', className: 'styfield' }, 'CFG', h('input', {
-            type: 'number', step: '0.1', min: '1', value: d.cfg ?? 1,
-            onChange: (e) => patchStyle(s.key, 'cfg', Number(e.target.value)),
-          })),
-          h('label', { key: 's', className: 'styfield' }, '步数', h('input', {
-            type: 'number', min: '1', value: d.steps ?? 8,
-            onChange: (e) => patchStyle(s.key, 'steps', Number(e.target.value)),
-          })),
-          h('span', { key: 'lr', className: 'stylora' }, loraSelect(d.lora ?? '', (v) => patchStyle(s.key, 'lora', v), `lora-${s.key}`)),
-          h('input', {
-            key: 't', type: 'text', className: 'stytrigger', value: d.trigger ?? '',
-            placeholder: '触发词（写在提示词最前，可留空）',
-            onChange: (e) => patchStyle(s.key, 'trigger', e.target.value),
-          }),
-          h('div', { key: 'act', className: 'row styact' }, [
-            h('button', { key: 'p', className: 'tiny', disabled: Boolean(busy), onClick: () => runPreview(s.key) },
-              busy === `preview:${s.key}` ? '…' : '试出'),
-            s.builtin ? null : h('button', {
-              key: 'd', className: 'tiny', disabled: Boolean(busy), onClick: () => removeStyle(s.key),
-            }, '删除'),
-          ]),
-        ]);
-      });
-
-      /** 三个大类小节：标题 + 一句说明 + 内容。 */
+      /** 小节：标题 + 一句说明 + 内容。 */
       const section = (title, hint, children, key) => h('div', { key: `sec-${key}`, className: 'card rpsec' }, [
         h('div', { key: 'h', className: 'row sechead' }, [
           h('h4', { key: 't' }, title),
@@ -854,29 +690,11 @@ window.__ModuleLoader__.load({
         ]),
         ...children,
       ]);
-      const sizeRow = (slot, label) => {
-        // 显示用**解析后**的值：宿主旧版 / 配置缺项时显示内置默认值，绝不显示 0
-        const pair = resolvedImageSizes()[slot];
-        const setSlot = (idx, value) => {
-          const n = Number(value);
-          const next = [pair[0], pair[1]];
-          next[idx] = Number.isFinite(n) ? Math.round(n) : pair[idx];
-          setDraft({ ...draft, imageSizes: { ...(draft.imageSizes ?? {}), [slot]: next } });
-        };
-        return h('div', { key: `sz-${slot}`, className: 'szrow' }, [
-          h('span', { key: 'l', className: 'szlabel' }, label),
-          h('input', { key: 'w', type: 'number', min: '256', step: '16', value: pair[0], onChange: (e) => setSlot(0, e.target.value) }),
-          h('span', { key: 'x', className: 'dim szx' }, '×'),
-          h('input', { key: 'h', type: 'number', min: '256', step: '16', value: pair[1], onChange: (e) => setSlot(1, e.target.value) }),
-          h('span', { key: 'u', className: 'dim szu' }, 'px'),
-        ]);
-      };
 
       return h('div', { className: 'rpt' }, [
         h('div', { key: 'head', className: 'row' }, [
           h('h3', { key: 't' }, 'RP工具'),
           h('span', { key: 'sep', className: 'sep' }),
-          h('button', { key: 'chk', onClick: check, disabled: Boolean(busy) }, busy === 'check' ? '检查中…' : '检查连接'),
           h('button', { key: 'reload', onClick: reload, disabled: Boolean(busy) }, '刷新'),
           h('button', { key: 'save', className: 'primary', onClick: save, disabled: Boolean(busy) }, busy === 'save' ? '保存中…' : '保存'),
           h('button', { key: 'reset', onClick: reset, disabled: Boolean(busy) }, '恢复默认'),
@@ -957,50 +775,83 @@ window.__ModuleLoader__.load({
             `自动宏（不用填，装配时现算）：${(autoMacros ?? []).map((n) => `{{${n}}}`).join(' ')}`),
         ], 'config'),
 
-        // ══ 图像 ══ 出图相关的全部设置：地址、风格、负面词、尺寸 ───────────────
-        section('图像', '本地 ComfyUI 生图', [
-          h('div', { key: 'kv', className: 'kv' }, [
-            h('span', { key: 'c1' }, 'ComfyUI 地址'),
-            h('input', {
-              key: 'c2', type: 'text', value: draft.comfyui?.baseUrl ?? '',
-              onChange: (e) => setDraft({ ...draft, comfyui: { ...(draft.comfyui ?? {}), baseUrl: e.target.value } }),
-            }),
-            h('span', { key: 'g1' }, '全局默认风格'),
-            h('select', {
-              key: 'g2', value: draft.defaultStyle,
-              onChange: (e) => setDraft({ ...draft, defaultStyle: e.target.value }),
-            }, Object.keys(draft.styles).map((k) => h('option', { key: k, value: k }, draft.styles[k].label ?? k))),
-            h('span', { key: 'n1' }, '全局负面词'),
-            h('textarea', {
-              key: 'n2', rows: 2, value: draft.negative ?? '', placeholder: '反瑕疵词（已预置一套）',
-              onChange: (e) => setDraft({ ...draft, negative: e.target.value }),
-            }),
-            h('span', { key: 'z1' }, '图像尺寸'),
-            h('div', { key: 'z2', className: 'szblock' }, [
-              sizeRow('scene', '场景'),
-              sizeRow('portrait', '立绘'),
-              sizeRow('item', '道具'),
+        // ══ DM 会话的全局工具放行名单 ═══════════════════════════════════════
+        // 为什么要可配置：dm 预设的 dm-filter 会把**所有**不在放行名单里的全局工具 deny 掉，
+        // 而「哪些全局工具该放行」因机器而异 —— 生图插件人人不同（`dsh-image-gen` 只是其中一种），
+        // 工具名自然也不同。写死在预设里的话，换个生图插件就得手改预设文件（而它重装会被覆盖）。
+        // 这里列出**本机真实存在**的全局工具供勾选，结果存进 styles.json，过滤器会读它。
+        section('DM 会话放行', `全局工具白名单${gt ? `（额外放行 ${gtDraft.length} 个）` : ''}`, [
+          h('div', { key: 'd', className: 'dim' },
+            'DM 预设默认 deny 掉一切全局工具，只放行下表勾选的。生图插件因机器而异，所以这里让你自己选 —— '
+            + '选完**换一个 DM 会话或重进**才生效。'),
+          gt === null
+            ? h('div', { key: 'loading', className: 'dim' }, '读取中…（读不到会把底线上那几个显示出来）')
+            : h('div', { key: 'body' }, [
+              // 底线：固定放行、不可取消
+              h('div', { key: 'base', className: 'gtgroup' }, [
+                h('span', { key: 't', className: 'dim' }, '预设底线（固定放行，不可取消）：'),
+                ...(gt.base ?? []).map((n) => h('label', { key: n, className: 'gtitem locked', title: '预设底线，去掉会当场砸掉功能' }, [
+                  h('input', { key: 'i', type: 'checkbox', checked: true, disabled: true, readOnly: true }),
+                  h('span', { key: 'n', className: 'mono' }, n),
+                ])),
+              ]),
+              // 发现到的全局工具
+              h('div', { key: 'avail', className: 'gtgroup' }, [
+                h('span', { key: 't', className: 'dim' },
+                  gt.available === null
+                    ? '本机全局工具清单：**读不到**（可在下面手填名字）'
+                    : `本机全局工具（勾选 = 放行给 DM）：`),
+                ...(gt.available ?? []).filter((a) => !a.locked).map((a) => h('label', {
+                  key: a.name, className: `gtitem${a.imageLike ? ' imagelike' : ''}`,
+                  title: a.imageLike ? '像是图片/生图相关的工具' : undefined,
+                }, [
+                  h('input', {
+                    key: 'i', type: 'checkbox', checked: gtDraft.includes(a.name),
+                    onChange: (e) => toggleGlobalTool(a.name, e.target.checked),
+                  }),
+                  h('span', { key: 'n', className: 'mono' }, a.name),
+                  a.imageLike ? h('span', { key: 'tag', className: 'badge ok' }, '图') : null,
+                ])),
+                (gt.available !== null && gt.available.filter((a) => !a.locked).length === 0)
+                  ? h('span', { key: 'none', className: 'dim' }, '（本机没注册任何可选的全局工具）')
+                  : null,
+              ]),
+              // 手填：插件没装 / 名字还没在注册表里时用
+              h('div', { key: 'manual', className: 'row gtdraft' }, [
+                h('input', {
+                  key: 'i', type: 'text', placeholder: '手填工具名（如 generate_image），回车加入',
+                  onKeyDown: (e) => {
+                    if (e.key !== 'Enter') return;
+                    addGlobalTool(e.target.value);
+                    e.target.value = '';
+                  },
+                }),
+                h('span', { key: 'h', className: 'dim' }, '注册表里没有的名字也能先配上（插件之后装了就会生效）'),
+              ]),
+              // 当前勾选（含手填的、或注册表里暂时没有的）
+              h('div', { key: 'chosen', className: 'gtgroup' }, [
+                h('span', { key: 't', className: 'dim' }, `额外放行（${gtDraft.length}）：`),
+              ].concat(gtDraft.length
+                ? gtDraft.map((n) => h('label', { key: n, className: 'gtitem on' }, [
+                  h('input', { key: 'i', type: 'checkbox', checked: true, onChange: (e) => toggleGlobalTool(n, e.target.checked) }),
+                  h('span', { key: 'n', className: 'mono' }, n),
+                  (gt.available !== null && !gt.available.some((a) => a.name === n))
+                    ? h('span', { key: 'w', className: 'badge warn', title: '本机注册表里没有这个名字：插件没装、或名字改了' }, '未注册')
+                    : null,
+                ]))
+                : [h('span', { key: 'none', className: 'dim' }, '（无 —— DM 看不到生图工具，配图会没有工具可用）')])),
+              h('div', { key: 'act', className: 'row' }, [
+                h('button', {
+                  key: 's', className: 'primary', disabled: gtBusy,
+                  onClick: () => { void saveGlobalTools(); },
+                }, gtBusy ? '保存中…' : '保存放行名单'),
+                h('button', {
+                  key: 'd', className: 'tiny', disabled: gtBusy,
+                  onClick: () => setGtDraft([...(gt.defaults ?? [])]),
+                }, '恢复默认（生图工具）'),
+              ]),
             ]),
-          ]),
-          h('div', { key: 'note', className: 'dim' },
-            '尺寸对所有用途生效（场景/立绘/道具各一档）；krea2 风格 CFG=1 时负面词不参与计算。'),
-
-          h('div', { key: 'styles', className: 'row sechead' }, [
-            h('h4', { key: 't' }, `风格库（${state.styles.length}）`),
-            h('span', { key: 'd', className: 'dim' }, '名称与 key 固定；CFG / 步数 / LoRA / 触发词可改。要加风格改 styles.json'),
-          ]),
-          loraErr ? h('div', { key: 'le', className: 'dim' }, `LoRA 清单读取失败（${loraErr}）—— 确认 ComfyUI 已启动`) : null,
-          h('div', { key: 'list', className: 'stylegrid' }, styleRows),
-
-          preview ? h('div', { key: 'prev', className: 'card', ref: previewRef }, [
-            h('div', { key: 'l', className: 'row' }, [
-              h('span', { key: 't', className: 'dim' }, `预览：${preview.key}（${(preview.elapsedMs / 1000).toFixed(1)}s）`),
-              h('span', { key: 'sep', className: 'sep' }),
-              preview.url ? h('a', { key: 'o', className: 'dim', href: preview.url, target: '_blank', rel: 'noreferrer' }, '大图') : null,
-            ]),
-            preview.url ? h('img', { key: 'i', className: 'pv', src: preview.url, alt: preview.key }) : null,
-          ]) : null,
-        ], 'image'),
+        ], 'gttools'),
 
         // ══ 工具 ══ 诊断与工具清单 ───────────────────────────────────────────
         section('工具', `rp_* 只在 DM 预设的会话里注册（当前 ${tools.length} 个）`, [
@@ -1021,10 +872,8 @@ window.__ModuleLoader__.load({
       const embed = variant === 'embed';
       const [state, setState] = React.useState(null);
       const [draft, setDraft] = React.useState(null);
-      const [styles, setStyles] = React.useState(null);
       const [busy, setBusy] = React.useState('');
       const [msg, setMsg] = React.useState(null);
-      const [preview, setPreview] = React.useState(null);
       const [rolls, setRolls] = React.useState([]);
       // 世界书条目（面板上要能看见导入进来的条目）
       const [lore, setLore] = React.useState(null);
@@ -1073,8 +922,6 @@ window.__ModuleLoader__.load({
        */
       const dirtyRef = React.useRef(false);
       draftRef.current = draft;
-      const previewRef = React.useRef(null);
-      useScrollToPreview(preview, previewRef);
 
       React.useEffect(() => { injectStyles(); void reload(); }, [sessionId]);
 
@@ -1119,7 +966,7 @@ window.__ModuleLoader__.load({
           const data = await API.session(sessionId);
           if (!data?.ok) return;
           setState(data);
-          setPortraits(portraitsFromSession(data.session?.portraits, sessionId));
+          setPortraits(portraitsFromSession(data.session?.portraits, sessionId, String(state?.cwd ?? '')));
           const hostDraft = JSON.parse(JSON.stringify(data.session));
           // 用户**没动过任何字段**（dirtyRef）→ 整份铺上宿主的新版本；
           // 动过就不覆盖表单，只更新只读部分（世界书列表 / 立绘 / 宿主原文）。
@@ -1153,15 +1000,14 @@ window.__ModuleLoader__.load({
           const [data, global] = await Promise.all([API.session(sessionId), API.state()]);
           if (!data?.ok) throw new Error(data?.error ?? '读取失败');
           setState(data);
-          setStyles(global);
           setGlobalUserLabel(String(global?.config?.cards?.userLabel ?? ''));
           const fresh = JSON.parse(JSON.stringify(data.session));
           setDraft(fresh);
           hostDraftRef.current = JSON.stringify(fresh);
           dirtyRef.current = false;                  // 重新载入 = 回到宿主的版本，没有未保存改动
-          // 立绘：会话配置里记着的生成图要**装回面板状态** —— 原先它只活在组件 state 里，
-          // 关面板/刷新就没了（用户报的「下次打开就消失」）。
-          setPortraits(portraitsFromSession(data.session?.portraits, sessionId));
+          // 立绘：会话配置里记着的导入立绘/卡面要**装回面板状态** —— 原先它只活在组件 state 里，
+          // 关面板/刷新就没了（用户报的「下次打开就消失」）。workspace 用来解析卡面的相对路径。
+          setPortraits(portraitsFromSession(data.session?.portraits, sessionId, String(data?.cwd ?? '')));
           setMsg(null);
           // 诊断：把「界面看到的预设」和「宿主说的预设/是否开局」都记下来。
           // 导入入口的可见性一度只依赖客户端投影，而它会被切预设清空 —— 这一行是为了
@@ -1264,11 +1110,6 @@ window.__ModuleLoader__.load({
 
       function patch(p) { dirtyRef.current = true; setDraft((d) => (d ? { ...d, ...p } : d)); }
 
-      /** 改 DM 设定（会话隔离的那几个字段：prompt + images）。 */
-      function patchDm(p) {
-        dirtyRef.current = true;
-        setDraft((d) => (d ? { ...d, dm: { ...(d.dm ?? {}), ...p, migrated: [] } } : d));
-      }
       // 状态：只提交改动过的字段（空串即清除），与宿主 applyStateUpdates 的语义一致
       function patchState(field, value) {
         dirtyRef.current = true;
@@ -1281,16 +1122,14 @@ window.__ModuleLoader__.load({
         try {
           const res = await API.saveSession({
             sessionId,
-            defaultStyle: draft.defaultStyle || '',
             world: draft.world ?? '',
-            styleNotes: draft.styleNotes ?? '',
             campaign: draft.campaign,
             characters: draft.characters,
             characterIndex: draft.characterIndex ?? [],
             state: draft.state ?? {},
             tables: draft.tables,
             macros: draft.macros ?? {},
-            dm: draft.dm ?? {},
+            dm: { prompt: draft.dm?.prompt ?? '' },
           });
           if (!res?.ok) throw new Error(res?.error ?? '保存失败');
           setState((s) => ({ ...s, session: res.session }));
@@ -1378,7 +1217,9 @@ window.__ModuleLoader__.load({
 
       function applyDmEdit() {
         if (!dmEdit) return;
-        patchDm({ prompt: dmEdit.prompt });
+        // 改 DM 正文也算「动过字段」，否则软刷新会把它冲掉；改完清掉 migrated 提示
+        dirtyRef.current = true;
+        setDraft((d) => (d ? { ...d, dm: { ...(d.dm ?? {}), prompt: dmEdit.prompt, migrated: [] } } : d));
         setDmEdit(null);
         setMsg({ kind: 'ok', text: 'DM 设定已应用到会话草稿；点面板顶部「保存」后持久化。' });
       }
@@ -1588,75 +1429,6 @@ window.__ModuleLoader__.load({
         } finally { setBusy(''); }
       }
 
-      async function runPreview(styleKey, prompt) {
-        setBusy('preview');
-        setPreview(null);
-        setMsg({ kind: 'ok', text: '出图中…（本机约 15～20 秒；出完自动滚到「生图配置」卡片里的预览图）' });
-        try {
-          const res = await API.preview({ sessionId, style: styleKey, prompt });
-          if (!res?.ok) throw new Error(res?.error ?? '预览失败');
-          // 宿主返回的是 styleKey / styleLabel，没有 `style` 字段（读错会显示成空）
-          const label = res.styleLabel || res.styleKey || styleKey || '默认风格';
-          setPreview({ url: res.media?.[0], elapsedMs: res.elapsedMs, style: label });
-          setMsg({ kind: 'ok', text: `预览完成：${label}（${(res.elapsedMs / 1000).toFixed(1)}s）—— 图在下方「生图配置」卡片里` });
-        } catch (error) {
-          setMsg({ kind: 'err', text: String(error?.message ?? error) });
-        } finally { setBusy(''); }
-      }
-
-      /** 某个角色的立绘：出图后挂在**这个角色自己**的卡片下面（按角色名存取）。 */
-      async function runPortrait(character) {
-        const name = String(character?.name ?? '').trim();
-        if (!name) { setMsg({ kind: 'err', text: '先给角色起个名字，立绘要用它做画面描述（也用它记住这张图属于谁）' }); return; }
-        setBusy(`portrait:${name}`);
-        setPortraits((p) => { const n = { ...p }; delete n[name]; return n; });
-        setMsg({ kind: 'ok', text: `「${name}」立绘出图中…（本机约 15～20 秒）` });
-        try {
-          const res = await API.preview({
-            sessionId,
-            style: draft?.defaultStyle || undefined,
-            prompt: `${name} 的半身立绘，正面，中性背景`,
-            // **立绘要纵向**（用户要求）：不传的话宿主按场景档出，出来是横向的 ——
-            // 那样在角色卡编辑器左列只占半截，头像也扁。
-            sizeKey: 'portrait',
-          });
-          if (!res?.ok) throw new Error(res?.error ?? '出图失败');
-          const label = res.styleLabel || res.styleKey || '';
-          const ref = res.files?.[0];
-          // 先本地显示（同源的相对 URL 与宿主给的绝对 URL 等价），再**记进会话配置**：
-          // 下次打开面板 / 刷新页面时用同一张三要素拼回来（见 portraitsFromSession）。
-          setPortraits((p) => ({
-            ...p,
-            [name]: { url: ref ? mediaUrlOf(ref) : res.media?.[0], style: label, elapsedMs: res.elapsedMs },
-          }));
-          let saved = false;
-          if (ref) {
-            try {
-              const put = await API.portraitSave({
-                sessionId, name, action: 'save',
-                file: ref.file, subfolder: ref.subfolder, type: ref.type,
-                style: label, elapsedMs: res.elapsedMs,
-              });
-              saved = put?.ok === true;
-              if (saved) {
-                // 会话配置也同步一份，免得下次「保存」把刚写的立绘覆盖掉（保存是整份覆盖）
-                setDraft((d) => (d ? {
-                  ...d,
-                  portraits: { ...(d.portraits ?? {}), [name]: (put.portraits ?? {})[name] ?? d.portraits?.[name] },
-                } : d));
-              }
-            } catch { /* 存不下不影响这次显示 */ }
-          }
-          setMsg({
-            kind: saved ? 'ok' : 'warn',
-            text: `「${name}」立绘完成（${label}，${(res.elapsedMs / 1000).toFixed(1)}s）—— 已作为这个角色的头像显示`
-              + (saved ? '，并记进本会话' : '，但**没能记进会话**（下次打开会消失）'),
-          });
-        } catch (error) {
-          setMsg({ kind: 'err', text: String(error?.message ?? error) });
-        } finally { setBusy(''); }
-      }
-
       /** 同时清掉界面和会话配置里的立绘记录。 */
       function clearPortrait(name) {
         const key = String(name ?? '').trim();
@@ -1682,7 +1454,7 @@ window.__ModuleLoader__.load({
 
       /**
        * 外部立绘：用户自己选的图交给宿主落盘（宿主只认 png/jpeg/webp，上限 8MB）。
-       * 用户要求「也支持用户用外部导入立绘」—— 生图不满意时不必反复抽卡，直接用现成的图。
+       * 用户要求「也支持用户用外部导入立绘」—— 不必为了换张头像反复折腾，直接用现成的图。
        * 走通用导入（kind=portrait + name）：既登记成这个角色的立绘，也进资源库。
        */
       async function importPortrait(character, file) {
@@ -1803,8 +1575,6 @@ window.__ModuleLoader__.load({
       const tables = draft.tables ?? [];
       // 当前状态（场景/时间/地点/在场/线索 + 队伍 + 旗标）。老会话可能没有，给空对象兜底。
       const st = draft.state ?? {};
-      const portraitNames = Object.keys(portraits).filter((name) => portraits[name]?.url);
-      const imageEnabled = draft.dm?.images?.enabled !== false;
       const dmPrompt = String(draft.dm?.prompt ?? '');
       const dmSource = String(draft.dm?.source ?? draft.dm?.promptSource ?? draft.dm?.origin ?? '会话配置');
       const characterDiagnostics = draft.duplicateCharacterKeys ?? draft.diagnostics?.duplicateCharacterKeys;
@@ -1812,8 +1582,8 @@ window.__ModuleLoader__.load({
       const loreDiagnostics = lore?.characterOverlap ?? lore?.diagnostics?.characterOverlap;
       // 编辑器里的同名提示：条目级说明由宿主计算，这里只负责显示
       const nameConflictWarn = diagnosticText(loreEdit?.nameConflict);
-      // 大浮窗里的立绘：**当前名字优先**，取不到再退回原名 —— 改名后重新生成，
-      // 新图立刻显示；还没重生成时也还能看到旧名的旧图（不至于突然空掉）。
+      // 大浮窗里的立绘：**当前名字优先**，取不到再退回原名 —— 改名后重新导入一张，
+      // 新图立刻显示；还没重导时也还能看到旧名的旧图（不至于突然空掉）。
       const charEditName = charEdit ? String(charEdit.character?.name ?? '').trim() : '';
       const charEditOriginal = charEdit ? String(charEdit.originalName ?? '').trim() : '';
       const charEditFaceKey = charEditName || charEditOriginal;
@@ -1821,7 +1591,6 @@ window.__ModuleLoader__.load({
         ? (portraits[charEditName] || portraits[charEditOriginal] || null)
         : null;
       const charEditPortraitUrl = String(charEditPortrait?.url ?? '');
-      const charEditPortraitStyle = String(charEditPortrait?.style ?? '');
 
       return h('div', { className: embed ? 'rpt embed' : 'rpt ovl' }, [
         h('div', { key: 'head', className: 'ovlhead' }, [
@@ -1831,63 +1600,6 @@ window.__ModuleLoader__.load({
           h('button', { key: 'r', onClick: reload, disabled: Boolean(busy) }, '刷新'),
           h('button', { key: 'sv', className: 'primary', onClick: save, disabled: Boolean(busy) }, busy === 'save' ? '保存中…' : '保存'),
           embed ? null : h('button', { key: 'x', onClick: onClose }, '关闭'),
-        ]),
-        // 固定在 RP 标题下第一块：会话生图所有控制集中于此，面板底部不再重复。
-        h('div', { key: 'session-images', className: 'card sessionimages' }, [
-          h('div', { key: 'h', className: 'row' }, [
-            h('h4', { key: 't' }, '本会话生图'),
-            h('span', { key: 'sep', className: 'sep' }),
-            h('span', { key: 'portraits', className: 'dim portraitsummary', title: portraitNames.join('、') },
-              portraitNames.length ? `已有立绘 ${portraitNames.length}：${portraitNames.join('、')}` : '暂无已生成立绘'),
-          ]),
-          h('div', { key: 'controls', className: 'imagecontrols' }, [
-            h('label', { key: 'en', className: 'dim' }, [
-              h('input', {
-                key: 'i', type: 'checkbox', checked: imageEnabled,
-                onChange: (event) => patchDm({ images: { ...(draft.dm?.images ?? {}), enabled: event.target.checked } }),
-              }),
-              '自动配图',
-            ]),
-            h('label', { key: 'fa', className: 'dim' }, [
-              h('input', {
-                key: 'i', type: 'checkbox', disabled: !imageEnabled,
-                checked: draft.dm?.images?.firstAppearance !== false,
-                onChange: (event) => patchDm({ images: { ...(draft.dm?.images ?? {}), firstAppearance: event.target.checked } }),
-              }),
-              '首次出场',
-            ]),
-            h('label', { key: 'ks', className: 'dim' }, [
-              h('input', {
-                key: 'i', type: 'checkbox', disabled: !imageEnabled,
-                checked: draft.dm?.images?.keyScenes !== false,
-                onChange: (event) => patchDm({ images: { ...(draft.dm?.images ?? {}), keyScenes: event.target.checked } }),
-              }),
-              '重要场景',
-            ]),
-            h('label', { key: 'style', className: 'dim' }, [
-              '默认风格',
-              h('select', {
-                key: 's', value: draft.defaultStyle ?? '',
-                onChange: (event) => patch({ defaultStyle: event.target.value }),
-              }, [
-                h('option', { key: '', value: '' }, `跟随全局：${styles?.config?.defaultStyle ?? '?'}`),
-                ...Object.keys(styles?.config?.styles ?? {}).map((key) => h('option', { key, value: key }, `${styles.config.styles[key].label} (${key})`)),
-              ]),
-            ]),
-            h('button', {
-              key: 'preview', className: 'tiny', disabled: Boolean(busy),
-              onClick: () => runPreview(draft.defaultStyle || undefined, '一位旅人站在岔路口，远处有灯火'),
-            }, busy === 'preview' ? '出图中…' : '试出 / 预览'),
-            h('span', { key: 'advanced', className: 'dim', title: '提示词前缀、风格备注与战役名由 DM 的 rp_session 工具维护' }, '高级配置由 DM 工具维护'),
-          ]),
-          preview ? h('div', { key: 'prev', className: 'imagepreview', ref: previewRef }, [
-            h('div', { key: 'l', className: 'row' }, [
-              h('span', { key: 't', className: 'dim' }, `预览：${preview.style ?? ''}（${(preview.elapsedMs / 1000).toFixed(1)}s）`),
-              h('span', { key: 'sep', className: 'sep' }),
-              preview.url ? h('a', { key: 'o', className: 'dim', href: preview.url, target: '_blank', rel: 'noreferrer' }, '新标签打开大图') : null,
-            ]),
-            preview.url ? h('img', { key: 'i', className: 'pv', src: preview.url, alt: 'preview' }) : null,
-          ]) : null,
         ]),
         msg ? h('div', { key: 'msg', className: 'msg' }, msg.text) : null,
         // 诊断行：导入入口的可见性历史上就看这两侧的值，出问题时一眼能看出是哪边不对
@@ -2104,8 +1816,9 @@ window.__ModuleLoader__.load({
             // 进阶字段（设定层）：列表里不展开，只报「填了几项」——完整字段在大浮窗里改
             const filled = ['personality', 'speech', 'behavior', 'first_mes', 'mes_example', 'relations']
               .filter((f) => String(c[f] ?? '').trim());
-            // 立绘：**只有生成出来的**才挂在角色行上（当小头像用）。
-            // 卡面不是角色的立绘 —— 它现在是「世界设定」旁边那张封面。
+            // 立绘：角色行上的小头像取 `portraitsFromSession` 的结果 —— 玩家导入的立绘优先，
+            // 其次是**导入卡带来的那张卡面**（卡面就是这张角色卡的立绘，宿主侧也这么算）。
+            // 老版本「生成出来的立绘」那条来源已随本地生图一起移除（`generated` 不再被读取）。
             //
             // 版面（用户重新设计的要求）：**一行 = 小头像 + 名称 + 简介 + 标记 + 操作**。
             // 早先「有图就两列、图在左 150×200」会把那一行撑成三倍高（截图里「桐人」就是），
@@ -2117,7 +1830,7 @@ window.__ModuleLoader__.load({
               ? `立绘${portrait?.style ? ` · ${portrait.style}` : ''}`
               : '';
             const face = h('div', {
-              key: 'face', className: 'charavatar', title: faceLabel || '还没有立绘（点「立绘」生成）',
+              key: 'face', className: 'charavatar', title: faceLabel || '还没有立绘（在编辑里导入一张图片）',
             }, shownUrl
               ? h('img', { key: 'i', src: shownUrl, alt: `${pkey} 立绘`, loading: 'lazy' })
               : h('span', { key: 'ph', className: 'charavatar-ph' }, (pkey || '?').slice(0, 1)));
@@ -2143,12 +1856,6 @@ window.__ModuleLoader__.load({
                       key: 'edit', className: 'tiny', disabled: Boolean(busy),
                       onClick: () => beginCharacter(c, i, false),
                     }, '编辑'),
-                    h('button', {
-                      key: 'p', className: 'tiny',
-                      // 出图期间禁用：避免同时再发一张（每次 ~18 秒，且都排同一个 ComfyUI 队列）
-                      disabled: Boolean(busy),
-                      onClick: () => runPortrait(c),
-                    }, busy === `portrait:${pkey}` ? '出图中…' : '立绘'),
                     h('button', {
                       key: 'd', className: 'iconbtn', title: `删除 ${pkey || '这个角色'}`,
                       onClick: () => {
@@ -2352,11 +2059,9 @@ window.__ModuleLoader__.load({
           ]) : null,
         ]),
 
-        // 「生图配置（本会话）」这块**已经合并到面板最上面的「本会话生图」**：
-        // 默认风格、试出/预览、自动配图开关都在那里。这里不再重复一份 ——
-        // 两份同一个 draft 字段时，用户在下面改了、上面那份看起来没动，很容易以为没生效。
+        // 提示词前缀 / 战役名 / 世界设定 / 宏表由 DM 用 rp_session 工具维护（本面板不再摆这些控件）。
         h('div', { key: 'style-note', className: 'dim' },
-          `提示词前缀 / 风格备注 / 战役名由 DM 用 rp_session 工具维护${draft.campaign?.name ? `（当前战役：${draft.campaign.name}）` : ''}`),
+          `提示词前缀 / 战役名 / 世界设定 / 宏表由 DM 用 rp_session 工具维护${draft.campaign?.name ? `（当前战役：${draft.campaign.name}）` : ''}`),
 
         // ── 共享大浮窗（§6）：世界书 / 角色卡 / DM 设定三处编辑都走它 ──────────
         // 列表里只留单行摘要，完整字段、正文与立绘都在这里改；portal 到 document.body，
@@ -2544,27 +2249,18 @@ window.__ModuleLoader__.load({
           ],
         }, [
           h('div', { key: 'f', className: 'chareditform' }, [
-            // 左列：立绘（纵向、尽量占满这一列的宽/高；窄屏落到上方）。
-            // 按钮集中在这里：生成立绘是**纵向**的（宿主 sizeKey=portrait），所以图比场景图高，
-            // 这一列才填得满。「看大图」已去掉（用户要求）—— 图在这里就是最大的那个尺寸。
+            // 左列：立绘（尽量占满这一列的宽/高；窄屏落到上方）。
+            // 图只来源于「导入图片」与资源库提取；「看大图」已去掉（用户要求）—— 图在这里就是最大的那个尺寸。
             h('div', { key: 'face', className: 'facepreview' }, [
               charEditPortraitUrl
                 ? h('img', { key: 'i', src: charEditPortraitUrl, alt: '立绘' })
                 : h('div', { key: 'none', className: 'dim faceempty' },
-                  '还没有立绘 —— 点下面的「生成立绘」，或直接导入一张现成的图'),
+                  '还没有立绘 —— 点下面的「导入图片」选一张现成的图，或去资源库把某张图提成这个角色的立绘'),
               h('div', { key: 'c', className: 'dim facecap' }, charEditPortraitUrl
-                ? `「${charEditFaceKey || '（未命名）'}」的立绘${charEditPortraitStyle ? `（${charEditPortraitStyle}）` : ''}。重新生成会覆盖这张；不想抽卡就直接导入一张图。`
-                : '立绘按角色名保存；改名后旧立绘不会自动跟过来，重新生成一次即可。'),
+                ? `「${charEditFaceKey || '（未命名）'}」的立绘。重新导入会覆盖这张。`
+                : '立绘按角色名保存；改名后旧立绘不会自动跟过来，重新导入一次即可。'),
               h('div', { key: 'a', className: 'row facerow' }, [
-                h('button', {
-                  key: 'g', className: 'tiny', disabled: Boolean(busy) || !charEditName,
-                  title: charEditPortraitUrl
-                    ? '按这个角色的名字与外貌重新出一张纵向立绘（会覆盖现在这张）'
-                    : '按这个角色的名字与外貌出一张纵向立绘',
-                  onClick: () => void runPortrait(charEdit.character),
-                }, busy === `portrait:${charEditFaceKey}` ? '出图中…' : (charEditPortraitUrl ? '重新生成' : '生成立绘')),
-                // 外部导入（用户要求）：对生成结果不满意时不必反复抽卡，直接用现成的图。
-                // 走隐藏的 file input + data URL：浏览器不能把本地路径交给宿主。
+                // 外部导入：走隐藏的 file input + data URL（浏览器不能把本地路径交给宿主）。
                 h('label', {
                   key: 'u', className: `tiny filebtn${busy ? ' disabled' : ''}`,
                   title: '选一张本地图片（png / jpeg / webp，≤8MB）作为这个角色的立绘',
@@ -2590,7 +2286,7 @@ window.__ModuleLoader__.load({
                 key: 'n2', type: 'text', value: charEdit.character?.name ?? '', placeholder: '角色名',
                 onChange: (e) => patchCharacterEdit('name', e.target.value),
               }),
-              h('label', { key: 'a1' }, '外貌（生图时自动补进提示词）'),
+              h('label', { key: 'a1' }, '外貌（DM 让宿主出图时会用到这段描述）'),
               h('textarea', {
                 key: 'a2', value: charEdit.character?.appearance ?? '', placeholder: '可观察的外形特征：发色、服饰、体态、标志物',
                 onChange: (e) => patchCharacterEdit('appearance', e.target.value),
@@ -2790,7 +2486,7 @@ window.__ModuleLoader__.load({
         'data-open': isOpen ? 'true' : 'false',
         'aria-pressed': isOpen,
         onClick: () => { if (openRpTab) openRpTab(); },
-        title: 'RP 面板（世界 / 角色卡 / 随机表 / 生图配置）',
+        title: 'RP 面板（世界 / 角色卡 / 世界书 / 随机表 / 会话配置）',
       }, [
         h('span', { key: 'g', className: 'glyph' }, '🎲'),
         h('span', { key: 't' }, 'RP'),
@@ -3524,7 +3220,7 @@ window.__ModuleLoader__.load({
               guide: [{
                 order: 30,
                 title: () => '🎲 RP 跑团面板',
-                description: () => '世界设定 / 角色卡 / 随机表 / 本会话生图配置',
+                description: () => '世界设定 / 角色卡 / 世界书 / 随机表 / 会话配置',
               }],
             }));
           } catch (error) {
