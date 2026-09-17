@@ -117,8 +117,16 @@ const liveSessions = new Map();
 // 会话投影桩（`ctx.get('sessionProjections').stateOf(session, key)`）：闸门会用它拿
 // 「当前预设」与「有没有开局」；真机上这是宿主自己算的那份权威状态。
 const fakeProjections = { stateOf: (session, key) => (session?.proj ?? {})[key] };
+// 全局工具注册表桩：`GET /rp-tools/global-tools` 靠 `tools.schemas()`（**省略 scope = 全局视图**）
+// 列出「本机真实存在哪些全局工具」供设置页勾选。这里放几个真机上会有的名字，
+// 其中 `my_image_plugin` 代表「用户装了别的生图插件」。
+const fakeGlobalToolNames = ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image', 'web_fetch', 'canvas_state', 'my_image_plugin'];
+const hostToolsService = {
+  schemas: () => fakeGlobalToolNames.map((name) => ({ name })),
+  register: (t) => { tools.set(t.name, t); globalTools.push(t.name); },
+};
 const hostCtx = {
-  tools: { register: (t) => { tools.set(t.name, t); globalTools.push(t.name); } },
+  tools: hostToolsService,
   on,
   effect: (fn) => { fn(); },
   webServer: { register: (r) => { routes.set(r.path, r); } },
@@ -224,100 +232,19 @@ if (rpTable) {
   check('工具调用保底登记', (await callGet('/rp-tools/session', `?sessionId=${VIA_TOOL}`)).json.isDm, true);
 } else { console.log('WARN: rp_table 未注册'); fail++; }
 
-// ── 并发：出图慢，模型一轮里发多个调用时必须真的并行（否则一张一张等，白等两倍）──
-// 宿主 `executionMode()` 只认 `isConcurrencySafe(args) === true`，其余一律 exclusive；
-// 所以出图工具必须**显式声明**，而写会话/配置的工具（read-modify-write 会撞车）不声明。
+// ── 并发：写会话/配置的工具不能声明并发安全（read-modify-write 会互相覆盖）────────
+// 宿主 `executionMode()` 只认 `isConcurrencySafe(args) === true`，其余一律 exclusive。
+// **本插件已经没有出图工具**：出图交给宿主的 `generate_image`，所以这里只剩「该串行的必须串行」
+// 这一半；「已删工具不存在」由文件末尾的「工具面」一段统一钉住。
 {
   const safe = (n, args) => {
     const t = tools.get(n);
     if (!t || typeof t.isConcurrencySafe !== 'function') return false;
     try { return t.isConcurrencySafe(args) === true; } catch { return false; }
   };
-  check('并发：rp_illustrate 声明并发安全', safe('rp_illustrate', { prompt: '一张图' }), true);
-  check('并发：rp_scenes 声明并发安全', safe('rp_scenes', { scenesFile: 'x.json' }), true);
-  // 宿主那边是 fail-closed：参数校验不过就是 false（不会把坏调用丢进并行池）
-  check('并发：参数不合法时退回串行', safe('rp_illustrate', {}), false);
   check('并发：写会话的工具不声明（fail-closed）', safe('rp_session', { action: 'get' }), false);
   check('并发：写角色的工具不声明', safe('rp_character', { action: 'list' }), false);
   check('并发：写配置的工具不声明', safe('rp_config', { action: 'get' }), false);
-}
-
-// ── 出图即登记成立绘：DM 给角色出的第一张图 = 它的立绘（用户要求）──────────────
-// 以前只有**面板**上点「立绘」才落盘，DM 出的图只活在聊天里：角色行还是占位、
-// 下一轮也没有可复用的地址，于是可能又出一张。
-{
-  const D = mod.__debug;
-  const sid = crypto.randomUUID();
-  const ws2 = join(TEST_HOME, 'ws-portrait-auto');
-  mkdirSync(ws2, { recursive: true });
-  D.setSessionCwd(sid, ws2);
-  const files = [{ file: 'rp_auto_1.png', subfolder: '', type: 'output' }];
-  check('出图登记：第一次写入成功',
-    D.recordGeneratedPortrait(sid, '祁俊', files, { style: '二次元', elapsedMs: 9500 }), true);
-  const after = D.loadSession(sid).portraits?.祁俊;
-  check('出图登记：三要素落盘', JSON.stringify(after?.generated),
-    JSON.stringify({ file: 'rp_auto_1.png', subfolder: '', type: 'output' }));
-  check('出图登记：风格与耗时也记下', `${after?.style}|${after?.elapsedMs}`, '二次元|9500');
-  // 常驻段里要能直接用它（下一轮 DM 就看这一行决定要不要重出）
-  const standing = D.buildStandingText({
-    ...D.loadSession(sid), sessionId: sid, characters: [{ name: '祁俊' }],
-  }, {});
-  check('出图登记：下一轮的可复用图里有它', standing.includes('/rp-tools/media?file=rp_auto_1.png'), true);
-  check('出图登记：常驻段说明「有就直接展示」', standing.includes('有就直接展示，不要再生成'), true);
-  // 已有立绘 → 不覆盖（面板里那张、或用户自己配的那张都该保住）
-  check('出图登记：已有立绘时不覆盖',
-    D.recordGeneratedPortrait(sid, '祁俊', [{ file: 'rp_auto_2.png', subfolder: '', type: 'output' }], {}), false);
-  check('出图登记：原立绘没被换掉', D.loadSession(sid).portraits?.祁俊?.generated?.file, 'rp_auto_1.png');
-  // 认不出唯一角色（群像/场景图）→ 不记
-  check('出图登记：认不出角色时不记', D.recordGeneratedPortrait(sid, '', files, {}), false);
-  check('出图登记：没有文件描述符时不记', D.recordGeneratedPortrait(sid, '祝婉宁', [], {}), false);
-  check('出图登记：先出图后登记角色也能建',
-    D.recordGeneratedPortrait(sid, '祝婉宁', files, {}), true);
-  // ⚠️ **不对称是故意的**（用户拍板：「已有立绘就不覆盖；立绘不满意，用户可以通过按钮新建」）：
-  //    - 自动登记（DM 出图）：只在空着时写，绝不动已有那张；
-  //    - 面板「立绘」按钮（用户主动要求重出）：走 HTTP 路由，**总是覆盖**。
-  //    下面这条就是那条覆盖路径，别把两者改成同一个行为。
-  const rerun = await callPost('/rp-tools/portrait', {
-    sessionId: sid, name: '祁俊', action: 'save', file: 'rp_auto_3.png', subfolder: '', type: 'output', style: '写实',
-  });
-  check('出图登记：用户点按钮重出**可以**覆盖', rerun.json.portraits?.祁俊?.generated?.file, 'rp_auto_3.png');
-}
-
-// ── 尺寸档：不指定尺寸时，单人角色 → 纵向立绘（用户要求）──────────────────
-// 以前「立绘」出的图和场景图同档（横向），塞进角色卡编辑器左列只占半截、头像也是扁的。
-{
-  const D = mod.__debug;
-  const sid = crypto.randomUUID();
-  const ws3 = join(TEST_HOME, 'ws-size-slot');
-  mkdirSync(ws3, { recursive: true });
-  D.setSessionCwd(sid, ws3);
-  const sess = () => ({
-    ...D.loadSession(sid), sessionId: sid,
-    characters: [{ name: '祁俊' }, { name: '祝婉宁' }],
-  });
-  check('尺寸档：单人且没有立绘 → portrait', D.illustrateSizeKey(sess(), '祁俊推开门'), 'portrait');
-  check('尺寸档：两个角色同框 → scene', D.illustrateSizeKey(sess(), '祁俊和祝婉宁对峙'), 'scene');
-  check('尺寸档：画面里没有已登记角色 → scene', D.illustrateSizeKey(sess(), '雨夜的空街'), 'scene');
-  // 显式尺寸一律不干预：调用方说了算
-  check('尺寸档：显式 width/height 不干预', D.illustrateSizeKey(sess(), '祁俊推开门', { width: 1024, height: 576 }), 'scene');
-  check('尺寸档：显式 aspect 不干预', D.illustrateSizeKey(sess(), '祁俊推开门', { aspect: '16:9' }), 'scene');
-  // 已经有立绘了 → 这一张不会再被记成立绘，按场景档出
-  D.recordGeneratedPortrait(sid, '祁俊', [{ file: 'slot.png', subfolder: '', type: 'output' }], {});
-  check('尺寸档：已有生成立绘 → scene', D.illustrateSizeKey(sess(), '祁俊推开门'), 'scene');
-  // 导入的立绘同样算「已有」
-  const noPortrait = crypto.randomUUID();
-  const ws3b = join(TEST_HOME, 'ws-size-slot-imported');
-  mkdirSync(ws3b, { recursive: true });
-  D.setSessionCwd(noPortrait, ws3b);
-  const sessB = () => ({ ...D.loadSession(noPortrait), sessionId: noPortrait, characters: [{ name: '祁俊' }] });
-  check('尺寸档：导入立绘之前 → portrait', D.illustrateSizeKey(sessB(), '祁俊推开门'), 'portrait');
-  const { imagePng: mkPng } = await import(pathToFileURL(join(here, 'png-fixture.mjs')).href);
-  const tinyPng = mkPng(4, 4, () => [10, 20, 30, 255]);
-  await callPost('/rp-tools/portrait-upload', {
-    sessionId: noPortrait, name: '祁俊',
-    dataUrl: `data:image/png;base64,${tinyPng.toString('base64')}`,
-  });
-  check('尺寸档：导入立绘之后 → scene', D.illustrateSizeKey(sessB(), '祁俊推开门'), 'scene');
 }
 
 // ── 外部导入立绘（用户要求「也支持用户用外部导入立绘」）────────────────────
@@ -397,6 +324,34 @@ if (rpTable) {
     check('导入立绘：拒绝理由是路径越界', esc.json.error, '路径越界');
   }
 
+  // `POST /rp-tools/portrait` 现在**只剩 clear**：本插件不再出图，「生成并登记立绘」那条路
+  // 整个删掉了。缺 action 不能默认成 clear（那会把用户的立绘悄悄清掉），
+  // 带 file/subfolder/type/style/elapsedMs 这些「出图产物」字段的请求也必须明确拒绝 ——
+  // 否则老客户端（还在 POST 三要素）会以为登记成功了，实际什么也没发生。
+  {
+    const sidClear = crypto.randomUUID();
+    const wsClear = join(TEST_HOME, 'ws-portrait-clear');
+    mkdirSync(wsClear, { recursive: true });
+    D.setSessionCwd(sidClear, wsClear);
+    await callPost('/rp-tools/portrait-upload', { sessionId: sidClear, name: '祁俊', dataUrl });
+    check('立绘路由：clear 前有立绘', Boolean(D.loadSession(sidClear).portraits?.祁俊?.imported?.file), true);
+    check('立绘路由：缺 action 被拒（不许默认成 clear）',
+      (await callPost('/rp-tools/portrait', { sessionId: sidClear, name: '祁俊' })).status, 400);
+    check('立绘路由：缺 action 时立绘还在（拒绝是有效的，不是先清后拒）',
+      Boolean(D.loadSession(sidClear).portraits?.祁俊?.imported?.file), true);
+    check('立绘路由：带出图产物（file）被拒',
+      (await callPost('/rp-tools/portrait', { sessionId: sidClear, name: '祁俊', action: 'save', file: 'x.png' })).status, 400);
+    check('立绘路由：显式 save 被拒',
+      (await callPost('/rp-tools/portrait', { sessionId: sidClear, name: '祁俊', action: 'save' })).status, 400);
+    check('立绘路由：显式 clear 成功',
+      (await callPost('/rp-tools/portrait', { sessionId: sidClear, name: '祁俊', action: 'clear' })).status, 200);
+    // clear 清的是**老版本的 generated 死引用**；用户导入的立绘（imported）是另一份东西，
+    // 清除不许动它（否则「清理死引用」会顺手删掉用户真实的图）。
+    check('立绘路由：clear 只抹 generated，保留导入的立绘',
+      Boolean(D.loadSession(sidClear).portraits?.祁俊?.imported?.file), true);
+    check('立绘路由：clear 后没有 generated', D.loadSession(sidClear).portraits?.祁俊?.generated, undefined);
+  }
+
   // 常驻段：导入的立绘要出现在「已有可用图」里（DM 才不会又出一张）
   {
     const sid2 = crypto.randomUUID();
@@ -409,7 +364,9 @@ if (rpTable) {
     }, {});
     check('导入立绘：常驻段里给了可复用地址', standing.includes('/rp-tools/portrait-image?'), true);
     check('导入立绘：常驻段标注了「导入的立绘」', standing.includes('（导入的立绘）'), true);
-    check('导入立绘：常驻段仍写明「有就直接展示」', standing.includes('有就直接展示，不要再生成'), true);
+    // 「已有可用图」那行的口径：**先在下面找，有就直接展示**（旧措辞是「不要再生成」，
+    // 1.14.0 改成「不要再重新生成」—— 因为出图本身已经归宿主的 generate_image 了）
+    check('导入立绘：常驻段仍写明「有就直接展示」', standing.includes('有就直接展示'), true);
   }
 }
 
@@ -456,9 +413,14 @@ if (rpTable) {
   check('资源库：分类计数', JSON.stringify(D.assetCounts(D.loadAssets(sid))),
     JSON.stringify({ portrait: 0, scene: 1, item: 0, other: 0 }));
 
-  // 再放两张（不同分类），测过滤
-  const two = await D.archiveAsset(sid, { bytes: png, kind: 'portrait', ext: 'png', label: '祁俊立绘', characters: ['祁俊'], tags: '立绘' });
-  const three = await D.archiveAsset(sid, { bytes: png, kind: 'item', ext: 'png', label: '青铜钥匙', tags: '道具,钥匙' });
+  // 再放两张（不同分类），测过滤。
+  // ⚠️ **必须是各不相同的字节**：1.13.2 起查重是**内容优先**的（同一份字节就是同一张图，
+  // 与调用方这次报的 kind 无关）。喂同一张图会被合并成 1 条，那样下面「按分类能筛出 3 类」
+  // 就不再检验过滤，而会变成一条假绿。同字节跨分类合并另有一段专门的用例。
+  const pngPortrait = imagePng(96, 96, (x, y) => [200, x, y, 255]);
+  const pngItem = imagePng(64, 64, (x, y) => [x, 255, y, 255]);
+  const two = await D.archiveAsset(sid, { bytes: pngPortrait, kind: 'portrait', ext: 'png', label: '祁俊立绘', characters: ['祁俊'], tags: '立绘' });
+  const three = await D.archiveAsset(sid, { bytes: pngItem, kind: 'item', ext: 'png', label: '青铜钥匙', tags: '道具,钥匙' });
   check('资源库：三次归档都在', D.loadAssets(sid).assets.length, 3);
   check('资源库：id 不重复', new Set([one.id, two.id, three.id]).size, 3);
 
@@ -490,55 +452,32 @@ if (rpTable) {
     check('资源库：20 条 id 互不相同', new Set(D.loadAssets(sid2).assets.map((a) => a.id)).size, 20);
   }
 
-  // 归档的**触发路径**：出图后要从 ComfyUI `/view` 抓一份字节再入库（不是只记引用）。
-  // 这一段直接打桩 globalThis.fetch 把这条路走通 —— 否则它只在真机上跑到，回归时看不见。
+  // 归档的**字段契约**：一条资源记录要带上调用方当时知道的全部上下文
+  // （风格标签、尺寸、提示词原文、来源、分组），否则事后没法按内容补救标签。
+  // 旧版这里是打桩 `globalThis.fetch` 走 ComfyUI `/view` 抓字节那条路 —— 生图整块搬走后
+  // 那条路连同 `archiveGeneratedImages` 一起删了，现在入库只剩一个入口：宿主出的图
+  // 由 DM 用 `rp_assets(action:"import")` 收进来（见下面「导入」那段）。
   {
     const sid4 = crypto.randomUUID();
     const ws4b = join(TEST_HOME, 'ws-assets-archive');
     mkdirSync(ws4b, { recursive: true });
     D.setSessionCwd(sid4, ws4b);
-    const realFetch = globalThis.fetch;
-    const cfg = { comfyui: { baseUrl: 'http://127.0.0.1:8188' } };
-    const result = {
-      files: [{ file: 'rp_00007_.png', subfolder: '', type: 'output' }],
-      styleKey: 'manga', styleLabel: '黑白漫画', width: 768, height: 432, prompt: '雨夜里的客栈前台',
-    };
-    try {
-      // ① 正常：抓到字节 → 入库
-      globalThis.fetch = async () => ({
-        ok: true, status: 200,
-        arrayBuffer: async () => png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength),
-      });
-      const made = await D.archiveGeneratedImages(cfg, sid4, result, {
-        kind: 'scene', label: '雨夜客栈前台', tags: '客栈,雨夜', characters: ['祁俊'], group: 'g9',
-      });
-      check('资源库：出图后自动入库一张', made.length, 1);
-      check('资源库：入库的分类来自调用方', made[0]?.kind, 'scene');
-      check('资源库：入库带上风格与尺寸', `${made[0]?.styleLabel}|${made[0]?.width}×${made[0]?.height}`, '黑白漫画|768×432');
-      check('资源库：入库带上提示词原文（事后能补救标签）', made[0]?.prompt, '雨夜里的客栈前台');
-      check('资源库：入库落在 scenes/ 下', String(made[0]?.file).startsWith('assets/scenes/'), true);
-      check('资源库：入库的 source 是 generated', made[0]?.source, 'generated');
-      check('资源库：入库带上 group（整幕多格归一组）', made[0]?.group, 'g9');
-
-      // ② ComfyUI 抓不到（/view 报错）→ **不抛**、只是没入库。
-      //    这条很重要：归档失败不该让一次成功的出图变成失败（模型会以为图没出来，可能重出）。
-      globalThis.fetch = async () => ({ ok: false, status: 500, arrayBuffer: async () => new ArrayBuffer(0) });
-      const failed = await D.archiveGeneratedImages(cfg, sid4, result, { kind: 'scene' });
-      check('资源库：抓不到字节时不入库、也不抛错', failed.length, 0);
-      check('资源库：抓不到时库里没有多出来的条目', D.loadAssets(sid4).assets.length, 1);
-
-      // ③ 网络直接抛异常 → 同样吞掉
-      globalThis.fetch = async () => { throw new Error('ECONNREFUSED'); };
-      check('资源库：抓图抛异常时也吞掉', (await D.archiveGeneratedImages(cfg, sid4, result, { kind: 'scene' })).length, 0);
-
-      // ④ 没有文件描述符（宿主没回 files）→ 直接跳过，不发请求
-      let called = 0;
-      globalThis.fetch = async () => { called += 1; return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(0) }; };
-      check('资源库：没有文件描述符时不发请求', (await D.archiveGeneratedImages(cfg, sid4, { files: [] }, { kind: 'scene' })).length, 0);
-      check('资源库：真的没发请求', called, 0);
-    } finally {
-      globalThis.fetch = realFetch;
-    }
+    const made = await D.archiveAsset(sid4, {
+      bytes: png, kind: 'scene', ext: 'png', width: 768, height: 432,
+      label: '雨夜客栈前台', tags: '客栈,雨夜', characters: ['祁俊'],
+      style: 'manga', styleLabel: '黑白漫画', source: 'generated', group: 'g9',
+      prompt: '雨夜里的客栈前台',
+    });
+    check('资源库：入库一张', Boolean(made?.id), true);
+    check('资源库：入库的分类来自调用方', made?.kind, 'scene');
+    check('资源库：入库带上风格与尺寸', `${made?.styleLabel}|${made?.width}×${made?.height}`, '黑白漫画|768×432');
+    check('资源库：入库带上提示词原文（事后能补救标签）', made?.prompt, '雨夜里的客栈前台');
+    check('资源库：入库落在 scenes/ 下', String(made?.file).startsWith('assets/scenes/'), true);
+    check('资源库：入库的 source 是 generated', made?.source, 'generated');
+    check('资源库：入库带上 group（整幕多格归一组）', made?.group, 'g9');
+    // 字节非法（空 / 非 Buffer）→ 返回 null 而不是抛：一次归档失败不该炸掉调用方
+    check('资源库：空字节不建档、也不抛', await D.archiveAsset(sid4, { bytes: Buffer.alloc(0), kind: 'scene' }), null);
+    check('资源库：空字节时库里条数不变', D.loadAssets(sid4).assets.length, 1);
   }
 
   // HTTP：列表接口（面板图墙用它）
@@ -673,6 +612,323 @@ if (rpTable) {
     check('资源库：摘要里**没有**逐张清单（否则每轮白烧几千字）',
       standing.includes('/rp-tools/asset-image?'), false);
   }
+}
+
+// ── 配图入库（1.14.0）：宿主出的图怎么收进资源库 ───────────────────────────────
+// 本地生图搬走后，**新图入库只剩一个入口**：`rp_assets(action:"import")`。
+// 它的两条来源（`path` / `attachment_id`）与安全边界（只读、限工作区、限图片扩展名）
+// 都必须有断言 —— 这是模型每出一张图都要走的路，坏掉的话图就永远进不了库。
+{
+  const D = mod.__debug;
+  const { imagePng } = await import(pathToFileURL(join(here, 'png-fixture.mjs')).href);
+  const sid = crypto.randomUUID();
+  const ws = join(TEST_HOME, 'ws-asset-import');
+  mkdirSync(ws, { recursive: true });
+  D.setSessionCwd(sid, ws);
+  const ctx = { agent: { id: sid } };
+  const assets = tools.get('rp_assets');
+  const imgDir = join(ws, 'dsh-image-gen');
+  mkdirSync(imgDir, { recursive: true });
+  const png = imagePng(80, 80, (x, y) => [x * 3, 90, y * 3, 255]);
+  writeFileSync(join(imgDir, 'image-0001.png'), png);
+  writeFileSync(join(imgDir, 'note.txt'), '这不是图');
+  writeFileSync(join(ws, 'outside-ok.png'), imagePng(8, 8, () => [1, 2, 3, 255]));
+
+  // ① 工作区相对路径（= 宿主生图工具返回的 `savedTo`）——最常用的一条
+  {
+    const rel = 'dsh-image-gen/image-0001.png';
+    const r = await D.readImageForImport(sid, ws, ctx, { path: rel });
+    check('配图入库：相对路径读得到', r.ok, true);
+    check('配图入库：from 里给出的是相对路径', r.from, `工作区 ${rel}`);
+    check('配图入库：字节与原图一致', r.bytes.equals(png), true);
+    check('配图入库：认得出扩展名', r.ext, 'png');
+  }
+
+  // ② 只给文件名 → 回退到 `dsh-image-gen/` 下再找一次（模型常只抄文件名）
+  {
+    const r = await D.readImageForImport(sid, ws, ctx, { path: 'image-0001.png' });
+    check('配图入库：只给文件名也能找到', r.ok, true);
+    check('配图入库：回退找的就是 dsh-image-gen/ 下那张', r.from, '工作区 dsh-image-gen/image-0001.png');
+  }
+
+  // ③ 安全边界：工作区里但不在 dsh-image-gen/ 下也能读（savedTo 可能是别处），
+  //    但**越出工作区**一律拒绝，且要在解析后的绝对路径上判（不能只查入参字符串）
+  {
+    // 越界用例必须让**文件真的存在**，否则撞上的是「文件不存在」那条早退分支，
+    // 测不到越界校验（那会是假绿）。
+    writeFileSync(join(TEST_HOME, 'secret.png'), imagePng(8, 8, () => [9, 9, 9, 255]));
+    check('配图入库：工作区里的其它位置也能读',
+      (await D.readImageForImport(sid, ws, ctx, { path: 'outside-ok.png' })).ok, true);
+    const esc = await D.readImageForImport(sid, ws, ctx, { path: '../secret.png' });
+    check('配图入库：越出工作区被拒', esc.ok, false);
+    check('配图入库：拒绝理由是越界', String(esc.error).includes('越出'), true);
+    // 绝对路径指到工作区外（Windows 上盘符路径同样要挡）
+    const abs = await D.readImageForImport(sid, ws, ctx, { path: join(TEST_HOME, 'outside-ok.png') });
+    check('配图入库：库外绝对路径被拒', abs.ok, false);
+  }
+
+  // ④ 非图片扩展名拒绝（别把 txt / exe 收进图墙）
+  {
+    const r = await D.readImageForImport(sid, ws, ctx, { path: 'dsh-image-gen/note.txt' });
+    check('配图入库：非图片扩展名被拒', r.ok, false);
+    check('配图入库：拒绝理由点名只认 png/jpeg/webp', String(r.error).includes('只认 png'), true);
+  }
+
+  // ⑤ 找不到文件时报错要带「找过哪些路径」，省一轮瞎猜
+  {
+    const r = await D.readImageForImport(sid, ws, ctx, { path: 'dsh-image-gen/nope.png' });
+    check('配图入库：文件不存在时报错', r.ok, false);
+    check('配图入库：报错里列出找过的两个候选',
+      String(r.error).includes('工作区里没有这个文件') && String(r.error).includes('与'), true);
+  }
+
+  // ⑥ 两个来源都没给 → 拒绝，并把**最近生成的那几张**列出来（可复制进 path）
+  {
+    const direct = await D.readImageForImport(sid, ws, ctx, {});
+    check('配图入库：不给 path/attachment_id 时拒绝', direct.ok, false);
+    check('配图入库：拒绝理由说清需要什么', direct.error, '需要 path 或 attachment_id');
+    // 候选清单：只收图片、按 mtime 倒序、给的是工作区相对路径
+    const recent = D.recentWorkspaceImages(ws);
+    check('配图入库：候选里只有图片', recent.every((p) => /\.(png|jpe?g|webp)$/i.test(p)), true);
+    check('配图入库：候选是工作区相对路径', recent.includes('dsh-image-gen/image-0001.png'), true);
+    check('配图入库：候选不含非图片文件', recent.includes('dsh-image-gen/note.txt'), false);
+    check('配图入库：没有工作区时候选为空数组（不抛）', JSON.stringify(D.recentWorkspaceImages('')), '[]');
+    check('配图入库：工作区里没有那个子目录时也返回空数组（不抛）',
+      JSON.stringify(D.recentWorkspaceImages(join(TEST_HOME, '不存在的目录'))), '[]');
+    // 工具的报错必须把候选列进去（「只回一句『需要 path』」正是真机复测投诉过的那种错）
+    let msg = '';
+    try { await assets.execute({ action: 'import' }, ctx); } catch (error) { msg = String(error?.message ?? error); }
+    check('配图入库：工具报错要求 path 或 attachment_id', msg.includes('需要 path 或 attachment_id'), true);
+    check('配图入库：工具报错里列出最近生成的候选',
+      msg.includes('dsh-image-gen/') && msg.includes('image-0001.png'), true);
+  }
+
+  // ⑦ 真的走一遍工具：path → 归档 + 索引，label/tags/kind/characters 都落盘
+  {
+    const registered = await tools.get('rp_character').execute({
+      action: 'set', name: '祁俊', appearance: '少年，短发',
+    }, ctx);
+    check('配图入库：前置——角色登记成功', registered.ok, true);
+    const made = await assets.execute({
+      action: 'import', path: 'dsh-image-gen/image-0001.png', kind: 'scene',
+      label: '雨夜客栈大堂', tags: '客栈,雨夜', prompt: '祁俊在雨夜里的客栈大堂',
+    }, ctx);
+    check('配图入库：工具导入成功', made.ok, true);
+    check('配图入库：note 说清来源与 id', made.note.includes('已收进资源库') && made.note.includes('id='), true);
+    const entry = D.loadAssets(sid).assets[0];
+    check('配图入库：索引里一条', D.loadAssets(sid).assets.length, 1);
+    check('配图入库：分类落盘', entry?.kind, 'scene');
+    check('配图入库：标签落盘', (entry?.tags ?? []).join(','), '客栈,雨夜');
+    check('配图入库：提示词原文落盘（事后能补救标签）', entry?.prompt, '祁俊在雨夜里的客栈大堂');
+    check('配图入库：source 标成 imported', entry?.source, 'imported');
+    // 画面里的角色由**复数**的 charactersInPrompt 扫出来（单数的 characterInPrompt 已随固定种子删除）
+    check('配图入库：按提示词里的角色名自动归类',
+      (entry?.characters ?? []).join(','), '祁俊');
+    check('配图入库：库地址可用', String(made.lines[0]).includes('/rp-tools/asset-image?'), true);
+
+    // ⑧ **同一份字节再导一次 → 还是一条**（内容优先去重；这是真机修过的 bug）
+    const again = await assets.execute({
+      action: 'import', path: 'dsh-image-gen/image-0001.png', kind: 'item', label: '第二次导入',
+    }, ctx);
+    check('配图入库：同字节再导不新增', D.loadAssets(sid).assets.length, 1);
+    check('配图入库：note 说明库里已经有了', again.note.includes('库里已经有了'), true);
+    check('配图入库：同字节再导返回同一个 id', D.loadAssets(sid).assets[0]?.id, entry?.id);
+    // 换 kind 收同一张图**也必须合并**（按 kind 查重会把同一张图存成两份 —— 那个 bug 就是这个）
+    const crossKind = await assets.execute({
+      action: 'import', path: 'dsh-image-gen/image-0001.png', kind: 'portrait', label: '同一张算立绘',
+    }, ctx);
+    check('配图入库：换 kind 收同一张图仍然只有一条', D.loadAssets(sid).assets.length, 1);
+    check('配图入库：换 kind 也标成已存在', crossKind.note.includes('库里已经有了'), true);
+  }
+}
+
+// ── 卡库配置补丁（工具与设置页共用一份规则）──────────────────────────────────
+// `applyCardConfigPatch` 是 `rp_config` 的 action:"set" 与 `POST /rp-tools/config`
+// 共用的**唯一**一份归一化规则。规则只有一处，所以它值得单独钉住：
+// 非法宏名要丢、空值要丢（留空行等于界面噪音）、`userLabel` 跟着 `user` 走、打完补丁要标记 seeded。
+{
+  const D = mod.__debug;
+  const base = { cards: { root: '/old', userLabel: '旧称呼', macros: { user: '旧' }, macrosSeeded: false }, extra: 1 };
+
+  // ① 合法宏名 + 非空值 → 收；非法名 / 空值 → 丢
+  const patched = D.applyCardConfigPatch(base, { macros: { user: '玩家', place: '长安', 'BAD KEY': 'x', '1bad': 'y', UPPER: 'z', empty: '   ' } });
+  check('卡库补丁：合法宏名保留（含大写归一成小写）',
+    Object.keys(patched.macros).sort().join(','), 'place,upper,user');
+  check('卡库补丁：非法宏名被丢掉', Object.hasOwn(patched.macros, 'BAD KEY'), false);
+  check('卡库补丁：数字开头的宏名被丢掉', Object.hasOwn(patched.macros, '1bad'), false);
+  check('卡库补丁：空值被丢掉（不留空行）', Object.hasOwn(patched.macros, 'empty'), false);
+  check('卡库补丁：值保留原文', patched.macros.user, '玩家');
+  check('卡库补丁：大写宏名归一成小写', patched.macros.upper, 'z');
+
+  // ② userLabel 与 macros.user 保持同步（它只是 1.8.7 之前的老字段，不能说两套话）
+  check('卡库补丁：userLabel 跟着 user 走', patched.userLabel, '玩家');
+  check('卡库补丁：user 为空串时 userLabel 也清空',
+    D.applyCardConfigPatch(base, { macros: { place: '长安' } }).userLabel, '');
+  // ③ seeded 标记：用户动过这个列表，之后不再自动补 `user -> 玩家`
+  check('卡库补丁：打上 macrosSeeded', patched.macrosSeeded, true);
+
+  // ④ root：传了就换、没传保持原值（只改宏不该把卡库目录弄丢）
+  check('卡库补丁：root 传了就换', D.applyCardConfigPatch(base, { root: '/new' }).root, '/new');
+  check('卡库补丁：root 没传就保持', D.applyCardConfigPatch(base, { macros: { user: 'x' } }).root, '/old');
+  check('卡库补丁：root 两边的空白裁掉', D.applyCardConfigPatch(base, { root: '  /x  ' }).root, '/x');
+  check('卡库补丁：不传 root 也不传 macros 时清空宏表（界面提交的就是全量）',
+    Object.keys(D.applyCardConfigPatch(base, {}).macros).length, 0);
+
+  // ⑤ 只返回 `cards` 那一份配置（**不是**整份 cfg）—— 调用方必须自己包回 `cards`
+  check('卡库补丁：返回的是 cards 那一层（没有 cards 包装）',
+    Object.keys(D.applyCardConfigPatch(base, {})).sort().join(','), 'macros,macrosSeeded,root,userLabel');
+  check('卡库补丁：不改原对象', Object.keys(base.cards.macros).join(','), 'user');
+  check('卡库补丁：原对象其它字段原样', base.extra, 1);
+
+  // ⑥ HTTP 路由（设置页/面板提交的那条）：合法补丁必须**真的落盘**且读得回来。
+  //    这一条还顺手锁住「落盘形状必须是 { cards: {...} }」——`rp_config` 工具那条路
+  //    在这里踩过坑（见下面 ⑦ 的说明）。
+  {
+    const before = await callGet('/rp-tools/state');
+    const keptMacros = before.json.config?.cards?.macros ?? {};
+    const applied = await callPost('/rp-tools/config', {
+      cards: { root: before.json.config?.cards?.root ?? '', macros: { ...keptMacros, smoke_route: '路由值', 'BAD KEY': 'x' } },
+    });
+    check('卡库配置：路由返回 ok', applied.json.ok, true);
+    check('卡库配置：非法宏名被丢掉', Object.hasOwn(applied.json.config?.cards?.macros ?? {}, 'BAD KEY'), false);
+    check('卡库配置：合法宏名写进去了', applied.json.config?.cards?.macros?.smoke_route, '路由值');
+    // 读回来（走磁盘，不是内存）——落盘形状错了这里就会变成出厂默认值
+    const reread = await callGet('/rp-tools/state');
+    check('卡库配置：重新读一次还在（落盘形状是对的）',
+      reread.json.config?.cards?.macros?.smoke_route, '路由值');
+    check('卡库配置：userLabel 与 user 同步', reread.json.config?.cards?.userLabel, reread.json.config?.cards?.macros?.user ?? '');
+    // 还回去，别影响后面的用例
+    await callPost('/rp-tools/config', { cards: { root: before.json.config?.cards?.root ?? '', macros: keptMacros } });
+  }
+
+  // ⑦ `rp_config` 工具的 get / 参数校验（写路径见下面的 ★ 说明）
+  {
+    const cfg = tools.get('rp_config');
+    check('rp_config：注册了工具', Boolean(cfg), true);
+    const listed = await cfg.execute({ action: 'get' });
+    check('rp_config：get 报出卡库根目录那一行',
+      listed.lines.some((l) => l.startsWith('卡库根目录：')), true);
+    check('rp_config：get 报出默认宏列表条数',
+      listed.lines.some((l) => l.startsWith('默认宏（')), true);
+    check('rp_config：get 指向宿主 generate_image 与 rp_assets 入库',
+      listed.lines.some((l) => l.includes('generate_image') && l.includes('rp_assets')), true);
+    check('rp_config：get 给出配置文件路径（可直接 read/write）',
+      listed.lines.some((l) => l.includes('styles.json')), true);
+    const errOfCfg = async (args) => {
+      try { await cfg.execute(args); return ''; } catch (error) { return String(error?.message ?? error); }
+    };
+    check('rp_config：未知 action 报错', (await errOfCfg({ action: 'nonsense' })).includes('未知 action'), true);
+    check('rp_config：非法宏名报错',
+      (await errOfCfg({ action: 'set', macro_name: 'bad name', macro_value: 'x' })).includes('不合法'), true);
+    // ★ 回归（曾真坏过，且是**静默丢用户配置**那一类）：`set` 之后必须真的读得回来。
+    //   旧实现工具那条路写成 `cfg = applyCardConfigPatch(cfg, patch)`，而该函数返回的是
+    //   **cards 那一层** —— 盘上被写成 `{root,userLabel,macros,macrosSeeded}`（少了 `cards` 壳），
+    //   下一次 `loadStyles()` 认不出来就退回出厂默认（用户的默认宏列表/卡库目录无声消失），
+    //   而工具照样回「✅ 已更新」。所以这里必须三面都钉：读得回来、盘上有 `cards`、形状对。
+    {
+      const set = await cfg.execute({ action: 'set', macro_name: 'place', macro_value: '广寒宫' });
+      check('rp_config：set 回显成功', String(set.note).includes('已更新'), true);
+      const after = await cfg.execute({ action: 'get' });
+      check('rp_config：set 之后 get 读得回来（默认宏里有 place）',
+        after.lines.some((l) => l.startsWith('默认宏（') && l.includes('place') && l.includes('广寒宫')), true);
+      // 直接看盘：形状必须是 { cards: { root, userLabel, macros, macrosSeeded } }
+      const onDisk = JSON.parse(readFileSync(join(TEST_HOME, 'data', 'dsh-rp-tools', 'styles.json'), 'utf8'));
+      check('rp_config：盘上保留了 cards 这一层', Boolean(onDisk.cards && typeof onDisk.cards === 'object'), true);
+      check('rp_config：盘上没有把 cards 摊平到顶层',
+        ['root', 'userLabel', 'macros', 'macrosSeeded'].every((k) => !(k in onDisk)), true);
+      check('rp_config：盘上的宏真的写进去了', onDisk.cards?.macros?.place, '广寒宫');
+      check('rp_config：userLabel 跟着 macros.user 走（老字段不说两套话）', onDisk.cards?.userLabel, '玩家');
+      // 擦掉，免得影响后面读同一份配置的用例
+      await cfg.execute({ action: 'set', macro_name: 'place', macro_value: '' });
+      const cleaned = JSON.parse(readFileSync(join(TEST_HOME, 'data', 'dsh-rp-tools', 'styles.json'), 'utf8'));
+      check('rp_config：空值等于删掉这条宏', 'place' in (cleaned.cards?.macros ?? {}), false);
+    }
+  }
+
+  // ── 全局工具放行名单（1.15.0 起可配置）─────────────────────────────────────
+  // 背景：本插件不出图，DM 配图靠宿主的**全局**工具，而 dm-filter 会 deny 不在名单里的全局工具。
+  // 名单可配置才有意义 —— **每个 DSH 装的生图插件可能不同、工具名也不同**。
+  // 这一组钉住：发现能力（列出本机真实存在的全局工具）、勾选持久化、非法值剔除、底线不可取消。
+  {
+    // ① 发现：GET 要列出桩里那些全局工具，并标出哪些已勾选 / 哪些是底线
+    const listed = await callGet('/rp-tools/global-tools');
+    check('全局工具：GET ok', listed.status, 200);
+    check('全局工具：报出底线三项', (listed.json.base ?? []).join(','), 'render_ui,validate_dsh_ui,web_search');
+    check('全局工具：默认额外放行 = 宿主生图工具', (listed.json.allow ?? []).join(','), 'generate_image,edit_image');
+    check('全局工具：列出了本机真实存在的全局工具',
+      (listed.json.available ?? []).map((a) => a.name).sort().join(','),
+      'canvas_state,edit_image,generate_image,my_image_plugin,render_ui,validate_dsh_ui,web_fetch,web_search'.split(',').sort().join(','));
+    check('全局工具：默认项标记为已勾选',
+      (listed.json.available ?? []).filter((a) => a.checked).map((a) => a.name).sort().join(','), 'edit_image,generate_image');
+    check('全局工具：底线项标记为 locked（界面不可取消）',
+      (listed.json.available ?? []).filter((a) => a.locked).map((a) => a.name).sort().join(','), 'render_ui,validate_dsh_ui,web_search');
+    check('全局工具：生图类工具被标成 imageLike（界面好找）',
+      (listed.json.available ?? []).filter((a) => a.imageLike).map((a) => a.name).sort().join(','),
+      'edit_image,generate_image,my_image_plugin');
+    check('全局工具：默认没有「未注册」的项', (listed.json.missing ?? []).length, 0);
+
+    // ② 换生图插件：把 my_image_plugin 勾上、去掉 generate_image
+    const saved = await callPost('/rp-tools/global-tools', { allow: ['my_image_plugin', 'edit_image'] });
+    check('全局工具：POST ok', saved.status, 200);
+    check('全局工具：勾选结果落库', (saved.json.allow ?? []).join(','), 'my_image_plugin,edit_image');
+    const reread = await callGet('/rp-tools/global-tools');
+    check('全局工具：重读得到同样的勾选', (reread.json.allow ?? []).join(','), 'my_image_plugin,edit_image');
+    check('全局工具：重读后勾选状态跟着变',
+      (reread.json.available ?? []).filter((a) => a.checked).map((a) => a.name).sort().join(','), 'edit_image,my_image_plugin');
+
+    // ③ 盘上确实是 styles.json 的 globalToolsAllow（过滤器就是读这个键）
+    const onDiskGt = JSON.parse(readFileSync(join(TEST_HOME, 'data', 'dsh-rp-tools', 'styles.json'), 'utf8'));
+    check('全局工具：落盘在 globalToolsAllow 键上',
+      (onDiskGt.globalToolsAllow ?? []).join(','), 'my_image_plugin,edit_image');
+
+    // ④ 非法值 / 底线名要被剔除（这个值有一条写入路径来自模型，不能因为脏值整份写不进去）
+    const dirty = await callPost('/rp-tools/global-tools', { allow: ['generate_image', 'render_ui', 'BAD NAME', 'ok_tool', 'ok_tool', 'tool.with.dot'] });
+    check('全局工具：剔除底线名与非法名、去重', (dirty.json.allow ?? []).join(','), 'generate_image,ok_tool');
+    const notArray = await callPost('/rp-tools/global-tools', { allow: 'generate_image' });
+    check('全局工具：allow 不是数组 → 400', notArray.status, 400);
+
+    // ⑤ 配置里有、但注册表里没有的名字要能被看见（否则用户只看到「为什么没生效」）
+    await callPost('/rp-tools/global-tools', { allow: ['not_installed_yet'] });
+    const missing = await callGet('/rp-tools/global-tools');
+    check('全局工具：未注册的名字列进 missing', (missing.json.missing ?? []).join(','), 'not_installed_yet');
+
+    // ⑥ 工具侧的等价入口（`rp_config(action:"set_global_tools")`，参数是逗号分隔字符串）
+    const cfg2 = tools.get('rp_config');
+    const setGt = await cfg2.execute({ action: 'set_global_tools', global_tools: 'generate_image, edit_image , my_image_plugin' });
+    check('rp_config：set_global_tools 回显成功', String(setGt.note).includes('已更新'), true);
+    check('rp_config：set_global_tools 剔除已删/非法并归一',
+      JSON.parse(readFileSync(join(TEST_HOME, 'data', 'dsh-rp-tools', 'styles.json'), 'utf8')).globalToolsAllow.join(','),
+      'generate_image,edit_image,my_image_plugin');
+    const getGt = await cfg2.execute({ action: 'get' });
+    check('rp_config：get 报出放行名单那一行',
+      getGt.lines.some((l) => l.startsWith('放行给 DM 会话的全局工具：') && l.includes('generate_image')), true);
+    check('rp_config：get 报出本机实际存在的全局工具（供核对名字）',
+      getGt.lines.some((l) => l.includes('本机实际存在的全局工具：') && l.includes('my_image_plugin')), true);
+
+    // ⑦ 复原成默认，免得影响后面读同一份配置的用例
+    await callPost('/rp-tools/global-tools', { allow: ['generate_image', 'edit_image'] });
+    check('全局工具：复原为出厂默认',
+      JSON.parse(readFileSync(join(TEST_HOME, 'data', 'dsh-rp-tools', 'styles.json'), 'utf8')).globalToolsAllow.join(','),
+      'generate_image,edit_image');
+  }
+}
+
+// ── 工具面：删干净了没有 ─────────────────────────────────────────────────────
+// 本地生图搬走后，工具从 11 个降到 8 个。这一条是**正面**断言：
+// 已删的三个必须真的不在注册表里（模型去调它会得到「工具不存在」），
+// 剩下的八个必须在。少一个 = 功能没了；多一个 = 有东西没删干净。
+{
+  const REMOVED = ['rp_styles', 'rp_illustrate', 'rp_scenes'];
+  const KEPT = ['rp_random', 'rp_character', 'rp_state', 'rp_lore', 'rp_session', 'rp_assets', 'rp_config', 'rp_table'];
+  for (const name of REMOVED) {
+    check(`工具面：已删的 ${name} 未注册`, tools.has(name), false);
+  }
+  for (const name of KEPT) {
+    check(`工具面：${name} 仍注册`, tools.has(name), true);
+  }
+  check('工具面：一共正好 8 个工具', [...tools.keys()].sort().join(','), KEPT.slice().sort().join(','));
+  // 全局半侧**一个工具都不注册**（架构约束：rp_* 只出现在 dm 预设作用域）
+  check('工具面：全局不注册任何模型工具', globalTools.join(',') || '（零个）', '（零个）');
 }
 
 // ── 随机核心：骰式解析与 count 契约 ────────────────────────────────────────
@@ -816,40 +1072,9 @@ if (rpTable) {
     check('RETEST-02：分镜 id 也认 id 别名', D.panelIdOf({ id: 'p9' }), 'p9');
     check('RETEST-02：分镜约定字段优先', D.panelIdOf({ panel_id: 'p1', id: 'p2' }), 'p1');
 
-    const sid = crypto.randomUUID();
-    const ws = join(TEST_HOME, 'ws-retest-scenes');
-    mkdirSync(ws, { recursive: true });
-    D.setSessionCwd(sid, ws);
-    const ctx = { agent: { id: sid } };
-    const scenes = tools.get('rp_scenes');
-    const file = join(ws, 'scenes.json');
-    // 场景 id 完全对不上 → 必须报错，并列出文件里实际有什么
-    writeFileSync(file, JSON.stringify({ scenes: [{ scene_id: 'S07', panels: [{ panel_id: 'p1', positive: 'x' }] }] }));
-    const miss = await errOf(() => scenes.execute({ scenesFile: file, sceneId: 'S01', style: 'manga' }, ctx));
-    check('RETEST-02：筛不到时报错（以前静默 0/0 且 ok:true）', miss.includes('没有 scene_id="S01" 这一幕'), true);
-    check('RETEST-02：报错里列出实际可用的 id', miss.includes('S07'), true);
-    check('RETEST-02：报错里说明按哪些字段识别', miss.includes('scene_id / sceneId / id / title'), true);
-    // 有幕但没有 panels → 也要说清楚，而不是 0/0
-    writeFileSync(file, JSON.stringify({ scenes: [{ scene_id: 'S01' }] }));
-    check('RETEST-02：有幕但没有 panels 时也报错',
-      (await errOf(() => scenes.execute({ scenesFile: file, sceneId: 'S01', style: 'manga' }, ctx))).includes('没有 panels 数组'), true);
-
-    // **筛选命中后不能再静默 0/0**：把 ComfyUI 指到一个空端口，断言它「确实走到了生图那一步」
-    // （连不上 → 每格失败进 errors），而不是「一幕都没匹配上」。这样既证明修复、又不会真出图。
-    const stylesFile = join(TEST_HOME, 'data', 'dsh-rp-tools', 'styles.json');
-    await tools.get('rp_styles').execute({}, ctx);           // 先触发一次默认配置落盘
-    const baseCfg = JSON.parse(readFileSync(stylesFile, 'utf8'));
-    try {
-      writeFileSync(stylesFile, JSON.stringify({ ...baseCfg, comfyui: { ...(baseCfg.comfyui ?? {}), baseUrl: 'http://127.0.0.1:9' } }));
-      writeFileSync(file, JSON.stringify({ scenes: [{ id: 'S01', panels: [{ panel_id: 'p1', positive: '雨夜客栈' }] }] }));
-      const styleKey = Object.keys(baseCfg.styles ?? {})[0] ?? 'manga';
-      const run = await scenes.execute({ scenesFile: file, sceneId: 'S01', style: styleKey }, ctx);
-      check('RETEST-02：id 别名能筛中（total=1，不再 0/0）', run.total, 1);
-      check('RETEST-02：确实走到了生图那一步（失败原因是连不上，不是没匹配上）', run.failed, 1);
-      check('RETEST-02：失败信息里不含「没有 scene_id」', String(run.errors.join(' ')).includes('没有 scene_id'), false);
-    } finally {
-      writeFileSync(stylesFile, JSON.stringify(baseCfg));    // 还原，别影响后面的用例
-    }
+    // ⚠️ 这一段的 `rp_scenes`（整幕多格出图）已随本地生图一起删除：原先那几条「筛不到场景要报错
+    // 而不是静默 0/0」的断言测的是那个工具的参数校验，工具没了就不能再断言 ——
+    // 修的是它，不是这条契约；契约随工具一起作废（`rp_scenes` 不存在由「工具面」一段钉住）。
   }
 
   // ③ RETEST-03：`rp_assets get` / `tag` 的错误信息要分清「没传」和「不存在」
@@ -918,10 +1143,19 @@ if (rpTable) {
     check('去重：标记 deduped', again.deduped, true);
     check('去重：新标签并进已有那条', (again.tags ?? []).slice().sort().join(','), '乙,甲');
     check('去重：磁盘上只有一份文件', readdirSync(join(ws, 'rp-sessions', sid, 'assets', 'scenes')).length, 1);
-    // 不同分类、不同字节都不该被合并
-    await D.archiveAsset(sid, { bytes: bytesA, kind: 'portrait', ext: 'png', label: '同一张但算立绘' });
+    // ⚠️ **同一份字节、换一个 kind 再收，也还是同一张图** —— 这是「内容优先查重」那条真 bug 的
+    // 回归闸门：旧实现按 `kind + 字节数` 查重，于是同一张图先当 scene 收一次、再被
+    // `rp_assets(action:"import", kind:"item")` 收一次就会存成两份（图墙里看着是两张，实际同图）。
+    // 现在「字节相同就是同一张」，与调用方这次报的 kind 无关。
+    const crossKind = await D.archiveAsset(sid, { bytes: bytesA, kind: 'portrait', ext: 'png', label: '同一张但算立绘' });
+    check('去重：同字节换 kind 也不新增条目', D.loadAssets(sid).assets.length, 1);
+    check('去重：换 kind 时返回已有那条', crossKind.id, one.id);
+    check('去重：换 kind 也标 deduped', crossKind.deduped, true);
+    // 原来那条已经明确是 scene（不是兜底的 other）→ 不被后来的 portrait 改掉
+    check('去重：不因后来的 kind 改掉原分类', crossKind.kind, 'scene');
+    // 「不同字节」仍然各占一条：字节不同就是不同的图
     await D.archiveAsset(sid, { bytes: bytesB, kind: 'scene', ext: 'png', label: '乙场景' });
-    check('去重：不同分类不合并', D.loadAssets(sid).assets.length, 3);
+    check('去重：字节不同照常新增', D.loadAssets(sid).assets.length, 2);
     check('去重：索引里记了 sha256', Boolean(D.loadAssets(sid).assets[0].sha256), true);
     // **并发**归档同一张图也只能留一条（查重必须在写锁里，锁外查会双双通过）
     const sid2 = crypto.randomUUID();
@@ -1378,11 +1612,12 @@ if (onSessionCreated) {
   const CHILD_KEYS = crypto.randomUUID();
 
   // 父会话：写一份 DM 配置（世界 + 角色卡 + 随机表）
+  // ⚠️ `styleNotes`（风格备注）不再解析 —— 本地生图搬走后它没有消费者，
+  //    所以这里也不再断言它被继承（送了也只会被忽略，断言它等于断言一个不存在的行为）。
   await callPost('/rp-tools/session', {
     sessionId: PARENT,
     world: '灰烬纪元：诸神陨落后的第三百年',
     campaign: { name: '灰烬纪元', prompt_prefix: 'cinematic lighting' },
-    styleNotes: '暗调高对比',
     characters: [{ name: '凯尔', appearance: '十七岁少年，凌乱短发，黑色斗篷' }],
     tables: [{ name: '遭遇表', dice: '1d6', entries: ['狼群', '盗匪', '幽灵'] }],
   });
@@ -1394,7 +1629,6 @@ if (onSessionCreated) {
   check('fork：世界设定被继承', child.session.world, '灰烬纪元：诸神陨落后的第三百年');
   check('fork：战役名被继承', child.session.campaign?.name, '灰烬纪元');
   check('fork：提示词前缀被继承', child.session.campaign?.prompt_prefix, 'cinematic lighting');
-  check('fork：风格备注被继承', child.session.styleNotes, '暗调高对比');
   check('fork：角色卡被继承', child.session.characters?.[0]?.name, '凯尔');
   check('fork：随机表被继承', child.session.tables?.[0]?.entries?.length, 3);
   check('fork：子会话仍是 DM 会话', child.isDm, true);
@@ -2002,7 +2236,12 @@ if (onSessionCreated) {
   } else { console.log('WARN: rp_lore 未注册'); fail++; }
 }
 
-// ── rp_session：DM 设定与本会话生图策略（Agent 与面板共用同一份配置）──────────
+// ── rp_session：DM 设定 / 战役名（Agent 与面板共用同一份配置）────────────────
+// ⚠️ 原先这一段还测「本会话生图策略」（`images_enabled` / `images_first_appearance` /
+// `images_key_scenes`）：本地生图整块搬走后，这些参数与 `session.dm.images` 都不再解析，
+// 相关断言随之删除。**保留下来的是同一条真事故的回归闸门**：这几个开关当年和 DM 正文
+// 同在 `session.dm` 下，写错一次就会在改开关时把 DM 正文清空。现在最容易踩到同一脚的
+// 是 `campaign_name` / `prompt_prefix`，所以改成用它们来验「改一个键不清掉正文」。
 {
   const D = mod.__debug;
   const rpSession = tools.get('rp_session');
@@ -2013,61 +2252,43 @@ if (onSessionCreated) {
     D.setSessionCwd(SID, cwd);
     const exec = { agent: { id: `session-${SID}` } };
     const read = () => D.loadSession(SID);
+    const DM_PROMPT = 'DM 规则：扮演所有 NPC，第二人称叙述。';
 
-    await rpSession.execute({ action: 'set', dm_prompt: 'DM 规则：扮演所有 NPC，第二人称叙述。' }, exec);
-    check('rp_session：dm_prompt 落盘', read().dm?.prompt, 'DM 规则：扮演所有 NPC，第二人称叙述。');
+    await rpSession.execute({ action: 'set', dm_prompt: DM_PROMPT }, exec);
+    check('rp_session：dm_prompt 落盘', read().dm?.prompt, DM_PROMPT);
 
-    // 只改生图开关**不能**把 DM 正文清掉（两者同在 session.dm 下，最容易写错）
-    await rpSession.execute({ action: 'set', images_enabled: false }, exec);
-    check('rp_session：关生图后 DM 正文还在', read().dm?.prompt, 'DM 规则：扮演所有 NPC，第二人称叙述。');
-    check('rp_session：images_enabled=false 落盘', read().dm?.images?.enabled, false);
-    // 面板与工具共用同一份配置：常驻段渲染必须跟着变（这里趁 enabled 还是 false 时验）
-    check('rp_session：常驻段反映生图开关', D.renderDmSetup(read()).includes('生图：**关**'), true);
+    // 只改别的键**不能**把 DM 正文清掉（它们同在 session.dm / session.campaign 下，最容易写错）
+    await rpSession.execute({ action: 'set', campaign_name: '长安十二时辰' }, exec);
+    check('rp_session：改战役名后 DM 正文还在', read().dm?.prompt, DM_PROMPT);
+    check('rp_session：战役名落盘', read().campaign?.name, '长安十二时辰');
+    await rpSession.execute({ action: 'set', prompt_prefix: '国风、水墨、暖色' }, exec);
+    check('rp_session：改提示词前缀后 DM 正文仍在', read().dm?.prompt, DM_PROMPT);
+    check('rp_session：提示词前缀落盘', read().campaign?.prompt_prefix, '国风、水墨、暖色');
 
-    await rpSession.execute({ action: 'set', images_enabled: true, images_first_appearance: false, images_key_scenes: false }, exec);
-    check('rp_session：总开关打开', read().dm?.images?.enabled, true);
-    check('rp_session：首次出场可单独关', read().dm?.images?.firstAppearance, false);
-    check('rp_session：重要场景可单独关', read().dm?.images?.keyScenes, false);
-    check('rp_session：关生图后 DM 正文仍在（第二次校验）', read().dm?.prompt, 'DM 规则：扮演所有 NPC，第二人称叙述。');
+    // 反证：已删除的生图参数**不再写进会话配置**（写了会让「这插件还能出图」的假象留在盘上）
+    await rpSession.execute({ action: 'set', images_enabled: true, images_key_scenes: false }, exec);
+    check('rp_session：已删的生图开关不再落盘', read().dm?.images, undefined);
+    check('rp_session：传了已删参数也不影响 DM 正文', read().dm?.prompt, DM_PROMPT);
 
-    await rpSession.execute({ action: 'set', images_first_appearance: true, images_key_scenes: true }, exec);
-    const on = D.renderDmSetup(read());
-    check('rp_session：常驻段反映打开状态', on.includes('生图：开（角色第一次出场给 1 张立绘；重要场景给 1 张氛围图）'), true);
-    // 每轮都在的常驻行里也要提醒**并发出图**（一张 15~25 秒，串行等于把等待叠加）
-    check('rp_session：常驻段提醒并发出图', on.includes('要 2 张以上时在同一步里并发发出多个'), true);
-    check('rp_session：常驻段带上 DM 设定正文', on.includes('DM 规则：扮演所有 NPC'), true);
+    // 面板与工具共用同一份配置：常驻段渲染要跟着变
+    const setup = D.renderDmSetup(read());
+    check('rp_session：常驻段带上 DM 设定正文', setup.includes('DM 规则：扮演所有 NPC'), true);
+    // 「生图：开/关」那行没了 —— 出图不是本插件的事了，常驻段只留一句配图指路
+    check('rp_session：常驻段不再有生图开关行', setup.includes('生图：'), false);
+    check('rp_session：常驻段指向宿主的 generate_image',
+      setup.includes('本插件不出图') && setup.includes('generate_image'), true);
 
-    // get 的输出要把这两个都报出来（不然 DM 只能靠猜自己设过什么）
+    // get 的输出要把设过的都报出来（不然 DM 只能靠猜自己设过什么）
     const got = await rpSession.execute({ action: 'get' }, exec);
     check('rp_session：get 报告 DM 设定字数', got.lines.some((l) => l.includes('DM 设定：')), true);
-    check('rp_session：get 报告生图开关', got.lines.some((l) => l.startsWith('本会话生图：开')), true);
+    check('rp_session：get 报告战役名', got.lines.some((l) => l.includes('长安十二时辰')), true);
+    check('rp_session：get 给出全局卡库配置文件路径', got.lines.some((l) => l.includes('全局卡库配置：')), true);
+    check('rp_session：get 指向 generate_image 与 rp_assets 入库',
+      got.lines.some((l) => l.includes('generate_image') && l.includes('rp_assets')), true);
+    check('rp_session：get 不再报告本会话生图', got.lines.some((l) => l.startsWith('本会话生图')), false);
   } else { console.log('WARN: rp_session 未注册'); fail++; }
 }
 
-// ── 角色固定种子（跨场景一致性） ──────────────────────────────────────────
-{
-  const D = mod.__debug;
-  const session = {
-    characters: [
-      { name: '祁俊', appearance: '少年' },
-      { name: '祝婉宁', appearance: '美妇' },
-    ],
-  };
-  check('种子：命中单个角色时识别出名字', D.characterInPrompt(session, '祁俊站在雨里'), '祁俊');
-  check('种子：同一角色 → 同一 seed（跨场景稳定）',
-    D.characterSeed(session, '祁俊站在雨里'), D.characterSeed(session, '祁俊在酒楼上喝酒'));
-  check('种子：不同角色 → 不同 seed',
-    D.characterSeed(session, '祁俊出剑') === D.characterSeed(session, '祝婉宁出剑'), false);
-  check('种子：seed 是 32 位以内非负整数',
-    Number.isInteger(D.characterSeed(session, '祁俊')) && D.characterSeed(session, '祁俊') >= 0 && D.characterSeed(session, '祁俊') < 2147483647, true);
-
-  // 多角色同框：主体说不清，不套任何人的种子（否则等于偏向其中一个）
-  check('种子：两个角色同框时不固定', D.characterInPrompt(session, '祁俊与祝婉宁对峙'), '');
-  check('种子：两个角色同框时无 seed', D.characterSeed(session, '祁俊与祝婉宁对峙'), undefined);
-  check('种子：未登记的角色不参与', D.characterInPrompt(session, '路人甲走过'), '');
-  check('种子：空角色表不报错', D.characterSeed({ characters: [] }, '祁俊'), undefined);
-  check('种子：session 为空不报错', D.characterSeed(null, '祁俊'), undefined);
-}
 
 // ── 状态追踪（rp_state）────────────────────────────────────────────────────
 {
@@ -2171,11 +2392,14 @@ if (onSessionCreated) {
   const GET_ROUTES = [
     ['/rp-tools/state', ''],
     ['/rp-tools/tools', ''],
-    ['/rp-tools/check', ''],
-    ['/rp-tools/loras', ''],
+    // ⚠️ `/rp-tools/check` 与 `/rp-tools/loras` 已随本地生图一起删除（ComfyUI 连通性与 LoRA 清单
+    // 都只有出图才用得上），`/rp-tools/media` 与 `/rp-tools/preview` 同理 —— 这几条不该再出现，
+    // 「删干净了」由下面「已删路由不存在」那一段正面钉住，而不是在这里少列两行。
     ['/rp-tools/inject', ''],
     ['/rp-tools/cards', '?limit=5'],
     ['/rp-tools/session', `?sessionId=${crypto.randomUUID()}`],
+    // 全局工具放行名单（1.15.0 起）：GET 要能列出本机存在的全局工具供设置页勾选
+    ['/rp-tools/global-tools', ''],
   ];
   for (const [routePath, query] of GET_ROUTES) {
     let status = -1; let detail = '';
@@ -2188,98 +2412,13 @@ if (onSessionCreated) {
     check(`路由体检 ${routePath} 返回 2xx`, status >= 200 && status < 300, true);
     if (!(status >= 200 && status < 300)) console.log(`       ↳ status=${status} body=${detail}`);
   }
-}
-
-// ── 风格库增删 + LoRA 清单 ────────────────────────────────────────────────
-const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
-
-// 新增一个风格（带 LoRA），并同时提交字段补丁
-{
-  const res = await callPost('/rp-tools/config', {
-    styleOps: [{ action: 'add', key: NEWKEY }],
-    styles: { [NEWKEY]: { label: '冒烟风格', trigger: 'smoke trigger', lora: 'krea2_darkbrush.safetensors', cfg: 1.5, steps: 10 } },
-  });
-  check('新增风格 ok', res.json.ok, true);
-  const st = res.json.config?.styles?.[NEWKEY];
-  check('新增风格：label 落盘', st?.label, '冒烟风格');
-  check('新增风格：lora 落盘', st?.lora, 'krea2_darkbrush.safetensors');
-  check('新增风格：cfg 落盘', st?.cfg, 1.5);
-  check('新增风格：模板字段保留 sizes', Array.isArray(st?.sizes?.scene), true);
-  check('新增风格：摘要带 builtin=false', res.json.styles?.find((s) => s.key === NEWKEY)?.builtin, false);
-  check('新增风格无错误', res.json.styleErrors, []);
-}
-
-// 重复 key 应报错且不改动原条目
-{
-  const res = await callPost('/rp-tools/config', {
-    styleOps: [{ action: 'add', key: NEWKEY }],
-    styles: { [NEWKEY]: { label: '不该覆盖' } },
-  });
-  check('重复新增被拒（有错误）', res.json.styleErrors?.length, 1);
-  check('重复新增未覆盖原 label', res.json.config?.styles?.[NEWKEY]?.label, '冒烟风格');
-}
-
-// 非法 key 被拒
-{
-  const res = await callPost('/rp-tools/config', { styleOps: [{ action: 'add', key: 'bad key!' }] });
-  check('非法 key 被拒', res.json.styleErrors?.length, 1);
-}
-
-// 删除
-{
-  const res = await callPost('/rp-tools/config', { styleOps: [{ action: 'remove', key: NEWKEY }] });
-  check('删除风格 ok', res.json.ok, true);
-  check('删除风格：已从配置移除', res.json.config?.styles?.[NEWKEY], undefined);
-  check('删除风格：removedStyles 记录', res.json.removedStyles, [NEWKEY]);
-}
-
-// 风格库只留「二次元 / 写实 / 黑白漫画」：老配置里的旧内置键要被清掉
-{
-  const state = (await callGet('/rp-tools/state')).json;
-  const keys = Object.keys(state.config.styles).filter((k) => state.config.styles[k].builtin !== false).sort();
-  const builtinKeys = state.styles.filter((s) => s.builtin).map((s) => s.key).sort();
-  check('风格：内置只剩三个', builtinKeys.join(','), 'manga,uncensored_anime,uncensored_real');
-  check('风格：二次元就是用户那套（自带 workflow）', state.styles.find((s) => s.key === 'uncensored_anime')?.label, '二次元');
-  check('风格：写实就是用户那套', state.styles.find((s) => s.key === 'uncensored_real')?.label, '写实');
-  check('风格：黑白漫画还在', state.styles.find((s) => s.key === 'manga')?.label, '黑白漫画');
-  check('风格：二次元用用户的 workflow', state.config.styles.uncensored_anime?.workflow, 'uncensored_anime');
-  check('风格：写实用用户的 workflow', state.config.styles.uncensored_real?.workflow, 'uncensored_real');
-  check('风格：旧内置风格已移除', ['darkbrush', 'dotmatrix', 'kidsdrawing', 'neondrip', 'rainywindow', 'retroanime', 'softwatercolor', 'sunsetblur', 'vintagetarot', 'anime', 'realistic']
-    .some((k) => state.config.styles[k]), false);
-  check('风格：默认风格是二次元', state.config.defaultStyle, 'uncensored_anime');
-  // 尺寸调小：三档都是小尺寸（scene 768×432 / portrait 512×768 / item 512×512，1.12.8 起的出厂值）
-  const sizesOf = (k) => state.config.styles[k]?.sizes;
-  check('风格尺寸：二次元的场景尺寸变小', sizesOf('uncensored_anime')?.scene, [768, 432]);
-  check('风格尺寸：二次元的立绘尺寸变小', sizesOf('uncensored_anime')?.portrait, [512, 768]);
-  check('风格尺寸：写实同步', sizesOf('uncensored_real')?.item, [512, 512]);
-  check('风格尺寸：黑白漫画也变小（krea2 老默认 1344×768）', sizesOf('manga')?.scene, [768, 432]);
-  // 用户自己改过的尺寸不该被迁移覆盖
-  await callPost('/rp-tools/config', { styles: { manga: { sizes: { scene: [1536, 864] } } } });
-  const after = (await callGet('/rp-tools/state')).json.config.styles.manga.sizes.scene;
-  check('风格尺寸：用户自定义的尺寸不被迁移覆盖', after, [1536, 864]);
-  void keys;
-}
-
-// 内置风格也不能通过接口被删掉（客户端不给按钮，但接口要挡住手抖）
-{
-  const res = await callPost('/rp-tools/config', { styleOps: [{ action: 'remove', key: 'manga' }] });
-  const stillThere = Boolean(res.json.config?.styles?.manga);
-  check('内置风格删除被挡（仍在）', stillThere, true);
-}
-
-// LoRA 清单：ComfyUI 在线就是真清单，离线则应是结构化失败（不能抛异常）
-{
-  const res = await callGet('/rp-tools/loras');
-  check('loras 路由 status=200', res.status, 200);
-  const shapeOk = Array.isArray(res.json.loras) && typeof res.json.ok === 'boolean';
-  check('loras 返回结构正确', shapeOk, true);
-  if (res.json.ok) {
-    check('loras 每项有 name/krea2 字段', typeof res.json.loras[0]?.name === 'string' && typeof res.json.loras[0]?.krea2 === 'boolean', true);
-    console.log(`       （ComfyUI 在线，读到 ${res.json.count} 个 LoRA）`);
-  } else {
-    console.log(`       （ComfyUI 离线：${res.json.error}）`);
+  // 已删的四条路由必须**真的不在**注册表里：`routes.get()` 拿不到就是没有。
+  // 只断言「上面的清单里没列」是假绿 —— 路由还在、只是没人打它而已。
+  for (const gone of ['/rp-tools/media', '/rp-tools/preview', '/rp-tools/loras', '/rp-tools/check']) {
+    check(`已删路由 ${gone} 未注册`, routes.has(gone), false);
   }
 }
+
 
 // ── PNG 故事书：卡库列表 / 解析 / 导入 / 卡面 ──────────────────────────────
 // 用临时目录当卡库（含一张真 PNG），并顺手验证路径逃逸被挡 ——
@@ -2473,44 +2612,47 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     check('gate：缺 sessionId → 400', noId.status, 400);
   }
 
-  // ── 立绘持久化：生成结果记进会话配置 ─────────────────────────────────
-  // ★ 用户报的「角色卡生成的立绘下次打开面板就消失」：立绘原先只活在面板组件的 state 里。
-  //   现在把 (file, subfolder, type) 三要素记进会话配置（不记 URL：origin 会变），
-  //   下次打开面板用同样的三要素重新拼出媒体 URL。
+  // ── 立绘清理：老版本的 generated 引用由 clear 抹掉 ───────────────────────
+  // ★ 用户报的「角色卡生成的立绘下次打开面板就消失」那条链路的**残留部分**：
+  //   老版本把 (file, subfolder, type) 三要素记进会话配置（不记 URL：origin 会变）。
+  //   本地生图搬走后那些三要素全成了死引用（指向 ComfyUI 的 output 目录），
+  //   所以 `POST /rp-tools/portrait` 只剩 clear 一个动作，且**连 style/elapsedMs/at 一起抹**。
+  //   注意 `card`（卡面）与 `imported`（玩家导入）不是一回事，清除时不许动它们。
   {
     const sid = crypto.randomUUID();
-    const saved = await callPost('/rp-tools/portrait', {
-      sessionId: sid, name: '阿岚', action: 'save',
-      file: 'rp-portrait-1.png', subfolder: 'rp', type: 'output',
-      style: '二次元', elapsedMs: 18300,
-    });
-    check('portrait：保存成功', saved.status, 200);
-    check('portrait：会话配置里记下了三要素', saved.json.portraits?.['阿岚']?.generated?.file, 'rp-portrait-1.png');
-    check('portrait：subfolder 也记下', saved.json.portraits?.['阿岚']?.generated?.subfolder, 'rp');
-    check('portrait：风格与耗时一起记', saved.json.portraits?.['阿岚']?.style, '二次元');
+    // 直接落一份「老配置」到盘上（含 generated + style + elapsedMs + card 并存）
+    const legacyFile = join(TEST_HOME, 'data', 'dsh-rp-tools', 'sessions', `${sid}.json`);
+    mkdirSync(dirname(legacyFile), { recursive: true });
+    writeFileSync(legacyFile, JSON.stringify({
+      sessionId: sid,
+      characters: [{ name: '阿岚' }],
+      portraits: {
+        阿岚: {
+          generated: { file: 'rp-portrait-1.png', subfolder: 'rp', type: 'output' },
+          style: '二次元', elapsedMs: 18300, at: '2026-09-12T01:00:00.000Z',
+          card: 'cards/古风/长安.card.png',
+        },
+      },
+    }, null, 2), 'utf8');
 
-    // 落盘了才算数（重启后 / 下次打开面板靠它）
-    const file = join(TEST_HOME, 'data', 'dsh-rp-tools', 'sessions', `${sid}.json`);
-    const onDisk = JSON.parse(readFileSync(file, 'utf8'));
-    check('portrait：确实写进了会话配置文件', onDisk.portraits?.['阿岚']?.generated?.file, 'rp-portrait-1.png');
-
-    // 再存一次不能把卡面（导入卡时登记的 card）冲掉 —— 两者是并存的
-    await callPost('/rp-tools/portrait', {
-      sessionId: sid, name: '阿岚', action: 'save', file: 'rp-portrait-2.png',
-    });
-    const second = await callGet('/rp-tools/session', `?sessionId=${sid}`);
-    check('portrait：重复保存覆盖生成图', second.json.session?.portraits?.['阿岚']?.generated?.file, 'rp-portrait-2.png');
-
-    // 清掉生成图（面板里点「收起」/删角色）
     const cleared = await callPost('/rp-tools/portrait', { sessionId: sid, name: '阿岚', action: 'clear' });
+    check('portrait：clear 成功', cleared.status, 200);
     check('portrait：清除后没有 generated', cleared.json.portraits?.['阿岚']?.generated, undefined);
-    const afterClear = await callGet('/rp-tools/session', `?sessionId=${sid}`);
-    check('portrait：清除已落盘', afterClear.json.session?.portraits?.['阿岚'], undefined);
+    check('portrait：连 style / elapsedMs 一起抹掉（不留半条死引用）',
+      `${cleared.json.portraits?.['阿岚']?.style}|${cleared.json.portraits?.['阿岚']?.elapsedMs}`, 'undefined|undefined');
+    check('portrait：卡面不受清除影响', cleared.json.portraits?.['阿岚']?.card, 'cards/古风/长安.card.png');
+    // 落盘了才算数（重启后 / 下次打开面板靠它）
+    const onDisk = JSON.parse(readFileSync(legacyFile, 'utf8'));
+    check('portrait：确实写进了会话配置文件', onDisk.portraits?.['阿岚']?.generated, undefined);
+    check('portrait：卡面也落盘保留', onDisk.portraits?.['阿岚']?.card, 'cards/古风/长安.card.png');
 
     // 参数缺失要明确报错，别静默当成功
-    check('portrait：缺 sessionId → 400', (await callPost('/rp-tools/portrait', { name: 'x', file: 'a.png' })).status, 400);
-    check('portrait：缺 name → 400', (await callPost('/rp-tools/portrait', { sessionId: sid, file: 'a.png' })).status, 400);
-    check('portrait：缺 file → 400', (await callPost('/rp-tools/portrait', { sessionId: sid, name: 'x' })).status, 400);
+    check('portrait：缺 sessionId → 400', (await callPost('/rp-tools/portrait', { name: 'x', action: 'clear' })).status, 400);
+    check('portrait：缺 name → 400', (await callPost('/rp-tools/portrait', { sessionId: sid, action: 'clear' })).status, 400);
+    check('portrait：缺 action → 400（不许默认成 clear）',
+      (await callPost('/rp-tools/portrait', { sessionId: sid, name: 'x' })).status, 400);
+    check('portrait：带 file 的请求 → 400（只有 clear 一条路）',
+      (await callPost('/rp-tools/portrait', { sessionId: sid, name: 'x', file: 'a.png' })).status, 400);
   }
 
   const rel = 'cards/测试分类/烟测卡.card.png';
@@ -2660,7 +2802,7 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     check('迁移：正常角色不受影响', mod.__debug.isDmCardData({ name: '弥珥·索兰', personality: '安静、守规矩的候补圣女。' }), false);
   }
 
-  // ── DM 设定（会话隔离）：生图开关 + 正文，读写与注入 ─────────────────────
+  // ── DM 设定（会话隔离）：正文读写与注入 ───────────────────────────────────
   {
     const dmSid2 = crypto.randomUUID();
     mod.__debug.setSessionCwd(dmSid2, ws);
@@ -2670,18 +2812,21 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     });
     check('DM 设定：保存成功', put.json.ok, true);
     check('DM 设定：正文落盘', String(put.json.session?.dm?.prompt).includes('中立裁决'), true);
-    check('DM 设定：生图开关落盘', put.json.session?.dm?.images?.keyScenes, false);
+    // `dm.images`（本会话生图开关）已随本地生图一起作废：老数据里可能还留着，
+    // 但 `loadSession` 不再解析它，所以送上来也不该再出现（留着会让「这插件还能出图」的假象留在盘上）。
+    check('DM 设定：已删的生图开关不再落盘', put.json.session?.dm?.images, undefined);
     const back = await callGet('/rp-tools/session', `?sessionId=${dmSid2}`);
     check('DM 设定：读回来一致', String(back.json.session?.dm?.prompt).includes('中立裁决'), true);
-    // 注入：生图开关 + 已有立绘地址 + DM 正文都要进常驻段（DM 才知道要不要出图、用哪张图）
+    // 注入：已有立绘地址 + DM 正文都要进常驻段（DM 才知道该用哪张图、按什么规则带团）
     const sessObj = { ...back.json.session, portraits: { 弥珥: { card: 'x/弥珥.png' } } };
     const standing = mod.__debug.buildStandingText(sessObj, {});
     check('DM 设定：进了常驻段', standing.includes('【本会话设定】'), true);
     check('DM 设定：正文进常驻段', standing.includes('中立裁决'), true);
-    check('DM 设定：生图开关进常驻段', standing.includes('生图：开'), true);
-    check('DM 设定：重要场景关掉时不列进频次', standing.includes('重要场景给 1 张'), false);
+    // 「生图：开/关」那行没了；取而代之的是一句配图指路（本插件不出图）
+    check('DM 设定：常驻段不再有生图开关行', standing.includes('生图：'), false);
+    check('DM 设定：常驻段指向宿主的 generate_image', standing.includes('generate_image'), true);
     check('DM 设定：已有立绘给出可直接用的地址', standing.includes('/rp-tools/card-image?path=x%2F%E5%BC%A5%E7%8F%A5.png'), true);
-    check('DM 设定：明说先找现成的、不要再生成', standing.includes('有就直接展示，不要再生成'), true);
+    check('DM 设定：明说先找现成的、不要再生成', standing.includes('有就直接展示，不要重新生成'), true);
     // **立绘复用**（用户要求）：导入卡的卡面就是它的立绘 —— 常驻段要把它列成可用图，
     // DM 第一次出场直接展示这张，不再花 15~25 秒重出一张。
     {
@@ -2710,20 +2855,21 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
       }, {});
       check('立绘复用：认不出归属时只列成卡面', multi.includes('卡面《某故事书》'), true);
       check('立绘复用：认不出归属时不硬塞给角色', multi.includes('（卡面＝立绘）'), false);
-      // 已经有真立绘时不重复列卡面（避免同一张图占两行、让 DM 以为有两张）
-      const hasGen = mod.__debug.buildStandingText({
+      // ⚠️ 「已经有 generated 立绘时不再列卡面」这条断言**已作废**：`generated`（老版本存的
+      // ComfyUI 三要素）媒体代理删掉之后就是死引用，`renderDmSetup` 只认 `imported` 与 `card`。
+      // 所以现在「只有 generated」等于「一张可用图都没有」→ 卡面照样列出来，这是**对的**
+      // （否则老会话会变成一张图都不给 DM，而它磁盘上其实有那张卡面）。
+      const legacyGen = mod.__debug.buildStandingText({
         ...sessObj,
         portraits: { 星渊: { generated: { file: 'p.png', subfolder: '', type: 'output' } } },
         characters: [{ name: '星渊' }],
         cover: { card: 'a/b.png', name: '星渊' },
       }, {});
-      check('立绘复用：已有生成立绘时不再列卡面', hasGen.includes('（卡面＝立绘）'), false);
+      check('立绘复用：只有死引用 generated 时仍列出卡面', legacyGen.includes('星渊（卡面＝立绘）'), true);
+      check('立绘复用：死引用 generated 不会被当成可用图', legacyGen.includes('/rp-tools/media?'), false);
     }
-    // 关掉生图 → 常驻段必须明确写「关」，否则 DM 还是会去调工具
-    const offStanding = mod.__debug.buildStandingText({ ...sessObj, dm: { ...sessObj.dm, images: { enabled: false, firstAppearance: true, keyScenes: true } } }, {});
-    check('DM 设定：关掉生图时写明「关」', offStanding.includes('生图：**关**'), true);
     // 没有任何世界观内容时，标题不该是「世界观已确立」
-    const bare = mod.__debug.buildStandingText({ sessionId: 'x', dm: { prompt: '', images: { enabled: true } } }, {});
+    const bare = mod.__debug.buildStandingText({ sessionId: 'x', dm: { prompt: '' } }, {});
     check('只有 DM 设定时不谎称世界观已确立', bare.includes('本场跑团的世界观'), false);
     check('只有 DM 设定时仍有「本会话设定」', bare.includes('## 本会话设定'), true);
   }
@@ -3028,32 +3174,6 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('迁移过之后删除不再补回', Object.hasOwn(again.json.config?.cards?.macros ?? {}, 'user'), false);
 }
 
-// ── 降尺寸迁移：全局 imageSizes 还等于**旧出厂值**（= 用户没动过）就换成新出厂值 ──
-// 出图时间基本正比于像素；聊天里根本用不到 1024 宽，所以出厂值调小了。
-// 但**自己改过尺寸的人不该被静默改掉**（§9 不替用户猜）。
-{
-  const stylesFile = join(TEST_HOME, 'data', 'dsh-rp-tools', 'styles.json');
-  const base = JSON.parse(readFileSync(stylesFile, 'utf8'));
-  // ① 没动过（旧出厂值）→ 跟着换成新的
-  writeFileSync(stylesFile, JSON.stringify({
-    ...base, imageSizes: { scene: [1024, 576], portrait: [640, 896], item: [768, 768] },
-  }, null, 2), 'utf8');
-  const bumped = await callGet('/rp-tools/state');
-  check('降尺寸：旧出厂值被换成新值（场景）', bumped.json.config?.imageSizes?.scene, [768, 432]);
-  check('降尺寸：旧出厂值被换成新值（立绘）', bumped.json.config?.imageSizes?.portrait, [512, 768]);
-  check('降尺寸：旧出厂值被换成新值（道具）', bumped.json.config?.imageSizes?.item, [512, 512]);
-  // ② 自己改过 → 原样保留
-  writeFileSync(stylesFile, JSON.stringify({
-    ...base, imageSizes: { scene: [1200, 700], portrait: [640, 896], item: [640, 640] },
-  }, null, 2), 'utf8');
-  const kept2 = await callGet('/rp-tools/state');
-  check('降尺寸：自定义尺寸不动', kept2.json.config?.imageSizes?.scene, [1200, 700]);
-  check('降尺寸：只有等于旧出厂值的那档才换', kept2.json.config?.imageSizes?.portrait, [512, 768]);
-  check('降尺寸：另一档自定义也不动', kept2.json.config?.imageSizes?.item, [640, 640]);
-  // 还原，别影响后面的用例
-  writeFileSync(stylesFile, JSON.stringify(base, null, 2), 'utf8');
-  await callGet('/rp-tools/state');
-}
 
 // ── 自动宏：日期/时间及其**分量**都由宿主现算（用户不用填）────────────────────
 // 用户反馈「很多宏其实可以自动设置」——`{{year}}年{{month}}月{{day}}日` 这种写法在卡里
@@ -3080,36 +3200,6 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
   check('设置页：宿主给出自动宏名单', Array.isArray(st.json.autoMacros) && st.json.autoMacros.includes('year'), true);
 }
 
-// ── 全局图像尺寸（设置页「图像」里那三行）───────────────────────────────────
-// 用户要求：3 个图像尺寸开放全局编辑。以前尺寸藏在每个风格里（界面只能看不能改）。
-// 解析顺序：全局 imageSizes 优先 → 风格自己的 sizes（手写特例）→ 兜底。
-{
-  check('尺寸：没有全局值时用风格自己的',
-    mod.__debug.resolveImageSizes({ styles: { s: { sizes: { scene: [800, 600] } } } }, 's', 'scene'), [800, 600]);
-  const cfg1 = {
-    imageSizes: { scene: [1024, 576], portrait: [640, 896], item: [768, 768] },
-    styles: { s: { sizes: { scene: [800, 600] } } },
-  };
-  check('尺寸：全局优先于风格（界面改了就该生效）', mod.__debug.resolveImageSizes(cfg1, 's', 'scene'), [1024, 576]);
-  check('尺寸：按用途取（立绘）', mod.__debug.resolveImageSizes(cfg1, 's', 'portrait'), [640, 896]);
-  check('尺寸：按用途取（道具）', mod.__debug.resolveImageSizes(cfg1, 's', 'item'), [768, 768]);
-  check('尺寸：全局缺该用途时回落到全局 scene',
-    mod.__debug.resolveImageSizes({ imageSizes: { scene: [900, 500] } }, 's', 'portrait'), [900, 500]);
-  check('尺寸：全局值非法（<256）时不采信，退回风格',
-    mod.__debug.resolveImageSizes({ imageSizes: { scene: [10, 10] }, styles: { s: { sizes: { scene: [800, 600] } } } }, 's', 'scene'), [800, 600]);
-  check('尺寸：都没有时用兜底值', mod.__debug.resolveImageSizes({}, 's', 'portrait'), [768, 1024]);
-
-  // 保存接口：只收那三个槽位 + 合法宽高；非法值不动旧值
-  const saved = await callPost('/rp-tools/config', { imageSizes: { scene: [1200, 700], portrait: [640, 960], bogus: [100, 100] } });
-  check('尺寸：保存全局尺寸', saved.json.config?.imageSizes?.scene, [1200, 700]);
-  check('尺寸：保存立绘尺寸', saved.json.config?.imageSizes?.portrait, [640, 960]);
-  check('尺寸：未知槽位被忽略', Object.hasOwn(saved.json.config?.imageSizes ?? {}, 'bogus'), false);
-  check('尺寸：道具那档保持原值', saved.json.config?.imageSizes?.item, [512, 512]);
-  const bad = await callPost('/rp-tools/config', { imageSizes: { scene: [10, 10] } });
-  check('尺寸：非法宽高不改动旧值', bad.json.config?.imageSizes?.scene, [1200, 700]);
-  const kept = await callGet('/rp-tools/state');
-  check('尺寸：落盘后 state 里读得到', kept.json.config?.imageSizes?.scene, [1200, 700]);
-}
 
 // ── 封面迁移：老数据里卡面挂在「卡名」这个假角色名下 ────────────────────────
 // 1.10.2 之前导入会把卡面登记成 `portraits[卡名] = { card }`，而那个「卡名」往往根本不是角色
@@ -3166,27 +3256,55 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     check('预设：禁止同一批数据发两份', prefix.includes('同一批数据只出现一次'), true);
     check('预设：图片用 image 组件且不许贴裸 URL',
       prefix.includes('图片一律用 `image` 组件') && prefix.includes('不要贴裸 URL'), true);
-    // 出图慢（一张 15~25 秒）→ 必须提醒 DM **一次发多个调用**，别一张一张串行等
-    check('预设：提醒并发出图', prefix.includes('一次要几张就一次发几个调用'), true);
-    check('预设：串行的代价说清楚了', prefix.includes('串行') && prefix.includes('15~25 秒'), true);
-    check('预设：多张图放同一个围栏', prefix.includes('多张图放在**同一个**'), true);
-    // 立绘复用：先查「已有可用图」，卡面就是角色卡的立绘，别重复生成
-    check('预设：要求先复用已有图', prefix.includes('先查「已有可用图」，能复用就不生成'), true);
-    check('预设：明确指出卡面＝角色卡的立绘', prefix.includes('导入卡的卡面') && prefix.includes('那张 PNG 就是它的立绘'), true);
-    check('预设：说明出图会自动记成角色立绘', prefix.includes('第一张图会自动记成它的立绘'), true);
-    // 已有立绘绝不覆盖（DM 自动登记那条路径）；不满意让玩家用面板的按钮换
-    check('预设：说明已有立绘不会被覆盖', prefix.includes('已有立绘不会被覆盖'), true);
-    // 立绘是纵向的：不传尺寸时单人 → 纵向，dm 不必自己猜
-    check('预设：说明不传尺寸时单人出纵向立绘', prefix.includes('画面里只有一个已登记角色 → 出纵向立绘'), true);
-    // 叙事里可以直接用已有立绘（玩家要求；零成本，不用重新生图）
-    check('预设：允许叙事时直接摆角色立绘', prefix.includes('叙事时也可以把角色立绘直接摆进回复里'), true);
-    check('预设：可复用的图包含玩家导入的', prefix.includes('玩家自己导入的都算'), true);
-    // 资源库：出图必须留 label/tags，否则以后找不到（只有一处提醒是不够的，persona 每轮都在）
-    check('预设：要求出图时填 label 和 tags', prefix.includes('出图时一定带上 `label` 和 `tags`'), true);
-    check('预设：说明不填标签就等于找不到', prefix.includes('不填就等于这张图以后找不到'), true);
-    check('预设：指向 rp_assets 复用同一张图', prefix.includes('调 `rp_assets`'), true);
+    // 多张图必须挤进同一个围栏（每张单发一次 = 一串碎卡片）
+    check('预设：多张图放同一个围栏', prefix.includes('多张放**同一个**围栏'), true);
+    // ── 配图（1.14.0 起）──────────────────────────────────────────────────────
+    // 本地生图（ComfyUI）整块从插件里搬走了：出图改由**宿主的 `generate_image`** 负责，
+    // 插件只负责「用完怎么收进资源库复用」。所以这里断言的是一份**新的**口径，
+    // 不是老「## 插画（本地生图可用时）」那一节。
+    check('预设：配图小节取代了老的插画小节',
+      prefix.includes('## 配图') && !prefix.includes('## 插画'), true);
+    check('预设：明说本插件不提供出图能力', prefix.includes('本插件不提供出图能力'), true);
+    // ⚠️ **不要在这三个已删工具的名字上做断言**（两个方向都不行）：
+    //   · 断「预设里不出现它们」—— 老实现曾靠**点名**让模型别去找，那样断言会失败；
+    //   · 断「预设里点名让模型别去找」—— 现在改成不复述名字了（见下一条）。
+    // 正确的口径：预设**不再提到**这些名字（模型看不到这些工具，提名字只会把注意力引到不存在的工具上），
+    // 而是正面说清「本插件不提供出图能力 + 要图就用 generate_image」。这一条就是那个闸门。
+    check('预设：不再复述已删工具的旧名字',
+      ['rp_illustrate', 'rp_styles', 'rp_scenes'].every((n) => !prefix.includes(n)), true);
+    check('预设：指向宿主的 generate_image 与 edit_image',
+      prefix.includes('`generate_image`') && prefix.includes('`edit_image`'), true);
+    // 出图慢 → 必须提醒 DM **一次发多个调用**，别一张一张串行等
+    check('预设：提醒并发出图', prefix.includes('一次要几张就一次发几个 `generate_image` 调用'), true);
+    check('预设：串行的代价说清楚了', prefix.includes('串行'), true);
+    // 刚生成的图会**自动作为附件**挂在对话里（工具结果带 image 内容块）—— DM 不许再去编地址。
+    // 这条是坏指导的回归闸门：早先预设让模型「拿到之后必须用 dsh-ui 的 image 组件显示出来」，
+    // 可模型手上根本没有可用的 src（GenUI 的 image 只认 src 字符串，不认附件 id）。
+    check('预设：说明刚生成的图会自动挂附件、不用模型自己显示',
+      prefix.includes('自动作为附件挂在对话里'), true);
+    check('预设：只有从资源库重放才需要 dsh-ui 的 image 组件',
+      prefix.includes('只有从资源库重放的图'), true);
+    // 立绘复用：先查「已有可用图」，导入卡的卡面就是角色卡的立绘，别重复生成
+    check('预设：先查已有可用图再生成', prefix.includes('先查已有可用图再生成'), true);
+    check('预设：可复用的图包含玩家导入的立绘与导入卡的卡面',
+      prefix.includes('（玩家导入的立绘、导入卡的卡面）'), true);
+    // 新图要能复用 → 唯一入口是 rp_assets(action:"import")，且必须带 label/tags
+    check('预设：新图入库走 rp_assets import',
+      prefix.includes('rp_assets(action:"import"'), true);
+    check('预设：要求填 label 和 tags（否则以后找不到）',
+      prefix.includes('一定填 `label` 和 `tags`') && prefix.includes('否则以后搜不到'), true);
     check('预设：说明 rp_assets 能按 kind/characters/tags/q 查',
-      prefix.includes('按 `kind` / `characters` / `tags` / `q` 查'), true);
+      prefix.includes('按 `kind` / `characters` / `tags` / `q`'), true);
+    check('预设：画面描述要带上人物卡的 appearance（跨场景一致性）',
+      prefix.includes('appearance'), true);
+    // ⚠️ 这条断言换过口径：早先要求「生成的图必须用 image 组件显示出来」，那是**坏指导** ——
+    //    `generate_image` 的图会**自动作为附件**挂在对话里（工具结果带 image 内容块），
+    //    而 GenUI 的 image 只认 `src` 字符串、不认附件 id，模型手上根本没有可用的 src。
+    //    现在正确口径：刚生成的图不用模型操心显示，**只有从资源库重放的图**才用 image 组件。
+    check('预设：生成的图自动挂附件（不是让模型自己显示）',
+      prefix.includes('自动作为附件挂在对话里'), true);
+    check('预设：只有资源库重放才用 image 组件',
+      prefix.includes('只有从资源库重放的图') && prefix.includes('`dsh-ui` 的 image 组件'), true);
     // 跨会话串档（真机日志里 `glob **/*.launch.md` 一次捞出 4 个别会话的 launch 文件）。
     // 1.13.2 起不再靠「警告 DM 别找错地方」，而是**把 launch 路径直接印进常驻段**——
     // 宿主知道该去哪找，DM 就不必去找了。persona 里那句「会捞到别的会话」的警告保留作第二道。
@@ -3218,6 +3336,33 @@ const NEWKEY = `smoke-${crypto.randomUUID().slice(0, 8)}`;
     check('预设：dm-filter 显式 suppressRuntimeContext=false', filter?.config?.suppressRuntimeContext, false);
     check('预设：保留 validate_dsh_ui（围栏自检靠它）',
       (filter?.config?.keepGlobalTools ?? []).includes('validate_dsh_ui'), true);
+    // ⚠️ **跨文件契约的闸门**（1.15.0 起可配置，见 docs/REMOVE-IMAGE-GEN.md §10.1 与 README）：
+    // 本插件不出图，DM 配图靠宿主的**全局**工具 `generate_image` / `edit_image`；而 dm-filter 会把
+    // 不在放行名单里的全局工具全部 deny。铁律是「persona 让调的工具必须真的可见」，但**名单放在哪**
+    // 经历了两次修正：先写死在 YAML（换插件就得改预设，而预设重装会被覆盖）→ 现在改为
+    // **用户可勾选的设置**（`styles.json` 的 `globalToolsAllow`，出厂默认这两条），过滤器读它合并。
+    // 所以这里钉三件事：① YAML 只留预设底线；② 默认值在**共享模块**里（两边同源，不会走散）；
+    // ③ 过滤器确实去读了那份配置。任何一条断了，DM 就会静默看不见生图工具。
+    const keep = filter?.config?.keepGlobalTools ?? [];
+    check('预设：keepGlobalTools 只留预设底线（不再写死某个生图插件）',
+      keep.includes('render_ui') && keep.includes('validate_dsh_ui') && keep.includes('web_search'), true);
+    check('预设：keepGlobalTools 不含 generate_image（默认值改由配置提供）', keep.includes('generate_image'), false);
+    check('预设：keepGlobalTools 不含 edit_image', keep.includes('edit_image'), false);
+    // 共享默认值模块：插件与预设过滤器**同一份**（各自硬编码会走散 —— 底线少一项就是卡片渲染静默坏掉）
+    const gtDefaultsFile = join(here, '..', 'lib', 'global-tools-defaults.js');
+    const gtSrc = readFileSync(gtDefaultsFile, 'utf8');
+    check('共享默认值：文件存在且导出底线与默认放行', /GLOBAL_TOOLS_BASE/.test(gtSrc) && /GLOBAL_TOOLS_ALLOW_DEFAULT/.test(gtSrc), true);
+    const gtMod = await import(pathToFileURL(gtDefaultsFile).href);
+    check('共享默认值：底线三项', gtMod.GLOBAL_TOOLS_BASE.join(','), 'render_ui,validate_dsh_ui,web_search');
+    check('共享默认值：默认额外放行 = 宿主生图工具',
+      gtMod.GLOBAL_TOOLS_ALLOW_DEFAULT.join(','), 'generate_image,edit_image');
+    check('共享默认值：归一会剔非法名与底线名并去重',
+      gtMod.normalizeGlobalToolsAllow(['generate_image', 'generate_image', 'render_ui', 'BAD NAME', 'my_pic', '']).join(','),
+      'generate_image,my_pic');
+    // 过滤器必须去读那份配置（否则设置页勾了也没用）
+    const filterSrc = readFileSync(join(here, '..', 'preset', 'session-filter-v2.mjs'), 'utf8');
+    check('过滤器：读 styles.json 的 globalToolsAllow', /globalToolsAllow/.test(filterSrc) && /styles\.json/.test(filterSrc), true);
+    check('过滤器：与插件共用同一份默认值模块', /global-tools-defaults\.js/.test(filterSrc), true);
   }
 }
 

@@ -16,7 +16,19 @@
  * 做法：模块加载器桩捕获 bundle 的 factory，喂给它 require（react 用我们的桩），
  * 调 apply()（此时一个组件都还没渲染）拿到注册的槽位与组件，再手动渲染。
  */
-import assert from 'node:assert/strict';
+import nodeAssert from 'node:assert/strict';
+/**
+ * 本文件用 `assert.*`（失败即抛、立刻停），与 smoke-dm 的 `check()` 不同 —— 所以这里
+ * 包一层只为**统计通过/失败数**并给出与 smoke-dm 一致的收尾摘要行（失败照旧抛出去）。
+ * 行为不变：成功返回原值，失败先加计数再原样抛。
+ */
+let pass = 0, fail = 0;
+const assert = new Proxy({}, {
+  get: (t, key) => (...args) => {
+    try { const out = nodeAssert[key](...args); pass += 1; return out; }
+    catch (error) { fail += 1; throw error; }
+  },
+});
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -312,24 +324,17 @@ globalThis.fetch = async (url, options = {}) => {
       session: sessionStub,
     });
   }
+  // `/rp-tools/portrait` 现在**只支持 action:"clear"**（本地生图搬走后，「登记生成结果」
+  // 那条路没了）。桩照真实宿主的行为回：clear 清掉 generated 那类字段，别的字段保留。
+  // 旧的 action:"save" 桩**故意不给** —— 界面若还去调它，会落到最后的「未预期的请求」上而红。
   if (target === '/rp-tools/portrait') {
     const body = JSON.parse(options.body ?? '{}');
     portraitPosts.push(body);
-    const portraits = body.action === 'clear' ? {} : {
-      [body.name]: {
-        generated: { file: body.file, subfolder: body.subfolder ?? '', type: body.type ?? 'output' },
-        style: body.style ?? '', elapsedMs: body.elapsedMs ?? 0,
-      },
-    };
-    return reply({ ok: true, sessionId: body.sessionId, portraits });
-  }
-  if (target === '/rp-tools/preview') {
-    return reply({
-      ok: true, styleKey: 'uncensored_anime', styleLabel: '二次元', elapsedMs: 18300,
-      media: ['http://127.0.0.1:3080/rp-tools/media?file=rp-portrait-9.png'],
-      // 宿主新增：原始三要素，界面据此把立绘记进会话配置（只存 URL 的话换 origin 就失效）
-      files: [{ file: 'rp-portrait-9.png', subfolder: '', type: 'output' }],
-    });
+    const cur = { ...(sessionStub.portraits?.[body.name] ?? {}) };
+    delete cur.generated;
+    delete cur.style;
+    delete cur.elapsedMs;
+    return reply({ ok: true, sessionId: body.sessionId, portraits: { [body.name]: cur } });
   }
   // 外部导入：界面读成 data URL 后 POST 上来，宿主落盘并回一个同源地址。
   // 1.13.0 起统一走 /rp-tools/asset-upload（角色立绘的 kind=portrait + name 会顺带登记成立绘）。
@@ -1192,11 +1197,12 @@ async function ensureSidebarTab() {
     }
   }
 
-  // ★ 角色卡卡片：标题叫「角色卡」；**生成出来的立绘**才挂在角色行上（有图就两列、图在左）
+  // ★ 角色卡卡片：标题叫「角色卡」，立绘按角色名挂在角色行上当小头像
   {
     assert.ok(text.includes('角色卡（'), '卡片标题应叫「角色卡」');
     assert.equal(text.includes('人物（'), false, '不该叫「人物」');
-    // 只有「卡面」没有生成立绘时：角色行**不出图**（卡面现在是世界设定旁的封面）
+    // 只有「卡面」没有导入立绘时：卡面也**直接当这个角色的立绘用**（宿主侧 renderDmSetup 同一口径：
+    // 「导入卡的卡面就是它的立绘」）。所以角色行要出图，走的是卡面路由。
     sessionStub.characters = [{ name: '阿岚', appearance: '白衣长剑', personality: '冷淡' }];
     sessionStub.portraits = { 阿岚: { card: 'cards/古风/长安.card.png' } };
     resetHooks();
@@ -1215,14 +1221,47 @@ async function ensureSidebarTab() {
         inputActions,
       }, tab.component);
     }
-    assert.equal(byClass(cardFaceOnly, 'charbox')[0]?.props['data-hasface'], 'false', '只有卡面（没生成立绘）时角色行不出图');
-    assert.equal(byClass(cardFaceOnly, 'charface').length, 0, '不该把卡面当角色立绘');
-    // 有生成立绘 → 两列，图在左（DOM 顺序 charface → charbody）
+    assert.equal(byClass(cardFaceOnly, 'charbox')[0]?.props['data-hasface'], 'true', '只有卡面时角色行也要出图（卡面＝立绘）');
+    const cardFaceImg = findAll(cardFaceOnly, (n) => n.type === 'img'
+      && String(n.props.src ?? '').includes('/rp-tools/card-image?'));
+    assert.ok(cardFaceImg.length >= 1, '卡面走的是卡面路由（不是已删掉的媒体代理）');
+    // 卡面路径是 URL 编码进 query 的，所以断言解码后的值（别拿中文原文去比编码串）
+    assert.ok(decodeURIComponent(String(cardFaceImg[0].props.src)).includes('cards/古风/长安.card.png'),
+      '取的是会话里那张卡面');
+    // 旧版（ComfyUI 三要素）的 `generated` 已经没人认：媒体代理删掉了，它只剩一个死引用，
+    // 所以「只有 generated」= 一张可用图都没有 → 出占位头像，也不该去拼 /rp-tools/media。
     sessionStub.portraits = {
       阿岚: {
         generated: { file: 'rp-portrait-1.png', subfolder: 'rp', type: 'output' },
         style: '二次元', elapsedMs: 18300, at: '2026-09-12T01:00:00.000Z',
       },
+    };
+    resetHooks();
+    {
+      let legacyFace = render({
+        sessionId: SID,
+        useSessions: (sel) => sel(store),
+        useInput: (sel) => sel({ draft: '' }),
+        inputActions,
+      }, tab.component);
+      for (let i = 0; i < 14 && byClass(legacyFace, 'charbox').length === 0; i++) {
+        await tick(30);
+        legacyFace = render({
+          sessionId: SID,
+          useSessions: (sel) => sel(store),
+          useInput: (sel) => sel({ draft: '' }),
+          inputActions,
+        }, tab.component);
+      }
+      assert.equal(byClass(legacyFace, 'charbox')[0]?.props['data-hasface'], 'false',
+        '只有老 generated 时退回占位头像（那张图取不到了）');
+      assert.equal(findAll(legacyFace, (n) => n.type === 'img'
+        && String(n.props.src ?? '').includes('/rp-tools/media?')).length, 0,
+        '绝不能再去拼已删的 /rp-tools/media 地址');
+    }
+    // 有一张**导入的**立绘 → 图在左、字段在右（DOM 顺序 charavatar → charbody）
+    sessionStub.portraits = {
+      阿岚: { imported: { file: 'portraits/abc.png', bytes: 5, at: '2026-09-12T01:00:00.000Z' } },
     };
     resetHooks();
     let withFace = render({
@@ -1231,7 +1270,8 @@ async function ensureSidebarTab() {
       useInput: (sel) => sel({ draft: '' }),
       inputActions,
     }, tab.component);
-    for (let i = 0; i < 14 && byClass(withFace, 'charavatar').length === 0; i++) {
+    for (let i = 0; i < 14 && !findAll(withFace, (n) => n.type === 'img'
+      && String(n.props.src ?? '').includes('/rp-tools/portrait-image?')).length; i++) {
       await tick(30);
       withFace = render({
         sessionId: SID,
@@ -1260,9 +1300,14 @@ async function ensureSidebarTab() {
     assert.equal(textOf(box).includes('大图'), false, '列表里不该再有「大图」');
     assert.equal(textOf(box).includes('收起'), false, '列表里不该再有「收起」（它会删掉立绘）');
     assert.equal(findAll(withFace, (n) => textOf(n) === '收起').length, 0, '整个面板都不该再有「收起」');
-    // 有立绘的行里那张图就是头像
-    const avatarImg = findAll(withFace, (n) => n.type === 'img' && String(n.props.src ?? '').includes('/rp-tools/media?'));
-    assert.ok(avatarImg.length >= 1, '有立绘的角色行要显示头像图');
+    // 有图的行里那张图就是头像（导入立绘走 portrait-image、卡面走 card-image；
+    // 老版本的 `/rp-tools/media` 代理已随本地生图删除，绝不该再出现）
+    const avatarImg = findAll(withFace, (n) => n.type === 'img'
+      && /\/rp-tools\/(portrait-image|card-image)\?/.test(String(n.props.src ?? '')));
+    assert.ok(avatarImg.length >= 1, '有图时角色行要显示头像图');
+    assert.equal(findAll(withFace, (n) => n.type === 'img'
+      && String(n.props.src ?? '').includes('/rp-tools/media?')).length, 0,
+      '不该再引用已删掉的 /rp-tools/media 代理');
     // 没有立绘时给占位（名字首字），行高不变
     {
       const savedPortraits = sessionStub.portraits;
@@ -1346,11 +1391,13 @@ async function ensureSidebarTab() {
     // ★「查看大图」已去掉（用户要求）：立绘在这里就是最大的尺寸，再开一个标签页没意义
     assert.equal(textOf(charModal).includes('看大图'), false, '编辑器里不该再有「看大图」');
     assert.equal(findAll(charForm, (n) => n.type === 'a').length, 0, '编辑器里不该再有外链（看大图）');
-    // ★「删掉立绘」改成「重新生成」（用户要求）：不满意就重出，而不是把记录删掉留个空位
+    // ★ 「删掉立绘」与「重新生成」都不该再有：立绘现在只有**导入**一条来路
+    //   （本地生图（ComfyUI）整块删掉了，出图归宿主的 generate_image），所以这里既不该有
+    //   把记录删掉的按钮，也不该有「重新生成」。
     assert.equal(textOf(charModal).includes('删掉立绘'), false, '「删掉立绘」应被去掉');
-    const regenBtn = findAll(charForm, (n) => typeof n.props?.onClick === 'function'
-      && n.props.className === 'tiny' && textOf(n) === '重新生成')[0];
-    assert.ok(regenBtn, '编辑器里要有「重新生成」（已有立绘时）');
+    assert.equal(findAll(charForm, (n) => typeof n.props?.onClick === 'function'
+      && textOf(n) === '重新生成').length, 0, '不该再提供「重新生成」（本插件不出图）');
+    assert.equal(textOf(charModal).includes('出图中'), false, '不该再有出图中的忙碌态');
     // ★ 外部导入（用户要求）：一个 file input，只收 png/jpeg/webp
     const fileInput = findAll(charForm, (n) => n.type === 'input' && n.props.type === 'file')[0];
     assert.ok(fileInput, '编辑器里要有导入立绘的 file input');
@@ -1367,16 +1414,10 @@ async function ensureSidebarTab() {
     assert.equal(portraitUploads.at(-1).kind, 'portrait', '角色编辑器导入走 kind=portrait（顺带登记成立绘）');
     assert.equal(portraitUploads.at(-1).dataUrl, 'data:image/png;base64,QUJD', '传的是 FileReader 读出的 data URL');
     assert.equal(portraitUploads.at(-1).sessionId, SID, '带上会话 id');
-    // 出图按钮：点「重新生成」→ POST /rp-tools/preview 且**要纵向档**
-    const beforePosts = portraitPosts.length;
-    const previewCallsBefore = calls.filter((c) => c.url === '/rp-tools/preview').length;
-    await regenBtn.props.onClick();
-    for (let i = 0; i < 14 && portraitPosts.length === beforePosts; i++) await tick(30);
-    const previewCalls = calls.filter((c) => c.url === '/rp-tools/preview');
-    assert.ok(previewCalls.length > previewCallsBefore, '「重新生成」要真的去出图');
-    assert.equal(previewCalls.at(-1).body?.sizeKey, 'portrait',
-      '立绘要按纵向档出（否则塞进角色卡是横向的）');
-    // 上面这两下会往记录里塞条目；后面的立绘持久化用例按**绝对条数**断言，先清干净
+    // 导入之后**不许再去调已删的 /rp-tools/preview**（那是老的本地出图路由）
+    assert.equal(calls.filter((c) => c.url === '/rp-tools/preview').length, 0,
+      '界面不该再去调已删的 /rp-tools/preview');
+    // 这一下会往记录里塞条目；后面的立绘持久化用例按**绝对条数**断言，先清干净
     portraitPosts.length = 0;
     portraitUploads.length = 0;
     // 改名 → 应用 → 落到会话草稿（保存后才落盘）
@@ -1480,7 +1521,10 @@ async function ensureSidebarTab() {
   }
 
   // ── DM 设定卡片（用户要求：「在 rp 配置面板添加 DM 设定面板」）────────────────
-  // DM（旁白）卡不是角色卡：它的正文要落在这里；生图开关也在这里（会话隔离）。
+  // DM（旁白）卡不是角色卡：它的正文要落在这里。
+  // ⚠️ 原先这段还测「本会话生图」三个开关（面板最上面那块）。本地生图搬走后
+  //    `session.dm.images` 与那三个开关整块删了，所以这里只留正文相关的断言；
+  //    老数据里残留的 `images` 键不该让面板渲染出任何东西（下面钉住这一点）。
   {
     sessionStub.dm = {
       prompt: '叙述用第二人称，场景描写整段斜体。',
@@ -1515,26 +1559,14 @@ async function ensureSidebarTab() {
     // 迁移提示：老数据把 DM 卡当角色存过，搬过来之后要告诉用户
     assert.ok(dmText.includes('从角色卡挪到这里'), '要把「从角色卡挪到 DM 设定」这件事说出来');
     assert.ok(dmText.includes('lust Adventure'), '提示里带上被挪的那条名字');
-    // 三个生图开关现在在**面板最上面**的「本会话生图」里（§6：会话生图配置合并到顶部，底部不再重复）
-    const imgCard = byClass(withDm, 'card').find((c) => textOf(c).includes('本会话生图'));
-    assert.ok(imgCard, '面板最上面应有「本会话生图」卡片');
-    assert.equal(byClass(withDm, 'card').indexOf(imgCard), 0, '「本会话生图」应是第一块');
-    assert.equal(textOf(withDm).includes('生图配置（本会话）'), false, '底部那块重复的生图配置卡片应已删除');
-    const dmBoxes = findAll(imgCard, (n) => n.type === 'input' && n.props.type === 'checkbox');
-    assert.equal(dmBoxes.length, 3, '生图要有三个开关：总开关 / 首次出场 / 重要场景');
-    assert.equal(dmBoxes[0].props.checked, true, '总开关跟随会话配置');
-    assert.equal(dmBoxes[2].props.checked, false, '重要场景跟随会话配置（这里是关）');
-    // 关掉总开关 → 两个细分开关应当置灰（避免「关了还显示可选」的误解）
-    dmBoxes[0].props.onChange({ target: { checked: false } });
-    const withDm2 = render({
-      sessionId: SID,
-      useSessions: (sel) => sel(store),
-      useInput: (sel) => sel({ draft: '' }),
-      inputActions,
-    }, tab.component);
-    const imgCard2 = byClass(withDm2, 'card').find((c) => textOf(c).includes('本会话生图'));
-    const dmBoxes2 = findAll(imgCard2, (n) => n.type === 'input' && n.props.type === 'checkbox');
-    assert.equal(dmBoxes2[1].props.disabled, true, '总开关关掉后，细分开关应置灰');
+    // ★ 「本会话生图」整块没了：出图不是本插件的事（配图走宿主的 generate_image）
+    assert.equal(textOf(withDm).includes('本会话生图'), false, '不该再有「本会话生图」卡片');
+    assert.equal(textOf(withDm).includes('生图配置（本会话）'), false, '不该再有生图配置卡片');
+    assert.equal(textOf(withDm).includes('首次出场'), false, '不该再有「首次出场」生图开关');
+    assert.equal(textOf(withDm).includes('重要场景'), false, '不该再有「重要场景」生图开关');
+    // 老数据里残留的 `dm.images` 也不该被渲染成任何控件
+    const dmCardBoxes = findAll(dmCard, (n) => n.type === 'input' && n.props.type === 'checkbox');
+    assert.equal(dmCardBoxes.length, 0, 'DM 设定卡里不该有生图开关（连老数据的残留也不渲染）');
     assert.ok(/\.rpt textarea\.dmtext \{[^}]*min-height/.test(style.textContent), 'dmtext 要有自己的高度规则');
     // 点「编辑」→ 共享大浮窗里出现文本框，且带出会话里的 DM 正文
     await dmEditBtn.props.onClick();
@@ -1573,8 +1605,10 @@ async function ensureSidebarTab() {
   }
 
   // ★ 立绘持久化（用户报的「角色卡生成的立绘下次打开就消失了」）：
-  //   会话配置里记着的生成图，面板**重新打开**时必须装回来；出图后也必须写回会话配置，
-  //   否则下次打开又没了（原先它只活在面板组件的 state 里）。
+  //   会话配置里记着的立绘，面板**重新打开**时必须装回来（原先它只活在面板组件的 state 里）。
+  //   ⚠️ 1.14.0 起只认两种来路：**玩家导入的**（`imported`，走 /rp-tools/portrait-image）与
+  //   **导入卡的卡面**（`card`，走 /rp-tools/card-image）。老版本的 `generated`（ComfyUI 三要素）
+  //   连同 `/rp-tools/media` 代理一起删了 —— 它现在只是个死引用（见下面「老 generated 不被认」）。
   {
     const asPanel = () => render({
       sessionId: SID,
@@ -1583,8 +1617,26 @@ async function ensureSidebarTab() {
       inputActions,
     }, tab.component);
 
-    // 往会话配置里放「一个角色 + 一张已持久化的立绘」，然后重新挂载面板 —— 模拟下次打开
+    // ① 会话配置里是一张**导入的**立绘 → 重新挂载（模拟下次打开）时必须装回来
     sessionStub.characters = [{ name: '阿岚', appearance: '白衣长剑' }];
+    sessionStub.portraits = {
+      阿岚: { imported: { file: 'portraits/abc.png', bytes: 5, at: '2026-09-12T01:00:00.000Z' } },
+    };
+    resetHooks();
+    let reopened = asPanel();
+    for (let i = 0; i < 14 && !findAll(reopened, (n) => n.type === 'img'
+      && String(n.props.src ?? '').includes('/rp-tools/portrait-image?')).length; i++) {
+      await tick(30);
+      reopened = asPanel();
+    }
+    const imgs = findAll(reopened, (n) => n.type === 'img');
+    const portraitImg = imgs.find((n) => String(n.props.src ?? '').includes('/rp-tools/portrait-image?'));
+    assert.ok(portraitImg, `重新打开面板应显示会话配置里那张立绘（实际 imgs=${JSON.stringify(imgs.map((n) => n.props.src))}）`);
+    assert.ok(String(portraitImg.props.src).includes(`name=${encodeURIComponent('阿岚')}`), '导入立绘按角色名取');
+    assert.ok(/\.rpt \.charavatar \{[^}]*width:\s*36px/.test(style.textContent), '那张图是**小头像**（36px）');
+
+    // ② 老版本的 `generated`（ComfyUI 三要素）**不再被认**：媒体代理已删，它就是死引用。
+    //    面板要退回占位头像，且绝不能拼出 /rp-tools/media 的地址。
     sessionStub.portraits = {
       阿岚: {
         generated: { file: 'rp-portrait-1.png', subfolder: 'rp', type: 'output' },
@@ -1592,47 +1644,34 @@ async function ensureSidebarTab() {
       },
     };
     resetHooks();
-    let reopened = asPanel();
-    for (let i = 0; i < 14 && !findAll(reopened, (n) => n.type === 'img' && String(n.props.src ?? '').includes('/rp-tools/media?')).length; i++) {
+    let legacyOnly = asPanel();
+    for (let i = 0; i < 14 && byClass(legacyOnly, 'charavatar').length === 0; i++) {
       await tick(30);
-      reopened = asPanel();
+      legacyOnly = asPanel();
     }
-    const imgs = findAll(reopened, (n) => n.type === 'img');
-    const portraitImg = imgs.find((n) => String(n.props.src ?? '').includes('/rp-tools/media?'));
-    assert.ok(portraitImg, `重新打开面板应显示会话配置里那张立绘（实际 imgs=${JSON.stringify(imgs.map((n) => n.props.src))}）`);
-    assert.ok(String(portraitImg.props.src).includes('file=rp-portrait-1.png'), '立绘图 URL 要用记下的三要素拼');
-    assert.ok(String(portraitImg.props.src).includes('subfolder=rp'), 'subfolder 也要带上');
-    assert.ok(/\.rpt \.charavatar \{[^}]*width:\s*36px/.test(style.textContent), '那张图是**小头像**（36px）');
+    assert.equal(byClass(legacyOnly, 'charbox')[0]?.props['data-hasface'], 'false',
+      '只有老 generated 时角色行退回占位头像（那张图取不到了）');
+    assert.equal(findAll(legacyOnly, (n) => n.type === 'img'
+      && String(n.props.src ?? '').includes('/rp-tools/media?')).length, 0,
+      '绝不能再去拼已删的 /rp-tools/media 地址');
+    assert.equal(portraitPosts.length, 0,
+      '界面不该再 POST /rp-tools/portrait 去「登记生成结果」（那条路只剩 clear）');
 
-    // 出图 → 必须把三要素 POST 回宿主（否则下次打开又没了）
-    const portraitBtn = findAll(reopened, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '立绘');
-    assert.equal(portraitBtn.length, 1, '角色卡应有「立绘」按钮');
-    await portraitBtn[0].props.onClick();
-    let afterGen = asPanel();
-    for (let i = 0; i < 14 && portraitPosts.length === 0; i++) { await tick(30); afterGen = asPanel(); }
-    assert.equal(portraitPosts.length, 1, '出图后应把立绘记进会话配置（POST /rp-tools/portrait）');
-    assert.equal(portraitPosts[0].file, 'rp-portrait-9.png', '要记的是 ComfyUI 的文件名，不是完整 URL');
-    assert.equal(portraitPosts[0].name, '阿岚', '要记在角色名下');
-    assert.equal(portraitPosts[0].style, '二次元', '风格一起记下来');
-
-    // 列表里**不再有「大图 / 收起」**：那个「收起」其实会把立绘从会话配置里删掉，
-    // 点完就真的看不到了（用户实测）。
-    assert.equal(findAll(afterGen, (n) => textOf(n) === '收起').length, 0, '列表里不该再有「收起」');
-    const charRow = byClass(afterGen, 'charbox')[0];
+    // ③ 列表里**不再有「大图 / 收起」**：那个「收起」其实会把立绘从会话配置里删掉，
+    //    点完就真的看不到了（用户实测）。
+    assert.equal(findAll(legacyOnly, (n) => textOf(n) === '收起').length, 0, '列表里不该再有「收起」');
+    const charRow = byClass(legacyOnly, 'charbox')[0];
     const rowEdit = findAll(charRow, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '编辑')[0];
     assert.ok(rowEdit, '角色行要有「编辑」');
     await rowEdit.props.onClick();
     await tick(30);
-    let withModal2 = asPanel();
-    for (let i = 0; i < 14 && !findAll(withModal2, (n) => textOf(n) === '重新生成').length; i++) {
-      await tick(30);
-      withModal2 = asPanel();
-    }
+    const withModal2 = asPanel();
     // 「看大图」和「删掉立绘」都按用户要求去掉了：图在浮窗里已经是最大尺寸；
-    // 不满意应该是**重新生成**（覆盖那张），而不是把记录删掉留一个空位。
+    // 而现在**连「重新生成」也没有了** —— 立绘只能导入（出图归宿主的 generate_image）。
     assert.equal(findAll(withModal2, (n) => textOf(n) === '看大图').length, 0, '编辑浮窗里不该再有「看大图」');
-    assert.equal(findAll(withModal2, (n) => textOf(n) === '删掉立绘').length, 0, '「删掉立绘」应换成「重新生成」');
-    assert.ok(findAll(withModal2, (n) => textOf(n) === '重新生成').length >= 1, '编辑浮窗里应有「重新生成」');
+    assert.equal(findAll(withModal2, (n) => textOf(n) === '删掉立绘').length, 0, '不该再有「删掉立绘」');
+    assert.equal(findAll(withModal2, (n) => textOf(n) === '重新生成').length, 0,
+      '不该再有「重新生成」（本插件不出图）');
     assert.ok(findAll(withModal2, (n) => n.type === 'input' && n.props.type === 'file').length >= 1,
       '编辑浮窗里应有导入立绘的 file input');
 
@@ -1666,7 +1705,7 @@ async function ensureSidebarTab() {
     assert.ok(importedSrc.includes(`name=${encodeURIComponent('阿岚')}`), '要按角色名取那张图');
     assert.ok(importedSrc.includes('v=2026-01-01T00%3A00%3A00.000Z') || importedSrc.includes('v=2026-01-01T00:00:00.000Z'),
       `要带 v（导入时间）绕过缓存（实际 ${importedSrc}）`);
-    assert.equal(importedSrc.includes('/rp-tools/media?'), false, '导入的图不走 ComfyUI 代理');
+    assert.equal(importedSrc.includes('/rp-tools/media?'), false, '导入的图不走已删的 ComfyUI 媒体代理');
 
     // 还原，免得影响后面的用例
     sessionStub.characters = [];
@@ -2039,16 +2078,15 @@ async function ensureSidebarTab() {
   const text = textOf(tree);
   assert.ok(text.includes('默认宏列表'), '设置页应有「默认宏列表」');
   assert.equal(text.includes('玩家称呼'), false, '「玩家称呼」应已被默认宏列表取代');
-  // 三大类：设定 / 图像 / 工具
-  assert.ok(text.includes('设定') && text.includes('图像') && text.includes('工具'), '设置页要按设定/图像/工具分三大类');
-  // 图像尺寸全局可编辑（三档：场景 / 立绘 / 道具）
-  const sizeRows = byClass(tree, 'szrow');
-  assert.equal(sizeRows.length, 3, '图像尺寸要开放三档编辑');
-  assert.ok(text.includes('场景') && text.includes('立绘') && text.includes('道具'), '三档要有名字');
-  const sizeInputs = sizeRows.flatMap((r) => findAll(r, (n) => n.type === 'input' && n.props.type === 'number'));
-  assert.equal(sizeInputs.length, 6, '每档两个数字框（宽 × 高）');
-  // 风格库：名称不可编辑、没有「新增风格」、参数仍可改
-  assert.equal(text.includes('新增风格'), false, '风格库不再提供「＋ 新增风格」');
+  // 设定 / 工具 两小节。**「图像」那一节整块删了** —— 全局图像尺寸与风格库（含 LoRA）
+  // 都只服务于本地出图，ComfyUI 链路搬走后它们没有消费者，界面上也不该再出现。
+  assert.ok(text.includes('设定') && text.includes('工具'), '设置页要有设定/工具两小节');
+  assert.equal(text.includes('图像'), false, '不该再有「图像」小节（图像尺寸/风格库都没了）');
+  assert.equal(byClass(tree, 'szrow').length, 0, '不该再有图像尺寸那三行');
+  assert.equal(byClass(tree, 'stylerow').length, 0, '不该再有风格库的行');
+  assert.equal(text.includes('新增风格'), false, '不该再有「＋ 新增风格」');
+  assert.equal(text.includes('LoRA'), false, '不该再提 LoRA（那是出图参数）');
+  assert.equal(text.includes('CFG'), false, '不该再提 CFG（那是出图参数）');
   // 行尾删除用幽灵图标按钮、添加用整条虚线按钮（用户说「× 不好看、添加按钮太近」）
   const macroRowsFound = byClass(tree, 'macrorow');
   assert.ok(macroRowsFound.length >= 1, '默认宏要有行');
@@ -2071,15 +2109,6 @@ async function ensureSidebarTab() {
   // CSS 模板串自检：花括号配平（反引号会被 node --check 拦住，花括号不会）
   assert.equal((style.textContent.match(/\{/g) ?? []).length, (style.textContent.match(/\}/g) ?? []).length,
     '样式表花括号要配平');
-  const styleRows = byClass(tree, 'stylerow');
-  assert.equal(styleRows.length, 1, 'stub 里一个风格就是一行');
-  const nameInputs = findAll(styleRows[0], (n) => n.type === 'input' && n.props.type === 'text'
-    && ['manga', '黑白漫画'].includes(String(n.props.value)));
-  assert.equal(nameInputs.length, 0, '风格名称不可编辑（只显示文本）');
-  assert.ok(textOf(styleRows[0]).includes('黑白漫画') && textOf(styleRows[0]).includes('manga'), '名称与 key 要显示出来');
-  const paramInputs = findAll(styleRows[0], (n) => n.type === 'input' && n.props.type === 'number');
-  assert.equal(paramInputs.length, 2, 'CFG 与步数仍可编辑');
-  assert.equal(findAll(styleRows[0], (n) => n.type === 'select').length, 1, 'LoRA 仍可选');
   // 自动宏要在设置页提示出来：哪些宏根本不用填、由宿主现算
   assert.ok(text.includes('自动宏'), '设置页要提示自动宏');
   assert.ok(text.includes('{{year}}') && text.includes('{{time}}'), '自动宏名单要列出来（含年月日分量）');
@@ -2102,10 +2131,11 @@ async function ensureSidebarTab() {
   assert.equal(post.body.cards.macros.player, '阿岚', '改过的名字要按新键提交（值跟着走）');
   assert.equal(post.body.cards.macros.place, '长安', '没动的条目要原样保留');
   assert.equal(Object.hasOwn(post.body.cards.macros, 'user'), false, '改名后不该再提交旧键');
-  // 全局图像尺寸也要一起提交（否则界面改了、出图还是旧尺寸）
-  assert.deepEqual(post.body.imageSizes.scene, [1024, 576], '图像尺寸要随保存提交（场景）');
-  assert.deepEqual(post.body.imageSizes.portrait, [640, 896], '图像尺寸要随保存提交（立绘）');
-  assert.deepEqual(post.body.imageSizes.item, [768, 768], '图像尺寸要随保存提交（道具）');
+  // ⚠️ 以前这里还断言「全局图像尺寸一起提交」。图像尺寸与风格库整块删了
+  //    （本地生图搬走），所以提交体里**不该**再有 `imageSizes` —— 老客户端还在发它的话
+  //    宿主侧也只是忽略，但新客户端不该发。
+  assert.equal(Object.hasOwn(post.body, 'imageSizes'), false, '不该再提交 imageSizes（图像尺寸没了）');
+  assert.equal(Object.hasOwn(post.body, 'styles'), false, '不该再提交 styles（风格库没了）');
 
   // 空列表时要说人话：直接给出 `user -> 玩家` 这个例子，而不是留一个空白块让人猜
   stateStub.cards = { root: '', userLabel: '', macros: {} };
@@ -2116,31 +2146,6 @@ async function ensureSidebarTab() {
   assert.ok(textOf(empty).includes('名字填 user、值填玩家'), '空列表要给出具体例子（user → 玩家）');
   stateStub.cards = { root: '', userLabel: '阿岚', macros: { user: '阿岚', place: '长安' } };
   resetHooks();
-
-  // ★ 尺寸不能显示 0：宿主是旧版（config 里没有 imageSizes）时也要显示内置默认值，
-  //   并且保存时把默认值一起交回去（旧宿主不会自己补）。
-  {
-    const keep = stateStub.imageSizes;
-    delete stateStub.imageSizes;
-    resetHooks();
-    calls.length = 0;
-    let legacy = render(Props, reg.component);
-    for (let i = 0; i < 14 && !textOf(legacy).includes('图像尺寸'); i++) { await tick(30); legacy = render(Props, reg.component); }
-    const vals = byClass(legacy, 'szrow')
-      .flatMap((r) => findAll(r, (n) => n.type === 'input' && n.props.type === 'number'))
-      .map((n) => Number(n.props.value));
-    assert.ok(vals.length === 6 && vals.every((v) => v >= 256), `尺寸不能出现 0（实际 ${JSON.stringify(vals)}）`);
-    // 内置默认值要与宿主 DEFAULT_IMAGE_SIZES 一致（1.12.8 起调小，出图快 ~1/3）
-    assert.deepEqual(vals.slice(0, 2), [768, 432], '缺配置时场景用内置默认值');
-    assert.deepEqual(vals.slice(2, 4), [512, 768], '缺配置时立绘用内置默认值');
-    const save2 = findAll(legacy, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '保存');
-    await save2[0].props.onClick();
-    await tick(60);
-    const post2 = calls.filter((c) => c.url === '/rp-tools/config' && c.method === 'POST').pop();
-    assert.deepEqual(post2?.body?.imageSizes?.scene, [768, 432], '保存要把默认尺寸交回去（旧宿主不会补）');
-    stateStub.imageSizes = keep;
-    resetHooks();
-  }
 }
 console.log('客户端冒烟测试通过：');
 console.log(`  · bundle id = ${captured.id}`);
@@ -2149,3 +2154,5 @@ console.log(`  · 重复 apply 幂等`);
 console.log(`  · 已注册槽位：${[...new Set(registered)].join(', ')}`);
 console.log(`  · 故事书导入槽位：id=${dockReg.id} order=${dockReg.order}`);
 console.log(`  · 无头渲染全流程通过：portal 进工作区那一行 / 只在未开局的 DM 新会话出现 / 列表 / 预览 / 导入 / 结果留存（共 ${calls.length} 次请求）`);
+// 与 smoke-dm 一致的收尾摘要（失败到不了这里 —— assert 失败会直接抛）
+console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
