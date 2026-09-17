@@ -919,6 +919,37 @@ if (rpTable) {
     check('全局工具：复原为出厂默认',
       JSON.parse(readFileSync(join(TEST_HOME, 'data', 'dsh-rp-tools', 'styles.json'), 'utf8')).globalToolsAllow.join(','),
       'generate_image,edit_image');
+
+    // ⑧ **1.15.0 → 1.15.1 的语义迁移**（这条是真事故：不迁移会静默丢掉能力）
+    //    旧语义 = 「额外放行」（在预设底线之上追加）；新语义 = 「完整名单」。
+    //    把旧值原样当完整名单读 → 卡片渲染 / 围栏自检 / 联网考据**静默消失**，
+    //    用户只会看到「DM 突然不发卡片了」。
+    //    迁移规则是**只加不减**：出厂默认 ∪ 旧值，并且只做一次（打了标记就不再动）。
+    {
+      const cfgPath = join(TEST_HOME, 'data', 'dsh-rp-tools', 'styles.json');
+      // 造一份「旧语义」配置：只有生图那两条 + 用户自己加的一个插件工具，且**没有迁移标记**
+      //（标记由本版的写入路径打上，所以「没有标记」正是老版本写的盘的样子）
+      const legacy = JSON.parse(readFileSync(cfgPath, 'utf8'));
+      delete legacy.globalToolsAllowMerged;
+      writeFileSync(cfgPath, JSON.stringify({
+        ...legacy,
+        globalToolsAllow: ['generate_image', 'edit_image', 'my_st_plugin'],
+      }, null, 2) + '\n');
+      const migrated = await callGet('/rp-tools/global-tools');
+      check('迁移：旧配置（额外放行语义）补上默认三项，旧值与自己加的都保留',
+        (migrated.json.allow ?? []).join(','),
+        'render_ui,validate_dsh_ui,web_search,generate_image,edit_image,my_st_plugin');
+      check('迁移：落盘并打上一次性标记',
+        JSON.parse(readFileSync(cfgPath, 'utf8')).globalToolsAllowMerged, true);
+      // 迁移只做一次：之后用户**显式取消**某项必须真的生效（否则就是「关不掉」的怪 bug）
+      await callPost('/rp-tools/global-tools', { allow: ['render_ui'] });
+      const afterUncheck = await callGet('/rp-tools/global-tools');
+      check('迁移只做一次：之后取消的不会被并回来（取消必须真的生效）',
+        (afterUncheck.json.allow ?? []).join(','), 'render_ui');
+      check('迁移只做一次：标记仍在（不会被二次并集）',
+        JSON.parse(readFileSync(cfgPath, 'utf8')).globalToolsAllowMerged, true);
+      await callPost('/rp-tools/global-tools', { allow: ['generate_image', 'edit_image'] });
+    }
   }
 }
 
