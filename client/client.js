@@ -228,16 +228,22 @@ window.__ModuleLoader__.load({
 .rpt .rpsec .macroblk { width: 100%; }
 .rpt .rpsec .macrorow { grid-template-columns: 118px minmax(0, 1fr) 22px; gap: 8px; }
 .rpt .rpsec .macrorow input[type=text] { height: 30px; padding: 0 8px; font-size: 12.5px; }
-.rpt .toollist { max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
-/* 全局工具放行名单：一行一个勾选框，窄面板下自动换行 */
-.rpt .gtgroup { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; margin: 5px 0; }
-.rpt .gtitem { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; padding: 2px 6px;
-  border: 1px solid color-mix(in oklab, currentColor 16%, transparent); border-radius: 5px; }
-.rpt .gtitem.imagelike { border-color: color-mix(in oklab, currentColor 34%, transparent); }
-.rpt .gtitem.locked { opacity: .62; }
-.rpt .gtitem.on { border-color: color-mix(in oklab, currentColor 44%, transparent); }
-.rpt .gtitem input[type=checkbox] { margin: 0; }
-.rpt .gtdraft { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+/* 第三方工具管理：**一行一个工具**，已勾选的排前面（排序在 JS 里做）。
+   一行 = 勾选框 + 图标（🖼 图片类 / 🧩 其它）+ 工具名 + 可选徽标/提示。 */
+.rpt .gtrow { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px;
+  border: 1px solid transparent; font-size: 12.5px; cursor: pointer; }
+.rpt .gtrow:hover { background: var(--dsw-alias-interactive-bg-hover, color-mix(in oklab, currentColor 5%, transparent)); }
+.rpt .gtrow.on { border-color: color-mix(in oklab, currentColor 22%, transparent); }
+.rpt .gtrow.ghost { border-style: dashed; border-color: color-mix(in oklab, currentColor 30%, transparent); }
+.rpt .gtrow input[type=checkbox] { margin: 0; flex: none; }
+.rpt .gtrow .gticon { flex: none; width: 16px; text-align: center; opacity: .95; filter: grayscale(1); }
+.rpt .gtrow.on .gticon { filter: none; }
+.rpt .gtrow .gttname { flex: none; }
+.rpt .gtrow .gthint { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rpt .gtWarn { margin: 6px 0 0; padding: 5px 8px; border-radius: 6px;
+  background: color-mix(in oklab, currentColor 7%, transparent); }
+.rpt .gtAct { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.rpt .gtdraft { display: flex; gap: 8px; align-items: center; margin: 8px 0 0; flex-wrap: wrap; }
 .rpt .gtdraft input[type=text] { flex: 1 1 220px; min-width: 160px; height: 30px; padding: 0 8px; font-size: 12.5px; }
 .rpt .nums { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .rpt .nums label { display: flex; gap: 5px; align-items: center; font-size: 12px; opacity: .85; }
@@ -625,9 +631,11 @@ window.__ModuleLoader__.load({
       function addGlobalTool(name) {
         const n = String(name ?? '').trim().toLowerCase();
         if (!/^[a-z][a-z0-9_]*$/.test(n)) { setMsg({ kind: 'err', text: `工具名不合法：${name}（只允许小写字母开头 + 小写字母/数字/下划线）` }); return; }
-        if ((gt?.base ?? []).includes(n)) { setMsg({ kind: 'err', text: `${n} 是预设底线，本来就放行` }); return; }
-        if (gtDraft.includes(n)) return;
+        // 已经在列表里（本机注册过）→ 直接勾上，不再当成「未注册」的手填项
+        if ((gt?.available ?? []).some((a) => a.name === n)) { toggleGlobalTool(n, true); setMsg({ kind: 'ok', text: `${n} 已在列表里，已勾上` }); return; }
+        if (gtDraft.includes(n)) { setMsg({ kind: 'ok', text: `${n} 已经在名单里了` }); return; }
         setGtDraft((cur) => [...cur, n]);
+        setMsg({ kind: 'ok', text: `已加入 ${n}（本机注册表里还没有，装上对应插件即生效）` });
       }
 
       async function saveGlobalTools() {
@@ -776,91 +784,115 @@ window.__ModuleLoader__.load({
         ], 'config'),
 
         // ══ DM 会话的全局工具放行名单 ═══════════════════════════════════════
-        // 为什么要可配置：dm 预设的 dm-filter 会把**所有**不在放行名单里的全局工具 deny 掉，
-        // 而「哪些全局工具该放行」因机器而异 —— 生图插件人人不同（`dsh-image-gen` 只是其中一种），
-        // 工具名自然也不同。写死在预设里的话，换个生图插件就得手改预设文件（而它重装会被覆盖）。
-        // 这里列出**本机真实存在**的全局工具供勾选，结果存进 styles.json，过滤器会读它。
-        section('DM 会话放行', `全局工具白名单${gt ? `（额外放行 ${gtDraft.length} 个）` : ''}`, [
+        // ══ 第三方工具管理 ═══════════════════════════════════════════════════
+        // 这里管的是「DM 会话能看见哪些**非本插件的**全局工具」（GenUI、生图、搜索…）。
+        // 为什么要它：dm 预设会把所有全局工具 deny 掉，只放行这里勾选的那些；而「本机装了
+        // 哪些插件」人人不同（生图插件尤其，`dsh-image-gen` 只是其中一种），写死在预设里
+        // 就得让用户改预设文件（而它重装会被覆盖）。
+        // **没有固定放行**：全部工具都可勾选、默认勾选；关掉有副作用的（render_ui 等）只给提示、
+        // 不锁死 —— 那是用户自己的机器。列表一行一个，**已勾选的排前面**（一眼看到当前放行了什么）。
+        section('第三方工具管理', `放行给 DM 的全局工具${gt ? `（${gtDraft.length} / ${(gt.available ?? []).length || '?'}）` : ''}`, [
           h('div', { key: 'd', className: 'dim' },
-            'DM 预设默认 deny 掉一切全局工具，只放行下表勾选的。生图插件因机器而异，所以这里让你自己选 —— '
-            + '选完**换一个 DM 会话或重进**才生效。'),
+            'DM 预设会隐藏所有第三方工具，只有这里勾选的才在 DM 会话里可见。'
+            + '默认全勾（开箱与以前一致）；**改完换一个 DM 会话或重进才生效**。'),
           gt === null
-            ? h('div', { key: 'loading', className: 'dim' }, '读取中…（读不到会把底线上那几个显示出来）')
-            : h('div', { key: 'body' }, [
-              // 底线：固定放行、不可取消
-              h('div', { key: 'base', className: 'gtgroup' }, [
-                h('span', { key: 't', className: 'dim' }, '预设底线（固定放行，不可取消）：'),
-                ...(gt.base ?? []).map((n) => h('label', { key: n, className: 'gtitem locked', title: '预设底线，去掉会当场砸掉功能' }, [
-                  h('input', { key: 'i', type: 'checkbox', checked: true, disabled: true, readOnly: true }),
-                  h('span', { key: 'n', className: 'mono' }, n),
-                ])),
-              ]),
-              // 发现到的全局工具
-              h('div', { key: 'avail', className: 'gtgroup' }, [
-                h('span', { key: 't', className: 'dim' },
-                  gt.available === null
-                    ? '本机全局工具清单：**读不到**（可在下面手填名字）'
-                    : `本机全局工具（勾选 = 放行给 DM）：`),
-                ...(gt.available ?? []).filter((a) => !a.locked).map((a) => h('label', {
-                  key: a.name, className: `gtitem${a.imageLike ? ' imagelike' : ''}`,
-                  title: a.imageLike ? '像是图片/生图相关的工具' : undefined,
-                }, [
-                  h('input', {
-                    key: 'i', type: 'checkbox', checked: gtDraft.includes(a.name),
-                    onChange: (e) => toggleGlobalTool(a.name, e.target.checked),
-                  }),
-                  h('span', { key: 'n', className: 'mono' }, a.name),
-                  a.imageLike ? h('span', { key: 'tag', className: 'badge ok' }, '图') : null,
-                ])),
-                (gt.available !== null && gt.available.filter((a) => !a.locked).length === 0)
-                  ? h('span', { key: 'none', className: 'dim' }, '（本机没注册任何可选的全局工具）')
+            ? h('div', { key: 'loading', className: 'dim' }, '读取中…')
+            : h('div', { key: 'body' }, (() => {
+              // 一行一个工具：已勾选排前面，其余在后；同组内按名字排，位置稳定好找
+              const all = gt.available ?? [];
+              const chosen = new Set(gtDraft);
+              const rows = all.slice().sort((a, b) => {
+                const ca = chosen.has(a.name) ? 0 : 1;
+                const cb = chosen.has(b.name) ? 0 : 1;
+                if (ca !== cb) return ca - cb;
+                return a.name.localeCompare(b.name);
+              });
+              // 配置里有、但本机注册表里没有的（插件没装/改名）——也要显示成一行，
+              // 否则用户看不到自己配了什么，只会困惑「为什么没生效」
+              const ghosts = gtDraft.filter((n) => !all.some((a) => a.name === n));
+              return [
+                gt.available === null
+                  ? h('div', { key: 'noreg', className: 'dim' }, '读不到本机全局工具清单（注册表不可用）—— 可在下面手填名字')
                   : null,
-              ]),
-              // 手填：插件没装 / 名字还没在注册表里时用
-              h('div', { key: 'manual', className: 'row gtdraft' }, [
-                h('input', {
-                  key: 'i', type: 'text', placeholder: '手填工具名（如 generate_image），回车加入',
-                  onKeyDown: (e) => {
-                    if (e.key !== 'Enter') return;
-                    addGlobalTool(e.target.value);
-                    e.target.value = '';
-                  },
+                all.length === 0 && gt.available !== null
+                  ? h('div', { key: 'none', className: 'dim' }, '（本机没有注册任何第三方全局工具）')
+                  : null,
+                ...rows.map((a) => {
+                  const on = chosen.has(a.name);
+                  return h('label', {
+                    key: a.name,
+                    className: `gtrow${on ? ' on' : ''}`,
+                    title: a.hint || (a.imageLike ? '图片 / 生图相关' : undefined),
+                  }, [
+                    h('input', {
+                      key: 'i', type: 'checkbox', checked: on,
+                      onChange: (e) => toggleGlobalTool(a.name, e.target.checked),
+                    }),
+                    // 图片标识：一眼看出哪些是生图/改图这类工具
+                    h('span', { key: 'ic', className: 'gticon', 'aria-hidden': 'true' }, a.imageLike ? '🖼' : '🧩'),
+                    h('span', { key: 'n', className: 'gttname mono' }, a.name),
+                    a.imageLike ? h('span', { key: 'tag', className: 'badge ok' }, '图') : null,
+                    a.hint ? h('span', { key: 'h', className: 'gthint dim' }, a.hint) : null,
+                  ]);
                 }),
-                h('span', { key: 'h', className: 'dim' }, '注册表里没有的名字也能先配上（插件之后装了就会生效）'),
-              ]),
-              // 当前勾选（含手填的、或注册表里暂时没有的）
-              h('div', { key: 'chosen', className: 'gtgroup' }, [
-                h('span', { key: 't', className: 'dim' }, `额外放行（${gtDraft.length}）：`),
-              ].concat(gtDraft.length
-                ? gtDraft.map((n) => h('label', { key: n, className: 'gtitem on' }, [
-                  h('input', { key: 'i', type: 'checkbox', checked: true, onChange: (e) => toggleGlobalTool(n, e.target.checked) }),
-                  h('span', { key: 'n', className: 'mono' }, n),
-                  (gt.available !== null && !gt.available.some((a) => a.name === n))
-                    ? h('span', { key: 'w', className: 'badge warn', title: '本机注册表里没有这个名字：插件没装、或名字改了' }, '未注册')
-                    : null,
-                ]))
-                : [h('span', { key: 'none', className: 'dim' }, '（无 —— DM 看不到生图工具，配图会没有工具可用）')])),
-              h('div', { key: 'act', className: 'row' }, [
-                h('button', {
-                  key: 's', className: 'primary', disabled: gtBusy,
-                  onClick: () => { void saveGlobalTools(); },
-                }, gtBusy ? '保存中…' : '保存放行名单'),
-                h('button', {
-                  key: 'd', className: 'tiny', disabled: gtBusy,
-                  onClick: () => setGtDraft([...(gt.defaults ?? [])]),
-                }, '恢复默认（生图工具）'),
-              ]),
-            ]),
+                ...ghosts.map((n) => h('label', { key: `g:${n}`, className: 'gtrow on ghost' }, [
+                  h('input', {
+                    key: 'i', type: 'checkbox', checked: true,
+                    onChange: (e) => toggleGlobalTool(n, e.target.checked),
+                  }),
+                  h('span', { key: 'ic', className: 'gticon', 'aria-hidden': 'true' }, '🧩'),
+                  h('span', { key: 'n', className: 'gttname mono' }, n),
+                  h('span', { key: 'w', className: 'badge warn', title: '本机注册表里没有这个名字：插件没装、或名字改了' }, '未注册'),
+                ])),
+                // 关掉有副作用的工具时给一句明确后果（不阻止）
+                chosen.size === 0
+                  ? h('div', { key: 'warn0', className: 'dim gtWarn' },
+                    '⚠ 一个都没勾：DM 会看不见任何第三方工具，包括 GenUI 卡片渲染（它就只能发纯文字）。')
+                  : null,
+                !chosen.has('render_ui') && chosen.size > 0
+                  ? h('div', { key: 'warn1', className: 'dim gtWarn' },
+                    '⚠ 没勾 `render_ui`：DM 出的卡片不会被渲染（围栏会当普通文本）。')
+                  : null,
+              ];
+            })()),
+          gt === null ? null : h('div', { key: 'manual', className: 'row gtdraft' }, [
+            h('input', {
+              key: 'i', type: 'text', placeholder: '手填工具名（如 generate_image），回车加入',
+              onKeyDown: (e) => {
+                if (e.key !== 'Enter') return;
+                addGlobalTool(e.target.value);
+                e.target.value = '';
+              },
+            }),
+            h('span', { key: 'h', className: 'dim' }, '注册表里没有的名字也能先配上（插件之后装了就会生效）'),
+          ]),
+          gt === null ? null : h('div', { key: 'act', className: 'row gtAct' }, [
+            h('button', {
+              key: 's', className: 'primary', disabled: gtBusy,
+              onClick: () => { void saveGlobalTools(); },
+            }, gtBusy ? '保存中…' : '保存'),
+            h('button', {
+              key: 'a', className: 'tiny', disabled: gtBusy,
+              onClick: () => setGtDraft((cur) => [...(gt.available ?? []).map((x) => x.name),
+                ...cur.filter((n) => !(gt.available ?? []).some((x) => x.name === n))]),
+            }, '全选'),
+            h('button', {
+              key: 'n', className: 'tiny', disabled: gtBusy,
+              onClick: () => setGtDraft([]),
+            }, '全不选'),
+            h('button', {
+              key: 'd', className: 'tiny', disabled: gtBusy,
+              onClick: () => setGtDraft([...(gt.defaults ?? [])]),
+            }, '恢复默认'),
+          ]),
         ], 'gttools'),
 
-        // ══ 工具 ══ 诊断与工具清单 ───────────────────────────────────────────
-        section('工具', `rp_* 只在 DM 预设的会话里注册（当前 ${tools.length} 个）`, [
-          h('div', { key: 'd', className: 'dim' }, '这些是 DM 能调用的工具；其它预设的会话不加载。'),
-          h('div', { key: 'list', className: 'toollist scroll' }, tools.map((tool) => h('div', { key: tool.name, className: 'tool' }, [
-            h('span', { key: 'a', className: 'mono' }, tool.name),
-            h('span', { key: 'b', className: 'dim' }, `  ${String(tool.description ?? '').split('\n')[0]}`),
-          ]))),
+        // ══ 诊断 ══ rp_* 工具面板隐藏后，只留配置文件与一句数量说明 ─────────────
+        // 原来这里列出 8 个 rp_* 与各自的一句话说明。用户要求隐藏这块 —— 界面更干净；
+        // 清单本身仍可用 `/rp-tools/tools` 查，模型侧也一直看得到工具说明。
+        section('诊断', '配置文件与自检', [
           h('div', { key: 'file', className: 'dim mono' }, `配置文件：${state.file}`),
+          h('div', { key: 'rp', className: 'dim' }, `本插件的 ${tools.length} 个 rp_* 工具（只注册在 DM 预设的会话里）`),
         ], 'tools'),
       ]);
     }

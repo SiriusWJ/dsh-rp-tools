@@ -32,6 +32,12 @@ import nodeAssert from 'node:assert/strict';
 const FAKE_WS = 'X:\\ws';   // machine-path-ok：中性假路径，与真实机台无关
 
 /**
+ * 「第三方工具管理」那张表的当前勾选（默认 = 出厂默认全勾）。
+ * 测试要改它来模拟「用户取消了某些工具」，所以放在模块级而不是写死在 fetch 桩里。
+ */
+let globalToolsAllowStub = null;
+
+/**
  * 本文件用 `assert.*`（失败即抛、立刻停），与 smoke-dm 的 `check()` 不同 —— 所以这里
  * 包一层只为**统计通过/失败数**并给出与 smoke-dm 一致的收尾摘要行（失败照旧抛出去）。
  * 行为不变：成功返回原值，失败先加计数再原样抛。
@@ -246,6 +252,26 @@ globalThis.fetch = async (url, options = {}) => {
   const target = String(url);
   const reply = (json) => ({ ok: true, status: 200, json: async () => json });
   if (target.startsWith('/rp-tools/gate')) return reply(gateReply);
+  // 「第三方工具管理」那张表的数据源：设置页挂载时会拉它一次。
+  // 注意**故意混入一个非注册表名字**（`ghost_tool`），用来验证「配了但本机没有」的行会显示成
+  // 「未注册」而不是消失 —— 否则用户配完看不到任何反馈，只会困惑「为什么没生效」。
+  if (target.startsWith('/rp-tools/global-tools')) {
+    const all = ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image', 'view_canvas'];
+    const allow = globalToolsAllowStub ?? ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image'];
+    return reply({
+      ok: true,
+      allow,
+      defaults: ['render_ui', 'validate_dsh_ui', 'web_search', 'generate_image', 'edit_image'],
+      max: 32,
+      available: all.map((name) => ({
+        name,
+        checked: allow.includes(name),
+        imageLike: /(^|_)(image|img|photo|picture|draw|paint|illustrat)/i.test(name),
+        hint: name === 'render_ui' ? 'DM 的卡片全靠它渲染；关掉就只能发纯文字' : '',
+      })),
+      missing: allow.filter((n) => !all.includes(n)),
+    });
+  }
   if (target.startsWith('/rp-tools/cards')) {
     return reply({
       ok: true, root: `${FAKE_WS}\\cards`, exists: true, indexSource: 'index', librarySize: 3269,
@@ -2159,6 +2185,85 @@ async function ensureSidebarTab() {
   assert.ok(textOf(empty).includes('还没有默认宏'), '空列表要给一句人话引导');
   assert.ok(textOf(empty).includes('名字填 user、值填玩家'), '空列表要给出具体例子（user → 玩家）');
   stateStub.cards = { root: '', userLabel: '阿岚', macros: { user: '阿岚', place: '长安' } };
+  resetHooks();
+}
+
+// ── 关键断言 ⑧：「第三方工具管理」那张表（用户这轮提的全部要点）────────────────
+// 要求：① 原名「DM 会话放行」改成「第三方工具管理」；② **去掉固定放行**，全部可勾选；
+//      ③ 一行一个工具；④ 有图片标识；⑤ 已勾选的排前面；⑥ rp_* 工具面板隐藏。
+{
+  const reg = slotRegs.find((r) => r.name === 'settings.section');
+  const Props = {};
+
+  /** 渲染设置页直到这张表出现（它挂载后才拉 /rp-tools/global-tools）。 */
+  const renderSettings = async () => {
+    resetHooks();
+    let tree = render(Props, reg.component);
+    for (let i = 0; i < 14 && !textOf(tree).includes('第三方工具管理'); i++) { await tick(30); tree = render(Props, reg.component); }
+    return tree;
+  };
+
+  globalToolsAllowStub = null;   // = 出厂默认全勾
+  let tree = await renderSettings();
+  let text = textOf(tree);
+  assert.ok(text.includes('第三方工具管理'), '应改名为「第三方工具管理」');
+  assert.equal(text.includes('DM 会话放行'), false, '旧名「DM 会话放行」不该再出现');
+  assert.equal(text.includes('固定放行'), false, '不该再提「固定放行」');
+
+  // rp_* 工具面板已按要求隐藏：清单不再渲染，但配置文件仍要能看到
+  assert.equal(text.includes('这些是 DM 能调用的工具'), false, 'rp_* 工具清单面板应隐藏');
+  assert.equal(byClass(tree, 'toollist').length, 0, '不该再渲染 rp_* 的 toollist 列表');
+  assert.ok(text.includes('配置文件'), '隐藏清单后，配置文件路径仍要能看到');
+
+  // ③ 一行一个：每个工具一行 gtrow（桩里 6 个全局工具）
+  const rowsOf = (t) => findAll(t, (n) => String(n.props?.className ?? '').split(/\s+/).includes('gtrow'));
+  let rows = rowsOf(tree);
+  assert.ok(rows.length >= 6, `每个工具一行（桩里 6 个，实际 ${rows.length}）`);
+  // ② 没有锁定项：不该有 disabled 的勾选框
+  const boxes = findAll(tree, (n) => n.type === 'input' && n.props?.type === 'checkbox');
+  assert.ok(boxes.length >= 6, '每个工具一个勾选框');
+  assert.equal(boxes.some((b) => b.props.disabled === true), false, '不该有不可取消的勾选框（固定放行已取消）');
+  // ④ 图片标识：edit_image / generate_image 标成图片类
+  const imgRows = rows.filter((r) => String(r.props?.title ?? '').includes('图片') || textOf(r).includes('图'));
+  assert.ok(imgRows.length >= 2, '生图/改图那两行要有图片标识');
+  // ⑤ 已勾选的排前面。这里做两件事：
+  //    · 勾选状态要如实反映配置（默认 5 个勾、桩里多出来的 view_canvas 不勾）
+  //    · 行序：**勾了的在前面**（取消一个之后它要沉到后面，见下面那段）
+  const isGhost = (r) => String(r.props?.className ?? '').includes('ghost');
+  const boxOf = (r) => findAll(r, (n) => n.type === 'input' && n.props?.type === 'checkbox')[0];
+  const checkedRows = rows.filter((r) => boxOf(r)?.props.checked === true);
+  const uncheckedRows = rows.filter((r) => boxOf(r)?.props.checked === false);
+  assert.equal(checkedRows.length, 5, '出厂默认应勾 5 个（卡片渲染 2 + 考据 1 + 生图/改图 2）');
+  assert.equal(uncheckedRows.length, 1, '桩里多出的 view_canvas 默认不勾');
+  assert.equal(rows.some(isGhost), false, '这一轮（勾 5 个）不该有「未注册」的幽灵行');
+  // 序：前 5 行都是勾上的，第 6 行是没勾的 —— 这就是「选中的排前面」
+  assert.ok(rows.slice(0, 5).every((r) => boxOf(r)?.props.checked === true), '前 5 行应是已勾选的');
+  assert.equal(boxOf(rows[rows.length - 1])?.props.checked, false, '未勾选的排在最后');
+
+  globalToolsAllowStub = ['render_ui'];   // 只勾一个 → 只有它该排在前面
+  tree = await renderSettings();
+  rows = rowsOf(tree);
+  const idxOf = (name) => rows.findIndex((r) => textOf(r).includes(name));
+  assert.ok(idxOf('render_ui') >= 0, 'render_ui 应在表里');
+  assert.equal(idxOf('render_ui'), 0, '已勾选的要排在最前面');
+  const firstRowChecked = rows.length > 0
+    && findAll(rows[0], (n) => n.type === 'input' && n.props?.type === 'checkbox')[0]?.props.checked === true;
+  assert.ok(firstRowChecked, '第一行应是已勾选的那个');
+
+  // 手填「未注册」的名字要显示成一行（否则用户配完没反馈，只会困惑为什么没生效）
+  globalToolsAllowStub = ['render_ui', 'ghost_tool'];
+  tree = await renderSettings();
+  rows = rowsOf(tree);
+  const ghost = rows.find((r) => textOf(r).includes('ghost_tool'));
+  assert.ok(ghost, '配置里有、本机没注册的名字也要显示成一行');
+  assert.ok(textOf(ghost).includes('未注册'), '未注册的那行要标「未注册」');
+
+  // 一个都不勾时的后果要明说（不是阻止，是提醒）
+  globalToolsAllowStub = [];
+  tree = await renderSettings();
+  assert.ok(textOf(tree).includes('一个都没勾'), '全不勾时要给出明确后果提示');
+
+  globalToolsAllowStub = null;
   resetHooks();
 }
 console.log('客户端冒烟测试通过：');

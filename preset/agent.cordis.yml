@@ -173,21 +173,16 @@
 - id: dm-filter
   name: ./session-filter-v2.mjs
   config:
-    # 保留的全局工具；不存在于注册表的名字会被自动忽略。
-    # 注意：**这里不再需要放行任何 rp_*** —— 全部 rp_* 工具现在都在本预设作用域注册
-    # （由 rp-bridge 调 registerRpTools），不受全局过滤影响。
-    # 早先 rp_random 是全局的，所以必须在这里放行；现在它也在 dm 作用域了。
-    #
-    # ⚠️ 这一行只放**预设底线**（去掉任何一个都会当场砸掉功能）。**生图工具不写在这里** ——
-    #    「每个 DSH 装的生图插件可能不同、工具名也不同」，写死在预设里用户就得改这份文件，
-    #    而它重装插件时会被覆盖。生图那类额外放行改由**插件设置页勾选**（默认
-    #    `generate_image` / `edit_image`），持久化在 `styles.json` 的 `globalToolsAllow`，
-    #    session-filter-v2.mjs 会读它并合并进来（读不到/读坏则退回出厂默认）。
-    keepGlobalTools:
-      - render_ui
-      - validate_dsh_ui
-      # 查资料：开局搭世界时研究不熟悉的作品（见 persona 的「照着已有作品搭世界」）
-      - web_search
+    # ⚠️ 这里**故意没有 keepGlobalTools**：放行哪些**全局**工具完全由插件设置页的
+    #    「第三方工具管理」那张表决定（持久化在 `styles.json` 的 `globalToolsAllow`），
+    #    session-filter-v2.mjs 在挂载时读它。理由：
+    #      · 「本机装了哪些插件」人人不同（生图插件尤其），写死在预设里用户就得改这份文件，
+    #        而它重装插件时会被覆盖；
+    #      · 没有「固定放行」这一层：全部工具都可勾选、默认勾选 —— 出厂的默认值在
+    #        `lib/global-tools-defaults.js`（与过滤器同源），配置读不到/读坏时用它兜底。
+    #    手写在这里的名字仍会被并进名单（兼容手改过的人），但正常使用不必碰。
+    #    另注：**不需要**放行任何 rp_* —— 它们都在本预设作用域注册（rp-bridge 调 registerRpTools），
+    #    不受全局过滤影响。
     # 遮蔽的全局提示词章节 [章节名, order]；order 不参与遮蔽判断，仅保持一致。
     # 注册当前不存在的名字是无害的；主机新增全局插件带来新章节时加进来即可。
     blankPromptSections:

@@ -61,7 +61,7 @@ dsh plugin --profile web add github:SiriusWJ/dsh-rp-tools
 | `rp_lore` | 世界书取条目 / 生成模板 / 整本收拾 | `action?`（find/list/template/localize/rename_unnamed）`query?` `limit?`（默认 3，上限 10） |
 | `rp_session` | 本会话设置 | `action`*（get/set/clear）`world?` `prompt_prefix?` `campaign_name?` `macro_name?`+`macro_value?` `dm_prompt?` |
 | `rp_assets` | 本会话图片资源库：查 / 标注 / **导入** | `action?`（list/get/tag/**import**）`kind?` `characters?` `tags?` `q?` `limit?`（默认 20，上限 200）`id?` `label?` `path?` `attachment_id?` `prompt?` |
-| `rp_config` | **全局**卡库配置（卡库目录 + 默认宏列表）+ DM 会话放行的全局工具 | `action`*（`get`/`set`/`set_global_tools`）`cards_root?` `macro_name?` `macro_value?` `global_tools?` |
+| `rp_config` | **全局**卡库配置（卡库目录 + 默认宏列表）+ DM 放行的第三方工具名单 | `action`*（`get`/`set`/`set_global_tools`）`cards_root?` `macro_name?` `macro_value?` `global_tools?` |
 | `rp_table` | 随机表定义与掷表 | `action`*（list/set/remove/roll）`name?` `dice?` `entries?` `count?` `seed?` |
 
 \* ＝ 必填。`rp_assets(action:"import")` 就是**新图入馆的唯一入口**：`path` 填宿主 `generate_image` 返回的
@@ -76,11 +76,12 @@ dsh plugin --profile web add github:SiriusWJ/dsh-rp-tools
 
 - **设定**（文字与卡库）：卡库目录（留空 = 会话工作区下的 `rp-cards`）、默认宏列表（键值对，名字可改），
   外加「哪些宏是自动的」提示（时间 / 日期及其分量）
-- **DM 会话放行**：全局工具放行名单（底线固定 + 本机真实存在的全局工具供勾选，默认放行宿主的生图工具）——
-  详见下文「DM 怎么拿到宿主的生图工具」
-- **工具**：`rp_*` 清单与参数说明 + 配置文件路径
+- **第三方工具管理**：DM 能看见哪些**非本插件**的全局工具（一行一个、全部可勾选、出厂默认全勾、
+  已勾选的排前面）—— 详见下文「第三方工具管理」
+- **诊断**：配置文件路径 + 本插件注册了多少个 `rp_*` 工具
+  （原来这里列 8 个 `rp_*` 与参数说明的清单面板已按要求隐藏）
 
-全局设置只有前两部分。原来的「图像」那一整节（生图地址 / 风格 / 尺寸 / 预览）已随本地生图功能一起移除。
+原来的「图像」那一整节（生图地址 / 风格 / 尺寸 / 预览）已随本地生图功能一起移除。
 
 **RP 面板**：DM 会话头部右上角的「🎲 RP」按钮 → 右侧栏页签（非 DM 会话这个按钮与页签类型都不注册）。
 面板卡片：DM 设定、世界设定（含封面）、宏 / 变量、世界书、角色卡、**资源库**（没有图时整张卡片不渲染）、
@@ -147,22 +148,27 @@ GenUI 的 `image` 只认 `src` 字符串、不认附件 id，所以「重放」�
 DM 直接把地址放进 `dsh-ui` 的 image 组件重放即可，不必重出。角色卡编辑器里可以**导入图片**
 （png / jpeg / webp，≤8MB，落进 `<工作区>/rp-sessions/<会话 id>/assets/portraits/`）/ 移除立绘 / 删除角色。
 
-### DM 怎么拿到宿主的生图工具（可勾选的放行名单）
+### 第三方工具管理（DM 能看见哪些非本插件的工具）
 
-dm 预设里的 `dm-filter`（`preset/session-filter-v2.mjs`）会把**所有全局工具** deny 掉，只放行名单里的。
-而生图工具是**全局**注册的（`dsh-image-gen` 提供 `generate_image` / `edit_image`）——
+dm 预设里的 `dm-filter`（`preset/session-filter-v2.mjs`）会把**所有全局工具** deny 掉，
+只放行名单里的。生图、GenUI 卡片、联网搜索这些都是**全局**工具 ——
 **不在名单里 = DM 根本看不到它**，persona 里「用 `generate_image` 配图」就成了一句空话。
 
-**名单在哪配：插件设置页「DM 会话放行」卡片**（不用改预设文件）。它分三层：
+**名单在哪配：插件设置页「第三方工具管理」**（不用改预设文件）。**一行一个工具**，
+全部可勾选、**出厂默认全勾**，已勾选的排在最前面；图片类工具带 🖼 标识。
 
-| 层 | 内容 | 能不能改 |
-| --- | --- | --- |
-| 预设底线 | `render_ui` / `validate_dsh_ui` / `web_search` | **不能** —— 去掉任何一个都会当场砸掉卡片渲染、围栏自检或开局考据 |
-| 出厂额外放行 | `generate_image` / `edit_image`（宿主的生图工具） | 能，默认勾选 |
-| 本机其他全局工具 | 设置页会列出**你这台机器上真实存在**的全局工具供勾选 | 能 |
+| 出厂默认勾选 | 关掉的后果 |
+| --- | --- |
+| `render_ui` / `validate_dsh_ui` | DM 出的卡片不再渲染 / 围栏不再自检（界面会就此提醒） |
+| `web_search` | 开局不能联网考据（不需要联网可以关） |
+| `generate_image` / `edit_image` | DM 不能配图 / 不能改图 |
 
-为什么做成设置而不是写死在预设里：**每个 DSH 装的生图插件可能不一样**（工具名自然不同），
-而预设目录在重装插件时会被覆盖 —— 让你为换个插件去手改那份 YAML 是不合理的。
+**没有「固定放行」这一层**：连 `render_ui` 都能取消（那是你自己的机器）。设置页只对
+「关掉会失去什么」给一句提示，不锁死。
+
+为什么做成设置而不是写死在预设里：**每个 DSH 装的插件可能不一样**（生图插件尤其，
+`dsh-image-gen` 只是其中一种），工具名自然不同；而预设目录在重装插件时会被覆盖 ——
+让你为换个插件去手改那份 YAML 是不合理的。
 
 落地链路：
 
@@ -171,18 +177,19 @@ dm 预设里的 `dm-filter`（`preset/session-filter-v2.mjs`）会把**所有全
                                                      │
                           session-filter-v2.mjs 挂载时读它（读不到/读坏 → 退回出厂默认）
                                                      │
-                                          合并底线 → 算出要 deny 的全局工具
+                                          算出要 deny 的全局工具
 ```
 
 要点与边界：
 
-- **换一个生图插件**：在设置页勾上它的工具名（列表里没有就手填，带「未注册」标记的表示当前注册表里还没有）。
+- **换一个生图插件**：在设置页勾上它的工具名（列表里没有就手填，会标「未注册」，
+  装上对应插件即生效）。
 - **改完要新开 / 重进 DM 会话才生效** —— 过滤在会话挂载时施加。
-- 配置**读不到或读坏**时退回出厂默认（`generate_image` / `edit_image`），**底线永不受影响**；
-  显式留空才是「只留底线」。
-- 名字合法性（`[a-z][a-z0-9_]*`）、去重、剔除底线名、上限 32 条，都在共享模块
+- 配置**读不到或读坏**时退回出厂默认（默认那 5 项），免得 DM 因为一份坏配置什么工具都看不见；
+  **显式全不勾**才是「一个都不放行」。
+- 名字合法性（`[a-z][a-z0-9_]*`）、去重、上限 32 条，都在共享模块
   `lib/global-tools-defaults.js` 里 —— 插件与过滤器**同源**，不会两边走散。
-- 该失败是**静默**的，所以 `preset/rp-bridge.mjs` 还会在挂载时用 `ctx.tools.schemas()` 自查一次
+- 这个失败是**静默**的，所以 `preset/rp-bridge.mjs` 还会在挂载时用 `ctx.tools.schemas()` 自查一次
   （读的是**应用了作用域过滤之后**的可见工具集，「读不到 = 真被 deny 了」），缺了就打印一条明确的警告。
 
 > 若本机压根没装生图插件，把那条警告当噪音忽略即可 —— 代价只是 DM 不能配图。
@@ -291,9 +298,10 @@ $DSH_HOME/data/dsh-rp-tools/                     # DSH_HOME 默认 ~/.dsh
     "macros": { "user": "玩家" },
     "macrosSeeded": true
   },
-  // DM 会话要额外放行的**全局**工具（在预设底线之上追加；默认 = 宿主的生图工具）。
-  // 缺这个键 = 用出厂默认；显式空数组 = 只留预设底线。设置页勾选的就是它。
-  "globalToolsAllow": ["generate_image", "edit_image"]
+  // DM 会话放行的**全局**工具（设置页「第三方工具管理」那张表写的就是它）。
+  // 这是一份**完整名单**：没列进来的全局工具 DM 都看不见。
+  // 缺这个键 = 用出厂默认全勾；显式空数组 = 一个都不放行。
+  "globalToolsAllow": ["render_ui", "validate_dsh_ui", "web_search", "generate_image", "edit_image"]
 }
 ```
 
@@ -320,14 +328,11 @@ $DSH_HOME/data/dsh-rp-tools/                     # DSH_HOME 默认 ~/.dsh
 - id: dm-filter
   name: ./session-filter-v2.mjs
   config:
-    # ⚠️ 这里**只放预设底线**（去掉任何一个都会当场砸掉卡片渲染 / 围栏自检 / 开局考据）。
-    # 生图那类额外放行**不写在这里** —— 生图插件因机器而异，写死就得让用户改这份 YAML，
-    # 而预设目录在重装插件时会被覆盖。它改由**插件设置页勾选**（默认 generate_image / edit_image），
-    # 存在 styles.json 的 globalToolsAllow，session-filter-v2.mjs 挂载时读它并合并（见上文）。
-    keepGlobalTools:
-      - render_ui               # ← 来自 dsh-genui
-      - validate_dsh_ui         # ← 来自 dsh-genui
-      - web_search
+    # ⚠️ **故意没有 keepGlobalTools**：放行哪些全局工具完全由插件设置页的「第三方工具管理」
+    # 那张表决定（存在 styles.json 的 globalToolsAllow），session-filter-v2.mjs 挂载时读它。
+    # 理由：本机装了哪些插件人人不同（生图插件尤其），写死在预设里用户就得改这份 YAML，
+    # 而预设目录在重装插件时会被覆盖；也**没有「固定放行」**——全部工具都可勾选、默认勾选。
+    # 手写在这里的名字仍会被并进名单（兼容手改过的人），正常使用不必碰。
     blankPromptSections:        # 遮蔽的全局提示词章节（节选；保留 genui:fence，DM 靠它知道卡片怎么写）
       - ['harness:identity', -100]
       - ['app:web-surface', -98]
@@ -336,7 +341,7 @@ $DSH_HOME/data/dsh-rp-tools/                     # DSH_HOME 默认 ~/.dsh
     suppressRuntimeContext: false   # ⚠️ 不能开 true，开了每轮注入（状态/命中条目/在场角色）会被静默丢光
 ```
 
-`rp_*` 工具都在本作用域注册，**不需要**在 `keepGlobalTools` 里放行任何 `rp_*`。
+`rp_*` 工具都在本作用域注册，**不需要**在放行名单里放任何 `rp_*`（列表里也不会出现它们）。
 
 > ⚠️ `rp-bridge.mjs` 用 `createRequire()` 从 **profile 的 package.json** 解析已安装的 `dsh-rp-tools`，
 > 默认路径写死为 `C:/Users/75373/.dsh/profiles/web/package.json`。换了用户名 / 机器 / profile 目录时
@@ -382,7 +387,7 @@ dsh-rp-tools/
 |---|---|---|
 | `/rp-tools/state` | GET | 全局配置（`{ ok, file, config, autoMacros }`）+ 自动宏名单（同时学习浏览器 origin） |
 | `/rp-tools/config` | POST | 写全局配置（只认 `{ cards, campaign }`：卡库目录 / 默认宏列表） |
-| `/rp-tools/global-tools` | GET/POST | DM 会话放行名单：GET 列本机全部全局工具 + 当前勾选；POST 写勾选（持久化到 `styles.json`，过滤器读它） |
+| `/rp-tools/global-tools` | GET/POST | 第三方工具管理：GET 列本机全部全局工具 + 当前勾选；POST 写勾选（持久化到 `styles.json`，过滤器读它） |
 | `/rp-tools/reset` | POST | 恢复默认全局配置 |
 | `/rp-tools/inject` | GET | 注入自检：某个会话会被注入什么（只读） |
 | `/rp-tools/session` | GET/POST | 读写某个会话的 RP 配置 |

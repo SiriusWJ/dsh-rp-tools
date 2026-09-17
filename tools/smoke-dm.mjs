@@ -848,21 +848,26 @@ if (rpTable) {
   // ── 全局工具放行名单（1.15.0 起可配置）─────────────────────────────────────
   // 背景：本插件不出图，DM 配图靠宿主的**全局**工具，而 dm-filter 会 deny 不在名单里的全局工具。
   // 名单可配置才有意义 —— **每个 DSH 装的生图插件可能不同、工具名也不同**。
-  // 这一组钉住：发现能力（列出本机真实存在的全局工具）、勾选持久化、非法值剔除、底线不可取消。
+  // 这一组钉住：发现能力（列出本机真实存在的全局工具）、**一行一个都可选**、默认全勾、
+  // 勾选持久化、非法值剔除、未注册的名字要能被看见。
   {
-    // ① 发现：GET 要列出桩里那些全局工具，并标出哪些已勾选 / 哪些是底线
+    // ① 发现：GET 要列出桩里那些全局工具，并标出哪些已勾选
     const listed = await callGet('/rp-tools/global-tools');
     check('全局工具：GET ok', listed.status, 200);
-    check('全局工具：报出底线三项', (listed.json.base ?? []).join(','), 'render_ui,validate_dsh_ui,web_search');
-    check('全局工具：默认额外放行 = 宿主生图工具', (listed.json.allow ?? []).join(','), 'generate_image,edit_image');
+    check('全局工具：出厂默认全勾（卡片渲染 + 围栏自检 + 考据 + 生图 + 改图）', (listed.json.allow ?? []).join(','),
+      'render_ui,validate_dsh_ui,web_search,generate_image,edit_image');
+    // **没有「固定放行」这一层了**：不再报 base、也不再给任何项打 locked。
+    // 这两条是防回归的闸门 —— 要是有人又把某项做成不可取消，这里会响。
+    check('全局工具：不再有 base（固定放行已取消）', 'base' in (listed.json ?? {}), false);
+    check('全局工具：没有任何项被锁定（全部可取消）',
+      (listed.json.available ?? []).some((a) => a.locked) === true, false);
     check('全局工具：列出了本机真实存在的全局工具',
       (listed.json.available ?? []).map((a) => a.name).sort().join(','),
       'canvas_state,edit_image,generate_image,my_image_plugin,render_ui,validate_dsh_ui,web_fetch,web_search'.split(',').sort().join(','));
-    check('全局工具：默认项标记为已勾选',
-      (listed.json.available ?? []).filter((a) => a.checked).map((a) => a.name).sort().join(','), 'edit_image,generate_image');
-    check('全局工具：底线项标记为 locked（界面不可取消）',
-      (listed.json.available ?? []).filter((a) => a.locked).map((a) => a.name).sort().join(','), 'render_ui,validate_dsh_ui,web_search');
-    check('全局工具：生图类工具被标成 imageLike（界面好找）',
+    check('全局工具：默认项标记为已勾选（含 render_ui 那三项）',
+      (listed.json.available ?? []).filter((a) => a.checked).map((a) => a.name).sort().join(','),
+      'edit_image,generate_image,render_ui,validate_dsh_ui,web_search');
+    check('全局工具：生图类工具被标成 imageLike（界面打「图」标）',
       (listed.json.available ?? []).filter((a) => a.imageLike).map((a) => a.name).sort().join(','),
       'edit_image,generate_image,my_image_plugin');
     check('全局工具：默认没有「未注册」的项', (listed.json.missing ?? []).length, 0);
@@ -881,9 +886,11 @@ if (rpTable) {
     check('全局工具：落盘在 globalToolsAllow 键上',
       (onDiskGt.globalToolsAllow ?? []).join(','), 'my_image_plugin,edit_image');
 
-    // ④ 非法值 / 底线名要被剔除（这个值有一条写入路径来自模型，不能因为脏值整份写不进去）
+    // ④ 非法值要被剔除（这个值有一条写入路径来自模型，不能因为脏值整份写不进去）。
+    //    注意 `render_ui` **不再**被剔除 —— 它以前是「底线名」，现在只是一个普通的可选项。
     const dirty = await callPost('/rp-tools/global-tools', { allow: ['generate_image', 'render_ui', 'BAD NAME', 'ok_tool', 'ok_tool', 'tool.with.dot'] });
-    check('全局工具：剔除底线名与非法名、去重', (dirty.json.allow ?? []).join(','), 'generate_image,ok_tool');
+    check('全局工具：剔非法名、去重（底线名现在也是普通选项，不再被剔）',
+      (dirty.json.allow ?? []).join(','), 'generate_image,render_ui,ok_tool');
     const notArray = await callPost('/rp-tools/global-tools', { allow: 'generate_image' });
     check('全局工具：allow 不是数组 → 400', notArray.status, 400);
 
@@ -900,8 +907,10 @@ if (rpTable) {
       JSON.parse(readFileSync(join(TEST_HOME, 'data', 'dsh-rp-tools', 'styles.json'), 'utf8')).globalToolsAllow.join(','),
       'generate_image,edit_image,my_image_plugin');
     const getGt = await cfg2.execute({ action: 'get' });
-    check('rp_config：get 报出放行名单那一行',
-      getGt.lines.some((l) => l.startsWith('放行给 DM 会话的全局工具：') && l.includes('generate_image')), true);
+    check('rp_config：get 报出放行名单那一行（带条数）',
+      getGt.lines.some((l) => l.startsWith('放行给 DM 会话的全局工具（') && l.includes('generate_image')), true);
+    check('rp_config：get 报出出厂默认（设置页「恢复默认」用的就是它）',
+      getGt.lines.some((l) => l.startsWith('出厂默认') && l.includes('render_ui')), true);
     check('rp_config：get 报出本机实际存在的全局工具（供核对名字）',
       getGt.lines.some((l) => l.includes('本机实际存在的全局工具：') && l.includes('my_image_plugin')), true);
 
@@ -3334,31 +3343,31 @@ if (onSessionCreated) {
     // 每轮注入通道**不能**被关掉（关掉 = 世界书命中/在场角色静默丢失）
     const filter = rows.find((row) => row?.id === 'dm-filter');
     check('预设：dm-filter 显式 suppressRuntimeContext=false', filter?.config?.suppressRuntimeContext, false);
-    check('预设：保留 validate_dsh_ui（围栏自检靠它）',
-      (filter?.config?.keepGlobalTools ?? []).includes('validate_dsh_ui'), true);
-    // ⚠️ **跨文件契约的闸门**（1.15.0 起可配置，见 docs/REMOVE-IMAGE-GEN.md §10.1 与 README）：
-    // 本插件不出图，DM 配图靠宿主的**全局**工具 `generate_image` / `edit_image`；而 dm-filter 会把
-    // 不在放行名单里的全局工具全部 deny。铁律是「persona 让调的工具必须真的可见」，但**名单放在哪**
-    // 经历了两次修正：先写死在 YAML（换插件就得改预设，而预设重装会被覆盖）→ 现在改为
-    // **用户可勾选的设置**（`styles.json` 的 `globalToolsAllow`，出厂默认这两条），过滤器读它合并。
-    // 所以这里钉三件事：① YAML 只留预设底线；② 默认值在**共享模块**里（两边同源，不会走散）；
-    // ③ 过滤器确实去读了那份配置。任何一条断了，DM 就会静默看不见生图工具。
-    const keep = filter?.config?.keepGlobalTools ?? [];
-    check('预设：keepGlobalTools 只留预设底线（不再写死某个生图插件）',
-      keep.includes('render_ui') && keep.includes('validate_dsh_ui') && keep.includes('web_search'), true);
-    check('预设：keepGlobalTools 不含 generate_image（默认值改由配置提供）', keep.includes('generate_image'), false);
-    check('预设：keepGlobalTools 不含 edit_image', keep.includes('edit_image'), false);
-    // 共享默认值模块：插件与预设过滤器**同一份**（各自硬编码会走散 —— 底线少一项就是卡片渲染静默坏掉）
+    // ⚠️ **跨文件契约的闸门**（见 docs/REMOVE-IMAGE-GEN.md §10.1 与 README）：
+    // dm-filter 会把**不在放行名单里的全局工具全部 deny**，所以「DM 能用哪些第三方工具」这条契约
+    // 必须有人钉住 —— 铁律是「persona 让调的工具必须真的可见」。
+    // 名单的位置改过两次：① 写死在 YAML；② 拆成「固定底线 + 额外勾选」；③ 现在**没有固定放行**，
+    // 全部由插件设置页「第三方工具管理」那张表决定（`styles.json` 的 `globalToolsAllow`），
+    // 出厂默认在**共享模块**里，过滤器读它、读不到就用默认兜底。
+    // 所以这里钉三件事：① YAML 不再写死任何工具名；② 默认值在共享模块且内容正确；
+    // ③ 过滤器确实去读了那份配置。任何一条断了，DM 就会静默少能力。
+    check('预设：dm-filter 不再写死 keepGlobalTools（名单全交给设置页）',
+      filter?.config && !('keepGlobalTools' in filter.config), true);
+    // 共享默认值模块：插件与预设过滤器**同一份**（各自硬编码会走散 —— 默认少一项就是静默少能力）
     const gtDefaultsFile = join(here, '..', 'lib', 'global-tools-defaults.js');
     const gtSrc = readFileSync(gtDefaultsFile, 'utf8');
-    check('共享默认值：文件存在且导出底线与默认放行', /GLOBAL_TOOLS_BASE/.test(gtSrc) && /GLOBAL_TOOLS_ALLOW_DEFAULT/.test(gtSrc), true);
+    check('共享默认值：导出 GLOBAL_TOOLS_DEFAULT 与归一化函数',
+      /GLOBAL_TOOLS_DEFAULT/.test(gtSrc) && /normalizeGlobalToolsAllow/.test(gtSrc), true);
     const gtMod = await import(pathToFileURL(gtDefaultsFile).href);
-    check('共享默认值：底线三项', gtMod.GLOBAL_TOOLS_BASE.join(','), 'render_ui,validate_dsh_ui,web_search');
-    check('共享默认值：默认额外放行 = 宿主生图工具',
-      gtMod.GLOBAL_TOOLS_ALLOW_DEFAULT.join(','), 'generate_image,edit_image');
-    check('共享默认值：归一会剔非法名与底线名并去重',
+    // 默认全勾：GenUI 卡片（render_ui / validate_dsh_ui）+ 考据（web_search）+ 宿主生图/改图
+    check('共享默认值：出厂默认 = 卡片渲染 + 围栏自检 + 考据 + 生图 + 改图',
+      gtMod.GLOBAL_TOOLS_DEFAULT.join(','),
+      'render_ui,validate_dsh_ui,web_search,generate_image,edit_image');
+    check('共享默认值：**没有**「固定放行」这种常量了（底线已改为默认勾选）',
+      !/GLOBAL_TOOLS_BASE|ALLOW_DEFAULT/.test(gtSrc), true);
+    check('共享默认值：归一只剔非法名并去重（不再剔「底线名」—— 它们现在也是可选项）',
       gtMod.normalizeGlobalToolsAllow(['generate_image', 'generate_image', 'render_ui', 'BAD NAME', 'my_pic', '']).join(','),
-      'generate_image,my_pic');
+      'generate_image,render_ui,my_pic');
     // 过滤器必须去读那份配置（否则设置页勾了也没用）
     const filterSrc = readFileSync(join(here, '..', 'preset', 'session-filter-v2.mjs'), 'utf8');
     check('过滤器：读 styles.json 的 globalToolsAllow', /globalToolsAllow/.test(filterSrc) && /styles\.json/.test(filterSrc), true);
