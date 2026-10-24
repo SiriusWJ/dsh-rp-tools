@@ -1,7 +1,7 @@
 /**
  * dsh-rp-tools client half。
  *
- *  1. settings.plugins.tab「RP工具」：插件设置页里的一个页签（全局配置：卡库目录、默认宏列表）
+ *  1. plugins.tab「RP工具」：「插件」页面里的一个页签（全局配置：卡库目录、默认宏列表）
  *     + 工具列表与参数说明（实时读宿主 /rp-tools/tools）。
  *  2. conversation.session.header.utilities：会话头部**右上角**的「🎲 RP」入口，只在 DM 会话渲染。
  *  3. sidebar.right.pane.tab：RP 面板本体，作为**右侧栏的一种页签**打开。
@@ -3204,12 +3204,14 @@ window.__ModuleLoader__.load({
         });
         ctx.effect(() => () => { try { disposeInjectHandle(remoteInject); } catch { /* 忽略 */ } }, 'rp-tools: remote inject');
       } catch { /* 旧宿主没有 ctx.get/inject 的 remote 形态就只靠投影，功能不因此中断 */ }
-      // 设置入口：「插件」设置页里的一个页签（用户要求：配置面板放在插件面板那里，
-      // 不再占左侧设置导航的一整页）。
-      // 0.2.x 提供 `settings.plugins.tab` ——「Plugins settings section 里的一个页签」，
-      // 与「已安装」(order 10)、插件市场(order 60) 并排；我们排在已安装之后。
-      ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
-        name: 'settings.plugins.tab',
+      // 配置入口：**「插件」页面里的一个页签**（用户指定位置 —— 就是「已安装 / 插件市场 /
+      // 发现」那一排，点开后是 RP 工具的全局配置）。
+      //
+      // 槽位是 `plugins.tab`：「installed tab 之后追加的页面页签，label 是页签名，order 定位置」。
+      // 同一槽位现在有插件市场(dsh-market, order -1) 与发现(discover, order 0)，我们排在它们之后。
+      // ⚠️ 别改成 `settings.plugins.tab`：那是「设置 → 内置插件」页里的页签，不是用户要的这页。
+      ctx.slots.inject('plugins.tab', () => ctx.slots.register({
+        name: 'plugins.tab',
         id: 'rp-tools',
         order: 20,
         label: () => 'RP工具',
