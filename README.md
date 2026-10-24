@@ -2,7 +2,7 @@
 
 给 [DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/)（dsh）用的**跑团 / DM 工具插件**：中立随机裁决、世界书、状态追踪、按会话隔离的战役配置，以及 PNG 故事书（SillyTavern 角色卡）导入 —— 选一张卡就能开团。
 
-当前版本 **1.16.0** · MIT · 仓库 <https://github.com/SiriusWJ/dsh-rp-tools>
+当前版本 **1.17.0** · MIT · 仓库 <https://github.com/SiriusWJ/dsh-rp-tools>
 
 ---
 
@@ -11,19 +11,18 @@
 模型负责叙事，插件负责它记不住的那三样：**规则、设定、状态**。
 
 - **8 个 `rp_*` 工具**：随机裁决、会话配置、角色卡、全局配置、随机表、世界书、状态、图片资源库。全部只在 `dm` 预设的会话里注册，其它会话看不到工具，也没有任何 RP 界面。
-- **按会话隔离**：世界设定、角色卡、随机表、宏表、状态、世界书每会话一份，互不串台；全局的只有卡库目录、默认宏列表和第三方工具放行名单。
+- **按会话隔离**：世界设定、角色卡、随机表、宏表、状态、世界书每会话一份，互不串台；全局的只有卡库目录与默认宏列表。
 - **两条提示词注入通道**：稳定的世界观走 system 常驻段，每轮变化的状态 / 命中条目 / 在场角色走 runtime context。
 - **PNG 故事书导入**：从本地卡库选一张 SillyTavern PNG 卡，世界书、卡全文、全部开场白、卡面落进会话工作区，角色与世界观写进会话配置，自动切 `dm` 预设并发出开场指令。
-- **图片资源库（`rp_assets`）**：收录已有的图（宿主生图工具出的、玩家自备的），按分类 / 角色 / 标签 / 关键词找回来复用 —— 同一张图永远长得一样。
-- **设置页 + 右栏面板**：设置页「RP工具」管卡库与第三方工具放行；DM 会话头部「🎲 RP」打开右侧栏面板。
+- **图片资源库（`rp_assets`）**：收录已有图片（玩家自备的、导入卡的卡面等），按分类 / 角色 / 标签 / 关键词找回来复用 —— 同一张图永远长得一样。
+- **设置页 + 右栏面板**：设置页「RP工具」管卡库与默认宏；DM 会话头部「🎲 RP」打开右侧栏面板。
 
 **它不做什么**
 
-- **不做图片生成**：要新图用宿主环境里的生图工具（如 `generate_image` / `edit_image`，通常由生图插件提供）。本插件不内置、不调用任何生图后端或模型文件，只负责图片的**收录与复用**。
 - **不进入非 dm 会话**：工具与注入都在 `dm` 预设的 agent 作用域注册，换一个预设就完全看不到本插件。
 - **不做 ST 式正则表**：`{{user}}` 这类按 dsh 原生「宿主变量」实现，不执行用户正则。
 
-**环境**：dsh 0.2.1-rc.2 及以上（0.2.x 系列；包内 `engines.dsh` 为 `^0.2.1-rc.2`），桌面版的 profile 名是 `desktop`。插件本身零第三方运行时依赖；可选装提供 `render_ui` / `validate_dsh_ui` 的 GenUI 插件（如 `@changfenhuang/dsh-genui`，DM 的卡片靠它渲染）和生图插件（要配图时装）。
+**环境**：dsh 0.2.1-rc.2 及以上（0.2.x 系列；包内 `engines.dsh` 为 `^0.2.1-rc.2`），桌面版的 profile 名是 `desktop`。插件本身零运行时依赖。
 
 **0.2.x 适配**：DM 预设随插件包声明（`cordis.patch.yml` 里的 `preset-dm` 行），**装插件即装预设**，不再需要 `~/.dsh/.agent-presets/` 目录。
 
@@ -49,7 +48,7 @@ dsh plugin --profile desktop add link:<checkout 的绝对路径>
 
 ### 2. dm 预设随插件包自带
 
-dsh 0.2.x 起，agent 预设不再是文件系统目录，而是 bundle patch 里的一条 `@deepseek-ai/dsh-agent-preset` 行。DM 预设已经声明在本包的 `cordis.patch.yml`（`preset-dm`，id 为 `dm`，含 persona、文档与提问工具、`dm-filter`、`rp-bridge` 共六个子插件行），随插件一起加载。
+dsh 0.2.x 起，agent 预设不再是文件系统目录，而是 bundle patch 里的一条 `@deepseek-ai/dsh-agent-preset` 行。DM 预设已经声明在本包的 `cordis.patch.yml`（`preset-dm`，id 为 `dm`，含 persona、文档与提问工具、`dm-filter`、`rp-bridge` 等子插件行），随插件一起加载。
 
 所以**装好插件 = 装好了预设**：重启宿主后新建会话，预设列表里会直接出现「DM 角色扮演主持人」。
 
@@ -90,7 +89,7 @@ DSH_RP_PROFILE_PACKAGE=<profile>/package.json
 | `rp_random` | 中立随机裁决：骰子、区间、加权抽取、布尔 | `kind` `dice` `choices` `weights` `min` `max` `count`（1..20）`seed` |
 | `rp_session` | 本会话设置：世界设定、提示词前缀、战役名、DM 设定、宏 | `action`*（get/set/clear）`world` `prompt_prefix` `campaign_name` `dm_prompt` `macro_name`+`macro_value` |
 | `rp_character` | 角色卡增删改查（8 个字段） | `action`*（list/set/remove/clear）`name` `appearance` `personality` `speech` `behavior` `first_mes` `mes_example` `relations` |
-| `rp_config` | **全局**配置：卡库目录、默认宏列表、DM 放行的第三方工具 | `action`*（get/set/set_global_tools）`cards_root` `macro_name`/`macro_value` `global_tools` |
+| `rp_config` | **全局**配置：卡库目录、默认宏列表 | `action`*（get/set）`cards_root` `macro_name`/`macro_value` |
 | `rp_table` | 随机表定义与掷表 | `action`*（list/set/remove/roll）`name` `dice` `entries` `count` `seed` |
 | `rp_lore` | 世界书：列目录 / 按条取 / 生成模板 / 批量中文化与重命名 | `action`（find/list/template/localize/rename_unnamed）`query` `limit` |
 | `rp_state` | 状态追踪：场景 / 时间 / 地点 / 在场 / 线索 + 队伍 + 旗标 | `action`（set/get）`scene` `time` `location` `present` `clues` `party` `party_mode` `party_remove` `flags` |
@@ -102,7 +101,7 @@ DSH_RP_PROFILE_PACKAGE=<profile>/package.json
 
 | 通道 | 时机 | 放什么 |
 | --- | --- | --- |
-| **system 常驻段** | 每轮都在，要求逐字节稳定 | 战役名、DM 设定、世界设定、角色索引、路径指针（世界书 / 开局文件 / 地图）、已有可用图、常驻世界书条目（6000 字预算） |
+| **system 常驻段** | 每轮都在，要求逐字节稳定 | 战役名、DM 设定、世界设定、角色索引、路径指针（世界书 / 开局文件 / 地图）、常驻世界书条目（6000 字预算） |
 | **runtime context** | 每轮重新装配 | 当前状态、地图摘要、在场角色的详细卡、命中触发词的世界书条目 |
 | 文件（DM 按需 `read`） | 用到时 | 卡全文、全部开场白、被预算挡下的世界书条目 |
 
@@ -113,9 +112,8 @@ DSH_RP_PROFILE_PACKAGE=<profile>/package.json
 ### 设置页「RP工具」
 
 - **设定**：卡库目录 + 默认宏列表（导入卡时预填的键值对，如 `user` → 玩家称呼）。
-- **第三方工具管理**：DM 能看见哪些**非本插件**的全局工具。dsh 的 dm 预设会屏蔽所有全局工具，只放行这里的名单 —— 不放进来的工具 DM 根本看不见，persona 里「用 `generate_image` 配图」就成了一句空话。**一行一个插件**，一个勾选框管该插件全部工具；出厂默认放行 `render_ui` / `validate_dsh_ui` / `web_search` / `generate_image` / `edit_image`。没有「固定放行」：全部可取消（关掉 `render_ui` 时界面会提示后果，但不阻止）。
 - **诊断**：配置文件路径与工具数量。
-- **整页只有最上面一颗「保存」与一颗「恢复默认」**，第三方工具管理那一节没有自己的按钮。放行名单改完要**新开或重进 DM 会话**才生效（过滤在会话挂载时施加）。
+- 整页只有最上面一颗「保存」与一颗「恢复默认」。
 
 ### 右栏 RP 面板
 
@@ -123,19 +121,22 @@ DM 会话头部右上角「🎲 RP」→ 右侧栏页签（非 DM 会话这个�
 
 面板可直接编辑世界设定、DM 设定、宏、角色卡、资源库、随机表、当前状态；**提示词前缀 / 战役名只由 DM 用 `rp_session` 维护**，面板保存时会原样回写，不会把它们清空。
 
-## 图片：不做生图，只做收录与复用
+## 图片资源库：收录与复用
 
-需要新图时用宿主的 `generate_image`（改图用 `edit_image`）。画面描述里带上角色卡的 `appearance`，同一个角色跨场景的长相才稳。**刚生成的图会自动作为附件挂在对话里**，不要往正文贴 URL。
+图片资源库收录并复用会话里已有的图片（玩家自备的、导入卡的卡面等）：真存一份进会话目录（不是只记引用），按分类分文件夹、按内容 `sha256` 去重；只收 png / jpeg / webp，单张 ≤8MB。按分类 / 角色 / 标签 / 关键词查回来复用 —— 同一张图永远长得一样。
 
-想让这张图以后还能原样复用，就收进本会话资源库：
+入库有两条路：
+
+- **面板导入**：右栏 RP 面板的「资源库」里选本地图片；
+- **工具导入**：把工作区里已有的图片文件收进来：
 
 ```text
-rp_assets(action:"import", path:"<generate_image 返回的 savedTo>", label:"雨夜客栈大堂", tags:"客栈,雨夜", kind:"scene")
+rp_assets(action:"import", path:"<工作区内的图片文件>", label:"雨夜客栈大堂", tags:"客栈,雨夜", kind:"scene")
 ```
 
-`path` 也接受工作区相对路径或裸文件名；图没落盘时改用 `attachment_id`。**一定要填 `label` 和 `tags`**，否则以后搜不到。从资源库**重放**时，用 `dsh-ui` 的 `image` 组件，`src` 原样粘 `rp_assets` 返回的那行地址（GenUI 的 image 只认地址、不认附件 id）。
+`path` 接受工作区相对路径、绝对路径或裸文件名；只拿到附件 id 时用 `attachment_id`。**一定要填 `label` 和 `tags`**，否则以后搜不到。
 
-入库规则：真存一份进会话目录（不是只记引用），按分类分文件夹、按内容 `sha256` 去重；只收 png / jpeg / webp，单张 ≤8MB。DM 不能删图；玩家可以改标签、显示到对话、设为某角色立绘、删除（连磁盘文件一起删）。角色卡编辑器里也可以给角色导入立绘（同样走资源库）。
+DM 不能删图；玩家可以改名称与标签、设为某角色立绘、删除（连磁盘文件一起删）。角色卡编辑器里也可以给角色导入立绘（同样进资源库）。
 
 ## PNG 故事书导入
 
@@ -151,7 +152,7 @@ rp_assets(action:"import", path:"<generate_image 返回的 savedTo>", label:"雨
 
 工作区那一行的「📖 导入故事书」**只在未开局的 DM 新会话出现**；已经开局的团想再导一张卡，走 RP 面板里常驻的导入入口。DM / 旁白卡也认：没有角色字段的卡只导世界书和封面，DM 卡正文写进「DM 设定」。
 
-卡库：设置页「RP工具 → 设定 → 卡库目录」，默认 `<会话工作区>/rp-cards`。目录里的 `.png` 递归扫描（最多 3 层），约定结构 `cards/<分类>/*.png`；目录内容变化会自动重扫。卡里的 `first_mes` 在实测卡库中基本全是广告，导入时会丢弃，改用 `alternate_greetings` 当开场白。PNG 卡的数据在标准文本块 `tEXt` / `iTXt` / `zTXt` 里（`ccv3` 优先），只依赖 `node:zlib`，无第三方依赖。
+卡库：设置页「RP工具 → 设定 → 卡库目录」，默认 `<会话工作区>/rp-cards`。目录里的 `.png` 递归扫描（最多 3 层），约定结构 `cards/<分类>/*.png`；目录内容变化会自动重扫。卡里的 `first_mes` 在实测卡库中基本全是广告，导入时会丢弃，改用 `alternate_greetings` 当开场白。PNG 卡的数据在标准文本块 `tEXt` / `iTXt` / `zTXt` 里（`ccv3` 优先），解码只用 `node:zlib`，无额外依赖。
 
 > 参考实测记录（作者本机，见 [docs/STATUS.md](docs/STATUS.md)）：卡库 3269 张，抽样 160/160 解析成功、中位 1ms；642 条目的卡导入 25 条。
 
@@ -179,7 +180,7 @@ rp_assets(action:"import", path:"<generate_image 返回的 savedTo>", label:"雨
 
 ```text
 ~/.dsh/data/dsh-rp-tools/                    # DSH_HOME 默认 ~/.dsh
-├── styles.json                              # 全局：卡库目录、默认宏、DM 放行的第三方工具
+├── styles.json                              # 全局：卡库目录、默认宏列表
 ├── sessions/<会话 id>.json                  # 会话：世界 / 角色卡 / 随机表 / 宏 / 前缀 / 状态 / 立绘引用 / DM 设定
 ├── dm-sessions.json                         # DM 会话登记（界面据此显示 RP 入口）
 └── _agent-probe.json / _standing-probe.json # 诊断快照
@@ -224,8 +225,7 @@ node tools/probe-cardlib.mjs                         # 可选：真卡库探针�
 ## 已知限制
 
 - **只在 dm 预设生效**，且预设 id 固定为 `dm`：在 `cordis.patch.yml` 的 `preset-dm` 行里改成别的 id 后，客户端与导入流程仍按 `dm` 判定，需要同步改代码；0.1.x 的 `~/.dsh/.agent-presets/<id>/` 目录形态在 0.2.x 已失效。
-- 第三方工具放行名单改完要新开 / 重进 DM 会话；关掉 `render_ui` 会让 DM 的卡片不再渲染。
-- 图片：不生成、DM 不能删；只收 png / jpeg / webp 且 ≤8MB；角色一致性取决于宿主生图工具与本插件提供的 `appearance` 文本锚点。
+- 图片：DM 不能删图；只收 png / jpeg / webp 且 ≤8MB；资源库按内容去重。
 - 会话包只认 STORE（不压缩）zip；快照最多留 5 个；导入默认不覆盖，需要确认。
 - 世界书导入是**追加合并**（按标题去重），不会重写你手写的部分；「状态 / 历史」类条目若设成常驻会持续占上下文，面板只提示、不自动改语义。
 - 卡导入只做到「卡 → 世界书 + 基础字段」：`personality` 常整段导入，字段细分要靠 DM 按 `launch.md` 的待办整理。
@@ -237,7 +237,6 @@ node tools/probe-cardlib.mjs                         # 可选：真卡库探针�
 - [docs/STATUS.md](docs/STATUS.md)：开发状态、验证记录、路线图
 - [docs/HANDOFF.md](docs/HANDOFF.md)：交接文档（改代码前先读）
 - [docs/PNG-CARD-DECODE.md](docs/PNG-CARD-DECODE.md)：PNG 角色卡格式实测
-- [docs/REMOVE-IMAGE-GEN.md](docs/REMOVE-IMAGE-GEN.md)：移除本地生图的方案与实施记录（为什么本插件不做生图）
 
 ## License
 

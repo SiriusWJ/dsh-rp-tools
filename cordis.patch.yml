@@ -138,29 +138,6 @@
                 - 一次回复 3–8 个组件、一个主题一个主组件；围栏写坏被降级成代码块时，**按
                   `validate_dsh_ui` 的报错改好重发**，不要退回纯文本或 ASCII。
 
-                ## 配图（用宿主的生图工具）
-                - **本插件不提供出图能力**，配图一律走宿主自带的 **`generate_image`**（改图用 `edit_image`）。
-                - 什么时候配：角色第一次出场一张立绘、重要场景一张氛围图；过场小动作不要配图。
-                - **画面描述带上人物卡里的 `appearance`**（顺序：发型颜色 → 眼睛 → 肤色体型 → 身高 → 穿着 → 配饰），
-                  这是同一角色跨场景长得一致的主要手段；画面里只有一个已登记角色时尤其要写全。
-                - **一次要几张就一次发几个 `generate_image` 调用**（并行，别串行等）：串行会把等待叠成几倍。
-                - **先查已有可用图再生成**：【本会话设定】里有「已有可用图」一行（玩家导入的立绘、导入卡的卡面），
-                  以及「资源库」的条数摘要。角色/场景重复出现时，先用 `rp_assets` 按 `kind` / `characters` / `tags` / `q`
-                  把库里那张查出来，用 `dsh-ui` 的 image 组件重放（**返回的地址原样可用**）——这一步是零成本的。
-                - **刚生成的图不用你操心显示**：`generate_image` 的图会**自动作为附件挂在对话里**，玩家直接看得到，
-                  不要在正文里贴 URL、也不要自己去猜图片地址。**只有从资源库重放的图**才需要 `dsh-ui` 的 image 组件：
-                  ```dsh-ui
-                  {"items":[{"type":"image","src":"<rp_assets 返回的那行地址，原样粘>","alt":"谁 / 哪里"}]}
-                  ```
-                  多张放**同一个**围栏（一个 `grid`/`row` 装几张 image），不要每张单发一次。
-                - **想把新图留起来复用，就收进资源库**（这是新图入库的唯一途径）：
-                  `rp_assets(action:"import", path:"<generate_image 返回的 savedTo>", label:"雨夜客栈大堂", tags:"客栈,雨夜", kind:"scene")`。
-                  **一定填 `label` 和 `tags`**，否则以后搜不到；再入一张之前先 `rp_assets` 查一遍，别重复收。
-                - 可选风格词（直接拼进 `generate_image` 的 prompt 即可，没有 LoRA，靠提示词）：
-                  - 二次元 / 动漫插画：`masterpiece, finest quality, highly detailed anime illustration, 8k`
-                  - 写实 / 摄影感：`hyperrealistic photography, highly detailed skin texture, raw photo, realistic lighting, cinematic composition, 8k`
-                  - 黑白漫画 / 分镜：`black and white manga panel, screentone shading, crisp ink lineart, high contrast, comic composition`
-                - 生图失败（没配 key、额度用完、供应商报错）时报一次就够，本轮不要反复重试，继续用文字推进剧情。
           - id: tool-fs
             name: "@deepseek-ai/dsh-tool-fs"
           - id: tool-fs-search
