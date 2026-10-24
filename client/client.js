@@ -3257,7 +3257,10 @@ window.__ModuleLoader__.load({
               id: RP_TAB_ID,
               kind: RP_TAB_KIND,
               title: () => '🎲 RP',
+              // 0.2.1 起 guide 条目要求**provider 内唯一的 id**（没有 id 的条目在引导页里
+              // 拿不到稳定身份，卡片无法正常打开/去重）。order/title 保持原样。
               guide: [{
+                id: 'rp-tools-guide',
                 order: 30,
                 title: () => '🎲 RP 跑团面板',
                 description: () => '世界设定 / 角色卡 / 世界书 / 随机表 / 会话配置',
@@ -3325,13 +3328,21 @@ window.__ModuleLoader__.load({
       // 客户端用 `remote.$on` 就能收到）。导入入口的可见性必须跟着它重新判断：
       // 首屏选 dm → 切走 → 切回 dm 时，客户端那份投影可能一个字节都没变，
       // 组件不重渲染，按钮就再也回不来（只有刷新页面才恢复）—— 这正是用户报的现象。
+      //
+      // ⚠️ 0.2.x 起 `remote` 是**别的客户端插件提供**的服务，本插件 apply 执行时它可能
+      // 还没就绪；`ctx.get('remote')` 不会等待提供方（Cordis 的 get 只读当前 impl），
+      // 那一刻返回 undefined 就被 try/catch 静默跳过 —— 订阅永远没挂上。
+      // 所以改成**延迟注入**：Cordis 会等 remote 就绪再回调；它若一直不存在，
+      // 插件其余部分（设置页 / 头部入口 / 右栏面板）照常工作，只是少了这个提醒。
       try {
-        const remote = ctx.get ? ctx.get('remote') : undefined;
-        if (remote && typeof remote.$on === 'function') {
+        const remoteInject = ctx.inject(['remote'], (scope) => {
+          const remote = scope.remote;
+          if (!remote || typeof remote.$on !== 'function') return;
           const off = remote.$on('agent-preset/selected', notifyPresetChange);
-          ctx.effect(() => () => { try { off?.(); } catch { /* 忽略 */ } }, 'rp-tools: preset listener');
-        }
-      } catch { /* 拿不到 remote（旧宿主）就只靠投影，功能不因此中断 */ }
+          scope.effect(() => () => { try { off?.(); } catch { /* 忽略 */ } }, 'rp-tools: preset listener');
+        });
+        ctx.effect(() => () => { try { disposeInjectHandle(remoteInject); } catch { /* 忽略 */ } }, 'rp-tools: remote inject');
+      } catch { /* 旧宿主没有 ctx.get/inject 的 remote 形态就只靠投影，功能不因此中断 */ }
       ctx.slots.inject('settings.section', () => ctx.slots.register({
         name: 'settings.section',
         id: 'rp-tools',

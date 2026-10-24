@@ -130,6 +130,29 @@ function blankSections(ctx, sections) {
   }
 }
 
+/**
+ * 遮蔽全局 **runtime context**；条目形如 ['harness:source', 200]。
+ *
+ * 为什么单靠 blankPromptSections 不够（0.2.1 起）：宿主有些内容**同名注册了
+ * section 和 context 两遍** —— `harness:source`（本机 DSH checkout 路径）与
+ * `app:web-surface`（Web GUI URL）都是这样。空 section 只会遮住 section 那一半，
+ * 每轮的 context 那一半照样进上下文，DM 就会看到与跑团无关的机器路径。
+ * 空 context 在渲染时同样被丢弃（dsh-system-prompt 的 renderContextSections 会过滤
+ * text.length === 0），所以「同名空 context」是合法且不越权的遮蔽手段。
+ *
+ * ⚠️ 不要用 `suppressRuntimeContext()` 代替：那是全局开关，会连带关掉 rp-tools
+ * 自己的 `rp:turn` 通道（当前状态 / 世界书命中 / 在场角色），静默丢必用信息。
+ * ⚠️ `working_directory` 是 required 的，遮盖会被注册表按必需项恢复 —— 别配。
+ */
+function blankContexts(ctx, contexts) {
+  for (const entry of contexts) {
+    const name = Array.isArray(entry) ? entry[0] : entry && entry.name
+    const order = Array.isArray(entry) ? entry[1] : entry && entry.order
+    if (typeof name !== 'string' || !Number.isFinite(order)) continue
+    ctx.systemPrompt.context({ name, order, text: '' })
+  }
+}
+
 export default {
   inject: ['tools', 'systemPrompt'],
   apply(ctx, config) {
@@ -137,6 +160,7 @@ export default {
     const keep = Array.isArray(settings.keepGlobalTools) ? settings.keepGlobalTools : []
     restrictGlobals(ctx, keep)
     blankSections(ctx, Array.isArray(settings.blankPromptSections) ? settings.blankPromptSections : [])
+    blankContexts(ctx, Array.isArray(settings.blankContexts) ? settings.blankContexts : [])
     // 只有**显式** true 才关（v1 是 `!== false`，漏写即关 —— 那正是注入静默失效的原因之一）
     if (settings.suppressRuntimeContext === true) ctx.systemPrompt.suppressRuntimeContext()
   },

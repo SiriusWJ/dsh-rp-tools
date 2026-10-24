@@ -169,6 +169,12 @@
               sampleOverCapGlobResults: false
           - id: tool-ask-user
             name: "@deepseek-ai/dsh-tool-ask-user"
+          # 0.2.x 起 web_search / web_fetch 是**预设作用域**工具（web-app 把 host 行禁用了，
+          # standard 预设显式挂 tool-web）。dm-filter 只能 deny 全局层，放不进一个不存在的
+          # preset 工具 —— 想给 DM 联网能力，必须在这里挂。后端（dsh-web /
+          # web-search-deepseek / web-fetch-http）仍在 host 层，不需要额外配置。
+          - id: tool-web
+            name: "@deepseek-ai/dsh-tool-web"
           - id: dm-filter
             name: dsh-rp-tools/preset/session-filter-v2.mjs
             config:
@@ -187,6 +193,18 @@
                   - 152
                 - - ui:deliverable-file-references
                   - 190
+              # 0.2.x 的 harness:source / app:web-surface **同时注册了 section 和 runtime
+              # context**：上面只遮住了 section 那一半，每轮 context 里的「本机 DSH checkout
+              # 路径」与「Web GUI URL」仍会进 DM 上下文。空的同名 context 同样会被渲染器丢弃，
+              # 所以在这里用空 context 遮掉。⚠️ 别改成 suppressRuntimeContext —— 那会连带
+              # 关掉 rp-tools 自己的 rp:turn 通道。
+              # working_directory（required）/ sandbox_policy / approval_policy 不遮：
+              # 前者遮了会被按必需项恢复，后两者对 DM 是安全相关事实。
+              blankContexts:
+                - - harness:source
+                  - 200
+                - - app:web-surface
+                  - 210
               suppressRuntimeContext: false
           - id: rp-bridge
             name: dsh-rp-tools/preset/rp-bridge.mjs

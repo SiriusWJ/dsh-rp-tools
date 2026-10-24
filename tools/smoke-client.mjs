@@ -589,6 +589,21 @@ const ctx = {
         sidebarRight: { openTab: () => {}, isExpanded: () => false, active: () => null },
       });
     }
+    // 0.2.1 起 remote 靠**延迟注入**（apply 时它可能还没就绪），桩在这里同步回调，
+    // 并把 scope.effect 的清理函数收集起来供 dispose 执行。
+    if (typeof fn === 'function' && Array.isArray(names) && names.includes('remote')) {
+      const cleanups = [];
+      fn({
+        get: (name) => ctx.get(name),
+        remote: ctx.get('remote'),
+        effect: (register) => {
+          const cleanup = typeof register === 'function' ? register() : undefined;
+          if (typeof cleanup === 'function') cleanups.push(cleanup);
+          return () => {};
+        },
+      });
+      inner = () => { for (const cleanup of cleanups) { try { cleanup(); } catch { /* 忽略 */ } } };
+    }
     let disposed = false;
     return {
       dispose() {

@@ -85,17 +85,26 @@ export const inject = ['tools', 'systemPrompt'];
  *
  * 所以在这里主动查一次（`ctx.tools.schemas()` 读的是**全局注册表**，与 dm-filter 同一份来源），
  * 缺了就打印一条明确的警告，把「该往哪加」直接写出来 —— 这种失败本来就该吵，不该安静。
+ *
+ * ⚠️ **不能只认 `generate_image` / `edit_image` 两个名字**（0.2.x 的教训）：
+ * 生图能力来自用户装的插件，插件不同名字就不同 —— 本机常见的是 `codex_image_generate`
+ * （dsh-codex-subscription），还有些插件叫 `draw_*` / `*_canvas`。旧版只认那两个名字，
+ * 于是每个 DM 会话都误报一条「看不到生图工具」，哪怕本机明明有可用的生图工具。
+ * 现在改成按**名字形状**判断：一个都没有才算真的缺。
  */
 function warnIfNoImageTools(ctx) {
   try {
     const names = new Set((ctx.tools.schemas() ?? []).map((t) => t?.name).filter(Boolean));
-    const has = ['generate_image', 'edit_image'].filter((n) => names.has(n));
-    if (has.length) return;
+    // 先认标准名，再按形状兜底（image / draw / canvas / picture / illustrate）
+    const hasStandard = ['generate_image', 'edit_image'].some((n) => names.has(n));
+    if (hasStandard) return;
+    const shaped = [...names].filter((n) => /(image|draw|paint|canvas|picture|illustrat)/i.test(n)
+      && !/^rp_/.test(n));
+    if (shaped.length) return;
     console.warn(
-      '[rp-bridge] ⚠️ 本会话看不到宿主的生图工具（generate_image / edit_image）：'
-      + 'DM 的配图说明会变成空话（工具被 dm-filter 挡在外面了）。'
-      + '修法：打开「设置 → RP工具 → DM 会话放行」，把宿主的生图工具勾上（默认就该是勾的），'
-      + '换一个 DM 会话即生效。若本机根本没装生图插件，这条可以忽略。',
+      '[rp-bridge] ⚠️ 本机看起来没有任何生图工具（也找不到 generate_image / edit_image / codex_image_generate 这类名字）：'
+      + 'DM 的配图说明会变成空话（工具被 dm-filter 挡在外面，或者根本没装生图插件）。'
+      + '装好生图插件后，到「设置 → RP工具 → 第三方工具管理」把它的工具勾上，换一个 DM 会话即生效。',
     );
   } catch { /* 自检失败不影响注册 */ }
 }
