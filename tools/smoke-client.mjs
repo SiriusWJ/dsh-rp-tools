@@ -819,11 +819,15 @@ async function ensureSidebarTab() {
   assert.equal(previewText.includes('＋ 添加宏'), false, '导入表单不再提供「添加宏」');
   assert.equal(findAll(tree2, (n) => typeof n.props?.onClick === 'function' && textOf(n) === '×').length, 0,
     '导入表单不能删宏（名字要和卡对得上）');
-  assert.ok(previewText.includes('默认宏列表'), '要说明值来自设置页的默认宏列表');
-  // 占位符统计旁边要有「每一类怎么处理」的说明（用户问过「char 是什么、为什么不用填」）
-  assert.ok(previewText.includes('{{char}}') && previewText.includes('展开成卡名'), '要说明 {{char}} 已展开成卡名');
-  assert.ok(previewText.includes('随机') || previewText.includes('{{random:…}}'), '要说明带参数的占位符会被抽掉');
-  assert.ok(previewText.includes('已删除'), '要说明不合法的占位符被删掉');
+  // 用户要求右侧精简：宏说明压成一句「留空 = 用设置页默认值 / 自动宏」
+  assert.ok(previewText.includes('留空'), '要说明宏留空时的取值规则');
+  // 占位符统计只留一行计数 + 一句怎么处理（不再展开长解释，用户要求精简）
+  assert.ok(previewText.includes('占位符'), '预览要有占位符统计');
+  assert.ok(previewText.includes('导入时展开'), '要说明 {{char}} / {{user}} 导入时展开');
+  assert.equal(previewText.includes('随机'), false, '不再展开「随机占位符怎么处理」的长解释');
+  assert.equal(previewText.includes('已删除'), false, '不再展开「不合法占位符被删掉」的长解释');
+  // 世界书 / 角色卡长正文默认折叠（点开才看），右侧一上来只显示摘要
+  assert.ok(findAll(tree2, (n) => n.type === 'details').length >= 1, '长正文应放进可折叠的 details');
   // 自动宏（这里是 {{year}}）：标「自动」+ 说明留空即自动，不要求手填
   assert.ok(previewText.includes('{{year}}'), '卡里扫到的自动宏也要列出来');
   assert.ok(previewText.includes('自动'), '自动宏要标出「自动」');

@@ -519,10 +519,17 @@ window.__ModuleLoader__.load({
 .rpc .item .nm { font-size: 12.5px; }
 .rpc .item .mt { font-size: 11px; opacity: .6; }
 .rpc .prev { display: flex; flex-direction: column; gap: 8px; }
-/* 卡面：选中卡片后显示的那张大图。列表里**不**出缩略图（几十张几 MB 的卡同时拉会拖死），
-   只有选中这一张才请求，而且走宿主服务端降采样（thumb=1&width=420）。 */
-.rpc .face { max-width: 100%; max-height: 260px; width: auto; align-self: flex-start;
+/* 卡面：选中卡片后显示的那张图。列表里**不**出缩略图（几十张几 MB 的卡同时拉会拖死），
+   只有选中这一张才请求，而且走宿主服务端降采样（thumb=1&width=420）。
+   高度收在 180px：右侧预览以信息为主，图只是认脸用（用户要求精简）。 */
+.rpc .face { max-width: 100%; max-height: 180px; width: auto; align-self: flex-start;
   border-radius: 10px; border: .5px solid var(--dsw-alias-border-l2, color-mix(in oklab, currentColor 12%, transparent)); }
+/* 可折叠的长正文（世界书 / 角色卡）：默认收起，点标题展开 —— 右侧不再一上来就铺满文字 */
+.rpc .prevfold { border-radius: 8px; background: color-mix(in oklab, currentColor 5%, transparent); }
+.rpc .prevfold summary { cursor: pointer; padding: 6px 9px; font-size: 12px; opacity: .82; }
+.rpc .prevfold summary:hover { opacity: 1; }
+.rpc .prevfold[open] summary { border-bottom: 1px solid color-mix(in oklab, currentColor 10%, transparent); }
+.rpc .prevfold .prevbox { max-height: 240px; border-radius: 0 0 8px 8px; background: transparent; }
 .rpc .greet { display: flex; flex-direction: column; gap: 4px; }
 .rpc .macroblk { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 8px;
   background: color-mix(in oklab, currentColor 5%, transparent); }
@@ -2994,11 +3001,9 @@ window.__ModuleLoader__.load({
         ]),
         h('div', { key: 's', className: 'dim' },
           `世界书 ${preview.stats?.entries ?? 0} 条 / ${preview.stats?.totalChars ?? 0} 字`
-          + `${preview.stats?.skipped ? `（另有 ${preview.stats.skipped} 条超预算，只写进全文文件）` : ''}`
-          + `${preview.stats?.emptySkipped ? `（已丢掉 ${preview.stats.emptySkipped} 条空条目：正文只有模板残留）` : ''}`
-          + `｜开场白来源：${preview.character?.greetingSource === 'alternate_greetings'
-            ? `备用开场白（共 ${preview.character?.greetingAlternatives} 条）`
-            : preview.character?.greetingSource === 'first_mes' ? 'first_mes' : '无'}`),
+          + (preview.stats?.skipped ? `（${preview.stats.skipped} 条超预算，只写全文）` : '')
+          + (preview.character?.greetingSource === 'alternate_greetings'
+            ? `｜备用开场白 ${preview.character?.greetingAlternatives} 条` : '')),
         // 卡面：**只在选中这张时才加载**（列表里一张图都不请求，避免几十张几 MB 的卡同时拉）。
         // 走宿主 `thumb=1&width=420` 的服务端降采样 —— 卡 PNG 正文可能有上百万字，
         // 原图动辄几 MB，预览只需要看一眼封面。解码失败时宿主会回退原图。
@@ -3010,27 +3015,21 @@ window.__ModuleLoader__.load({
             loading: 'lazy', decoding: 'async',
           })
           : null,
-        // 卡里常见的占位符：这里摊开给用户看，并解释每一类**怎么被处理**（免得
-        // 「我卡里的 {{user}} 怎么没了」「{{char}} 是什么」这类疑问）
+        // 卡里常见的占位符：只留一行计数（原来那段解释太长，用户要求精简右侧）
         preview.placeholders?.total
-          ? h('div', { key: 'ph', className: 'dim' }, [
-            h('div', { key: 'c' }, `占位符：${Object.entries(preview.placeholders.counts ?? {}).map(([k, n]) => `${k}×${n}`).join('、')}`),
-            h('div', { key: 'l', className: 'phlegend' },
-              '{{char}} / <CHAR> 已展开成卡名；<USER> 已展开成玩家称呼；'
-              + '{{user}} 与其它合法宏就是下面那些表单行（值可改）；时间/日期类每轮自动；'
-              + '{{random:…}} / {{roll:…}} 导入时抽一次；名字不合法的占位符已删除。'),
-          ])
+          ? h('div', { key: 'ph', className: 'dim' },
+            `占位符：${Object.entries(preview.placeholders.counts ?? {}).map(([k, n]) => `${k}×${n}`).join('、')}`
+            + '（{{char}} / {{user}} 导入时展开，其余见下方宏表）')
           : null,
         // 英文属性键（name:/gender: Female）会在导入时中文化
         preview.attributes?.count
-          ? h('div', { key: 'attr', className: 'dim' },
-            `属性标签：${preview.attributes.count} 行将中文化（name→名称、gender: Female→性别：女 …）`)
+          ? h('div', { key: 'attr', className: 'dim' }, `属性标签：${preview.attributes.count} 行将中文化`)
           : null,
         // 开场白可以挑（卡常带好几条），选中的那条会内联进「开局」指令、
         // 全部开场白另存一份引导文件，DM 长开白时自己去 read（不截断）
         (preview.greetings ?? []).length
           ? h('div', { key: 'greet', className: 'greet' }, [
-            h('div', { key: 'l', className: 'dim' }, `开场白（${preview.greetings.length} 条可选，会写进 rp-cards/*.opening.md 引导文件）`),
+            h('div', { key: 'l', className: 'dim' }, `开场白（${preview.greetings.length} 条，选中这条会内联进开局指令）`),
             h('select', {
               key: 's', value: String(greetingIndex),
               onChange: (e) => setGreetingIndex(Number(e.target.value)),
@@ -3038,8 +3037,19 @@ window.__ModuleLoader__.load({
               `#${g.index + 1}${g.source === 'first_mes' ? '（first_mes）' : ''} · ${g.chars} 字 · ${String(g.preview ?? '').slice(0, 40)}…`))),
           ])
           : null,
-        preview.world ? h('div', { key: 'w', className: 'prevbox' }, preview.world) : null,
-        preview.character?.personality ? h('div', { key: 'p', className: 'prevbox' }, preview.character.personality) : null,
+        // 世界书 / 角色卡正文：默认**折叠**（用户要求精简右侧，想看再点开）
+        preview.world
+          ? h('details', { key: 'w', className: 'prevfold' }, [
+            h('summary', null, `世界书正文（${String(preview.world).length} 字）`),
+            h('div', { className: 'prevbox' }, preview.world),
+          ])
+          : null,
+        preview.character?.personality
+          ? h('details', { key: 'p', className: 'prevfold' }, [
+            h('summary', null, `角色卡正文（${String(preview.character.personality).length} 字）`),
+            h('div', { className: 'prevbox' }, preview.character.personality),
+          ])
+          : null,
         // ── 宏（第一次导入时让用户填）──────────────────────────────────────
         // 名字是**卡里扫到的**占位符，不可改也不可删（改了就对不上卡里的 `{{x}}`）；
         // 值从设置页「默认宏列表」预填，留空则用默认值 / 自动宏每轮现算。
@@ -3048,8 +3058,7 @@ window.__ModuleLoader__.load({
         h('div', { key: 'macros', className: 'macroblk' }, [
           h('div', { key: 'h', className: 'row' }, [
             h('span', { key: 't', className: 'mk' }, `宏（${macroRows.length}）`),
-            h('span', { key: 'd', className: 'dim' },
-              `值已按设置页「默认宏列表」预填（共 ${Object.keys(globalMacros).length} 条）；留空 = 用它自己那份或自动`),
+            h('span', { key: 'd', className: 'dim' }, '留空 = 用设置页默认值 / 自动宏'),
           ]),
           h('div', { key: 'rows', className: 'macrorows' }, macroRows.map((row, i) => h('div', {
             key: `m${i}`, className: 'row macrorow', 'data-auto': row.auto ? 'true' : 'false',
