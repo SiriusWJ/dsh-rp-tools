@@ -449,10 +449,11 @@ window.__ModuleLoader__.load({
    （用户要求：铺满中间会话面板、右上角退出、里面左右结构）。 */
 .rpc[data-inline='true'] { position: relative; flex: 0 0 auto; width: auto; }
 .rpc[data-inline='true'] .rpc-chip { align-self: center; }
-/* 面板本体：fixed 铺满视口（视觉上就是「会话区被这一页接管」），纵向 flex：
-   顶栏固定 + 内容区铺满剩余高度并自己滚动。 */
+/* 面板本体：**只盖中间会话列** —— 打开时由 JS 量出中栏矩形并写进 inline style
+   （左右侧栏保持可见、不被遮挡）。CSS 里的 inset:0 只是量不到矩形时的回退
+   （老宿主 / 窗口过小）。纵向 flex：顶栏固定 + 内容区铺满剩余高度并自己滚动。 */
 .rpc-full {
-  position: fixed; inset: 0; z-index: 95;
+  position: fixed; inset: 0; z-index: 80;
   display: flex; flex-direction: column;
   background: var(--dsw-alias-bg-base, var(--dsh-surface, #1b1c1f));
   color: var(--dsw-alias-label-primary, inherit);
@@ -2515,6 +2516,33 @@ window.__ModuleLoader__.load({
      *   ④ 开始游戏：把宿主备好的开场指令塞进输入框并提交。这条指令显式说了
      *      「不要再问世界从哪来」，否则 dm 预设的 persona 会先反问玩家一遍。
      */
+    /**
+     * 量出「中间会话列」的矩形 —— 导入面板只盖这一块，**左右侧栏保持可见、不被遮挡**。
+     *
+     * 做法：从 chip 的根节点往上走，取**最外层**那个「宽度明显小于视口、高度超过四成屏」
+     * 的容器。在 DSH 的三栏布局里那就是中间列（左右两栏占掉一部分宽度）。
+     * 量不到（测试桩 / 极老宿主 / 窗口太小）返回 null，调用方退回整屏覆盖。
+     */
+    function measureColumnRect(el) {
+      try {
+        if (!el || typeof el.getBoundingClientRect !== 'function') return null;
+        const vw = Number(window.innerWidth) || 0;
+        const vh = Number(window.innerHeight) || 0;
+        if (vw < 480 || vh < 320) return null;
+        let node = el.parentElement;
+        let found = null;
+        while (node && node !== document.body && node.parentElement) {
+          const r = node.getBoundingClientRect();
+          // 中栏：宽度小于视口（左右栏占位），高度足够撑满主要区域
+          if (r && r.width >= 320 && r.width <= vw - 24 && r.height >= vh * 0.4) {
+            found = { top: r.top, left: r.left, width: r.width, height: r.height };
+          }
+          node = node.parentElement;
+        }
+        return found;
+      } catch { return null; }
+    }
+
     function RpCardImport(props) {
       // 两种挂法共用同一套逻辑与界面：
       //   dock  —— 工作区那一行的 chip（只在未开局的 DM 新会话上出现，见下面的可见性判定）
@@ -2877,6 +2905,22 @@ window.__ModuleLoader__.load({
       // hook 不再执行，等于「按条件调用 hook」—— 真实 React 下状态会错位（测试桩尤其会）。
       const rootRef = React.useRef(null);
       const [slot, setSlot] = React.useState(undefined);   // undefined=还没量 / null=找不到 / {kind,row|rect}
+      // 导入面板只盖**中间会话列**（用户要求：左右侧栏不要占、不要遮）。
+      // 打开时量出中栏矩形，面板 fixed 到那块区域；量不到就退回整屏。
+      const [colRect, setColRect] = React.useState(null);
+      React.useLayoutEffect(() => {
+        if (!inlineMode || !open) return undefined;
+        const update = () => { try { setColRect(measureColumnRect(rootRef.current)); } catch { /* 忽略 */ } };
+        update();
+        // 右栏展开/收起会改中栏宽度但不改窗口尺寸 —— 打开期间轻量轮询兜住（500ms，开销可忽略）
+        const timer = setInterval(update, 500);
+        const canListen = typeof window.addEventListener === 'function';
+        if (canListen) window.addEventListener('resize', update);
+        return () => {
+          clearInterval(timer);
+          if (canListen) window.removeEventListener('resize', update);
+        };
+      }, [inlineMode, open]);
       React.useLayoutEffect(() => {
         if (embedMode || inlineMode || slot !== undefined) return;   // 槽位模式不进 DOM 找那一行
         setSlot(findHeroRowSlot(rootRef.current));
@@ -3099,8 +3143,17 @@ window.__ModuleLoader__.load({
           }, '✕ 退出'),
         ]);
         const body = h('div', { key: 'body', className: 'rpc-full-body' }, [panelBody]);
+        // 只盖中间会话列：量到了就 fixed 到那块矩形（左右侧栏保持可见、不被遮挡）；
+        // 量不到（首帧 / 测试桩）退回 CSS 的 inset:0。
+        const rectStyle = colRect
+          ? {
+            top: `${colRect.top}px`, left: `${colRect.left}px`,
+            width: `${colRect.width}px`, height: `${colRect.height}px`,
+          }
+          : undefined;
         const layer = h('div', {
           key: 'layer', className: 'rpc-full', role: 'dialog', 'aria-modal': 'true',
+          style: rectStyle,
         }, [bar, body]);
         return h('div', {
           className: 'rpc', ref: rootRef, 'data-inline': 'true',
