@@ -445,32 +445,49 @@ window.__ModuleLoader__.load({
 /* 定位用的空占位（chip 被 portal 送进那一行时，这里不能占空间） */
 .rpc .rpc-holder { display: none; }
 /* ── inline：注册在 conversation.hero.options（新会话行）时 ─────────────────────
-   chip 与旁边的工作区 / 预设下拉垂直居中；展开的面板改为**浮层**，不撑高那一行。 */
+   chip 与旁边的工作区 / 预设下拉垂直居中；点开后面板以**居中浮窗**呈现
+   （用户反馈：贴在新会话行下方的下拉面板又窄又长，浮窗更好用）。 */
 .rpc[data-inline='true'] { position: relative; flex: 0 0 auto; width: auto; }
 .rpc[data-inline='true'] .rpc-chip { align-self: center; }
-/* inline 浮层：**限高 + 自身滚动** —— 面板不能顶满屏幕（桌面看六成高、手机看七成），
-   内容再多也在面板里滚，不会把卡库列表 / 角色卡全文一路铺到屏幕外。 */
-.rpc[data-inline='true'] .panel {
-  position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
-  width: min(620px, calc(100vw - 48px));
-  max-height: min(64vh, 560px); overflow: auto; overscroll-behavior: contain;
-  background: var(--dsw-alias-bg-layer-2, var(--dsh-surface, #1b1c1f));
-  box-shadow: 0 12px 40px rgba(0, 0, 0, .45);
+.rpc-float-layer { position: fixed; inset: 0; z-index: 90; }
+.rpc-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); }
+/* 浮窗：居中、限高、自身滚动。两列（卡库 + 预览）在 760px 宽度下才舒展。 */
+.rpc-float {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(760px, calc(100vw - 40px)); max-height: min(82vh, 760px);
+  overflow: auto; overscroll-behavior: contain; z-index: 91;
+  padding: 14px 16px 16px; border-radius: 14px;
+  border: 1px solid color-mix(in oklab, currentColor 14%, transparent);
+  background: var(--dsw-alias-bg-layer-1, var(--dsh-surface, #1b1c1f));
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .55);
+  color: var(--dsw-alias-label-primary, inherit);
+  font-size: 13px; line-height: 1.5;
 }
-/* 面板内部两列也收一收：列表与预览各占有限高度，避免「滚中滚」两条滚动条互相打架 */
-.rpc[data-inline='true'] .list { height: auto; min-height: 0; max-height: min(42vh, 340px); }
-.rpc[data-inline='true'] .prevbox { max-height: 120px; }
-/* 手机 / 窄屏：浮层改成**底部弹层**（左右留边、宽度占满、限高 68vh）。
-   桌面那种「贴在新会话行右侧」在 640px 以下会把面板挤出视口。 */
+/* 浮窗顶部条：标题 + 关闭（sticky，长内容滚动时也点得到） */
+.rpc-float-bar { position: sticky; top: -14px; z-index: 2; display: flex; align-items: center; gap: 8px;
+  margin: -14px -16px 10px; padding: 12px 16px 8px;
+  background: inherit; backdrop-filter: blur(8px);
+  border-bottom: 1px solid color-mix(in oklab, currentColor 10%, transparent); }
+.rpc-float-title { font-size: 13px; font-weight: 600; }
+.rpc-float-x { margin-left: auto; flex: none; width: 26px; height: 26px; padding: 0;
+  border-radius: 8px; font-size: 13px; line-height: 1;
+  border: 1px solid color-mix(in oklab, currentColor 20%, transparent);
+  background: transparent; color: inherit; cursor: pointer; }
+.rpc-float-x:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
+/* 浮窗里的 panel 只当内容容器（背景/边框由浮窗给） */
+.rpc-float .panel { padding: 0; border: none; background: transparent; }
+/* 列表与预览各占有限高度，避免两条滚动条互相打架 */
+.rpc-float .list { height: auto; min-height: 0; max-height: min(52vh, 440px); }
+.rpc-float .prevbox { max-height: 140px; }
+/* 手机 / 窄屏：浮窗改成**底部弹层**（左右留边、宽度占满、限高 86vh），列表再压矮一档 */
 @media (max-width: 640px) {
-  .rpc[data-inline='true'] .panel {
-    position: fixed; left: 8px; right: 8px; bottom: 8px; top: auto;
-    width: auto; max-height: 68vh; border-radius: 14px; padding: 10px;
-    background: var(--dsw-alias-bg-layer-1, var(--dsh-surface, #1b1c1f));
-    box-shadow: 0 18px 48px rgba(0, 0, 0, .5);
+  .rpc-float {
+    left: 8px; right: 8px; bottom: 8px; top: auto; transform: none;
+    width: auto; max-height: 86vh; padding: 12px;
   }
-  .rpc[data-inline='true'] .list { max-height: min(30vh, 240px); }
-  .rpc[data-inline='true'] .prevbox { max-height: 90px; }
+  .rpc-float-bar { margin: -12px -12px 8px; padding: 10px 12px 8px; top: -12px; }
+  .rpc-float .list { max-height: min(38vh, 300px); }
+  .rpc-float .prevbox { max-height: 100px; }
 }
 .rpc .panel {
   display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 12px;
@@ -3069,6 +3086,32 @@ window.__ModuleLoader__.load({
 
       // embed：只出面板块（外面的 RP 面板负责收起/展开，也不再判定预设/开局）
       if (embedMode) return h('div', { className: 'rpc embed' }, [panelBody]);
+      // inline：点击后弹**居中浮窗**（带遮罩）—— 用户反馈贴在新会话行下方的下拉面板
+      // 又窄又长。浮窗有整屏空间，两列（卡库 + 预览）看得舒服，手机上收成底部弹层。
+      // 浮窗挂到 body（portal）：hero 行可能带 transform / overflow 裁剪，fixed 相对它会跑偏。
+      if (inlineMode && open) {
+        const mask = h('div', {
+          key: 'mask', className: 'rpc-mask',
+          onClick: () => setOpen(false),
+        });
+        const bar = h('div', { key: 'bar', className: 'rpc-float-bar' }, [
+          h('span', { key: 't', className: 'rpc-float-title' }, '📖 导入 PNG 故事书'),
+          h('button', {
+            key: 'x', type: 'button', className: 'rpc-float-x', title: '关闭',
+            onClick: () => setOpen(false),
+          }, '✕'),
+        ]);
+        const dialog = h('div', {
+          key: 'dialog', className: 'rpc-float', role: 'dialog', 'aria-modal': 'true',
+        }, [bar, panelBody]);
+        const layer = h('div', { key: 'layer', className: 'rpc-float-layer' }, [mask, dialog]);
+        return h('div', {
+          className: 'rpc', ref: rootRef, 'data-inline': 'true',
+        }, [
+          holder, entry,
+          ReactDOM ? ReactDOM.createPortal(layer, document.body) : layer,
+        ]);
+      }
       return h('div', {
         className: 'rpc', ref: rootRef,
         'data-inline': inlineMode ? 'true' : 'false',
