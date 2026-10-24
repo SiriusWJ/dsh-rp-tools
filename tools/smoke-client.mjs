@@ -610,7 +610,7 @@ plugin.apply(ctx);
 assert.equal(head.length, 1, '重复 apply 不应重复注入样式');
 
 // 槽位注册：设置页 + 头部入口 + 新会话行入口（三个都必须注册上）
-assert.ok(registered.includes('settings.section'), '应注册设置页');
+assert.ok(registered.includes('settings.plugins.tab'), '应在「插件」设置页注册 RP工具 页签');
 assert.ok(registered.includes('conversation.session.header.utilities'), '应注册头部右上角入口');
 assert.ok(registered.includes('conversation.hero.options'), '应注册新会话行（hero.options）的故事书导入入口');
 
@@ -2100,7 +2100,7 @@ async function ensureSidebarTab() {
 // 用户的要求：设置页里的是**预设默认值**，此时还不知道会用哪张卡，所以名字当然要能改；
 // 而 RP 面板/导入表单里列出的名字来自卡里的占位符，那边不能改名（改了匹配不上）。
 {
-  const reg = slotRegs.find((r) => r.name === 'settings.section');
+  const reg = slotRegs.find((r) => r.name === 'settings.plugins.tab');
   assert.ok(reg, '应注册设置页');
   resetHooks();
   calls.length = 0;
@@ -2186,7 +2186,7 @@ async function ensureSidebarTab() {
 // 「第三方工具管理」整节已按用户要求删除（DM 会话对宿主全局工具一律不放行，不再有放行配置）：
 // 这里钉的是「删干净了」以及「整页仍只有一颗保存、恢复默认只做配置 reset」。
 {
-  const reg = slotRegs.find((r) => r.name === 'settings.section');
+  const reg = slotRegs.find((r) => r.name === 'settings.plugins.tab');
   const Props = {};
   const renderSettings = async () => {
     resetHooks();
