@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
-const DEFAULT_INDEX_URL = 'https://raw.githubusercontent.com/SiriusWJ/dsh-rp-tools/main/market/index.json';
+const DEFAULT_INDEX_URL = 'https://cdn.jsdelivr.net/gh/SiriusWJ/dsh-rp-tools@main/market/index.json';
 
 // ---------- 与 dsh-plugin-market-index 完全一致的常量 ----------
 const LANGUAGE_ID = /^[a-z]{2,8}(?:-[a-z0-9]{1,8})*$/u;
