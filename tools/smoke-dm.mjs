@@ -215,7 +215,7 @@ async function callGet(path, query = '') {
   await route.handler({ method: 'GET', url: `${path}${query}`, headers: {} }, res);
   return { status: res.out.status, json: JSON.parse(res.out.body || '{}') };
 }
-async function callPost(path, body, origin = 'http://127.0.0.1:3080', host = '127.0.0.1:3080') {
+async function callPost(path, body, origin = 'http://127.0.0.1:3080', host = '127.0.0.1:3080', remoteAddress = '127.0.0.1') {
   const route = routes.get(path);
   const res = mkRes();
   // readJsonBody 用 `for await (const chunk of request)` —— 必须给真正的 Readable 流。
@@ -223,7 +223,11 @@ async function callPost(path, body, origin = 'http://127.0.0.1:3080', host = '12
   req.method = 'POST';
   req.url = path;
   // sameOrigin 比对 new URL(origin).host 与 headers.host —— 两个都要给。
-  req.headers = { origin, host, 'content-type': 'application/json' };
+  // origin 传 null 表示「无 Origin 头」：桌面版 Electron 的 dsh-app:// 转发就是这样。
+  const headers = { host, 'content-type': 'application/json' };
+  if (origin !== null) headers.origin = origin;
+  req.headers = headers;
+  req.socket = { remoteAddress };
   await route.handler(req, res);
   return { status: res.out.status, json: JSON.parse(res.out.body || '{}') };
 }
@@ -258,6 +262,16 @@ check('GET session(session- 前缀).isDm', (await callGet('/rp-tools/session', `
 check('GET session(未登记).isDm', (await callGet('/rp-tools/session', `?sessionId=${TEST}`)).json.isDm, false);
 // 真实的跨站攻击形态：浏览器会强制把 Host 设成被攻击站点，只有 Origin 指向攻击者。
 check('POST dm-mark 跨域被拒', (await callPost('/rp-tools/dm-mark', { sessionId: TEST }, 'http://evil.example', '127.0.0.1:3080')).status, 403);
+// 桌面版（Electron）兼容：DSH 桌面版页面在 dsh-app:// 协议下，主进程转发 fetch 时
+// **删掉 Origin 头**（只补 host cookie），所以桌面版里每个 POST 都没有 Origin。
+// 旧实现要求 Origin 必须存在 → 桌面版点「导入并开始」直接 403（web 版却正常）。
+// 现在的口径：无 Origin 时只要求连接来自本机环回；非环回仍然拒绝。
+check('POST dm-mark 无 Origin（桌面版转发形态）+ 环回 → 放行',
+  (await callPost('/rp-tools/dm-mark', { sessionId: TEST }, null, '127.0.0.1:3080', '127.0.0.1')).json.ok, true);
+check('POST dm-mark 无 Origin 但非环回 → 仍拒绝',
+  (await callPost('/rp-tools/dm-mark', { sessionId: TEST }, null, '127.0.0.1:3080', '192.168.1.9')).status, 403);
+check('POST dm-mark Origin: null + 环回 → 放行',
+  (await callPost('/rp-tools/dm-mark', { sessionId: TEST }, 'null', '127.0.0.1:3080', '127.0.0.1')).json.ok, true);
 check('POST dm-mark 同源登记（第二个会话）', (await callPost('/rp-tools/dm-mark', { sessionId: TEST, preset: 'dm' })).json.ok, true);
 check('登记后 isDm', (await callGet('/rp-tools/session', `?sessionId=${TEST}`)).json.isDm, true);
 check('重复登记幂等', (await callPost('/rp-tools/dm-mark', { sessionId: TEST, preset: 'dm' })).json.ok, true);
