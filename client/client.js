@@ -448,11 +448,29 @@ window.__ModuleLoader__.load({
    chip 与旁边的工作区 / 预设下拉垂直居中；展开的面板改为**浮层**，不撑高那一行。 */
 .rpc[data-inline='true'] { position: relative; flex: 0 0 auto; width: auto; }
 .rpc[data-inline='true'] .rpc-chip { align-self: center; }
+/* inline 浮层：**限高 + 自身滚动** —— 面板不能顶满屏幕（桌面看六成高、手机看七成），
+   内容再多也在面板里滚，不会把卡库列表 / 角色卡全文一路铺到屏幕外。 */
 .rpc[data-inline='true'] .panel {
   position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
-  width: min(560px, calc(100vw - 48px));
+  width: min(620px, calc(100vw - 48px));
+  max-height: min(64vh, 560px); overflow: auto; overscroll-behavior: contain;
   background: var(--dsw-alias-bg-layer-2, var(--dsh-surface, #1b1c1f));
   box-shadow: 0 12px 40px rgba(0, 0, 0, .45);
+}
+/* 面板内部两列也收一收：列表与预览各占有限高度，避免「滚中滚」两条滚动条互相打架 */
+.rpc[data-inline='true'] .list { height: auto; min-height: 0; max-height: min(42vh, 340px); }
+.rpc[data-inline='true'] .prevbox { max-height: 120px; }
+/* 手机 / 窄屏：浮层改成**底部弹层**（左右留边、宽度占满、限高 68vh）。
+   桌面那种「贴在新会话行右侧」在 640px 以下会把面板挤出视口。 */
+@media (max-width: 640px) {
+  .rpc[data-inline='true'] .panel {
+    position: fixed; left: 8px; right: 8px; bottom: 8px; top: auto;
+    width: auto; max-height: 68vh; border-radius: 14px; padding: 10px;
+    background: var(--dsw-alias-bg-layer-1, var(--dsh-surface, #1b1c1f));
+    box-shadow: 0 18px 48px rgba(0, 0, 0, .5);
+  }
+  .rpc[data-inline='true'] .list { max-height: min(30vh, 240px); }
+  .rpc[data-inline='true'] .prevbox { max-height: 90px; }
 }
 .rpc .panel {
   display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 12px;
