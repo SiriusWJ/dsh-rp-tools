@@ -609,13 +609,13 @@ assert.ok(style.textContent.includes('--dsw-alias-interactive-bg-hover'), 'chip 
 plugin.apply(ctx);
 assert.equal(head.length, 1, '重复 apply 不应重复注入样式');
 
-// 槽位注册：设置页 + 头部入口 + 输入框上方入口（三个都必须注册上）
+// 槽位注册：设置页 + 头部入口 + 新会话行入口（三个都必须注册上）
 assert.ok(registered.includes('settings.section'), '应注册设置页');
 assert.ok(registered.includes('conversation.session.header.utilities'), '应注册头部右上角入口');
-assert.ok(registered.includes('conversation.input.dock'), '应注册输入框上方的故事书导入入口');
+assert.ok(registered.includes('conversation.hero.options'), '应注册新会话行（hero.options）的故事书导入入口');
 
-const dockReg = slotRegs.find((r) => r.name === 'conversation.input.dock');
-assert.ok(dockReg, 'conversation.input.dock 应有注册项');
+const dockReg = slotRegs.find((r) => r.name === 'conversation.hero.options');
+assert.ok(dockReg, 'conversation.hero.options 应有注册项');
 assert.equal(dockReg.id, 'rp-card-import', '导入入口的槽位 id 应稳定（界面/测试都按它找）');
 assert.equal(typeof dockReg.order, 'number', 'order 必须是数字，否则排序会退化');
 assert.equal(typeof dockReg.component, 'function', '槽位必须注册组件本身（只注册 spec 等于没有界面）');
@@ -736,16 +736,16 @@ async function ensureSidebarTab() {
 {
   const DM_PROPS = () => propsFor({ blank: true, preset: 'dm' });
 
-  // ① 折叠态：只有一枚 chip（而且被送进了「工作区 / DM 主持人」那一行）
+  // ① 折叠态：只有一枚 chip —— **inline 模式**：注册在 conversation.hero.options 槽位，
+  //    位置由宿主那条「新会话行」直接给（工作区 / 预设下拉的同一行），
+  //    不再自己做 DOM 查找与 portal（旧实现靠 portal 猜那一行，0.2.x 下猜不中才会自己占一行）。
   const tree = render(DM_PROPS());
   const chips = byClass(tree, 'rpc-chip');
   assert.equal(chips.length, 1, '折叠态应渲染一枚 chip');
   assert.ok(textOf(chips[0]).includes('导入故事书'), 'chip 文案应说明这是导入入口');
   assert.equal(byClass(tree, 'panel').length, 0, '折叠态不该渲染面板');
-  const portals = findAll(tree, (n) => n.type === 'Portal');
-  assert.equal(portals.length, 1, '入口应 portal 进「工作区 / DM 主持人」那一行');
-  assert.equal(portals[0].props.container, rowEl, 'portal 的目标应是紧挨在 dock 之前的那一行');
-  assert.equal(chips[0].props['data-row'], 'true', '送进那一行后应用矮一号的样式');
+  assert.equal(findAll(tree, (n) => n.type === 'Portal').length, 0, 'inline 模式不再 portal（位置由槽位给）');
+  assert.equal(chips[0].props['data-inline'], 'true', 'inline 模式要打标记（样式据此与旁边两个下拉对齐）');
 
   // ② 只在不曾开局的 DM 新会话上出现
   // 闸门答复要跟着场景走（现实中宿主就是活的会话本身，答案自然一致）
@@ -892,21 +892,14 @@ async function ensureSidebarTab() {
   assert.ok(textOf(reopened).includes('rp-worldbook.md'), '再点开仍能看到上一次的导入结果');
 }
 
-// ── 关键断言 ③：两种宿主差异都要能贴到那一行 ───────────────────────────────
+// ── 关键断言 ③：inline 模式不依赖 react-dom / DOM 结构 ─────────────────────
 {
   const DM_PROPS = () => propsFor({ blank: true, preset: 'dm' });
 
-  // ① dock 的条目外面套了一层容器（那一行不是根元素的直接上一兄弟）→ 要逐层往上找
-  domVariant = 'wrapped';
-  resetHooks();                       // 换一种 DOM 布局 = 重新挂载组件
-  const wrapped = render(DM_PROPS());
-  const portalsW = findAll(wrapped, (n) => n.type === 'Portal');
-  assert.equal(portalsW.length, 1, '套了容器也要能找到那一行（逐层往上找）');
-  assert.equal(portalsW[0].props.container, rowEl, 'portal 目标仍应是那一行');
-  domVariant = 'direct';
-  resetHooks();
+  // inline 模式不再做 DOM 查找（旧实现要处理「条目外面套了一层容器」这类结构差异）——
+  // 位置由宿主槽位 conversation.hero.options 直接给。
 
-  // ② 拿不到 react-dom → 退回「量出那一行的位置、把 chip 贴上去」，而不是自己占一行
+  // 拿不到 react-dom → chip 仍要在（inline 模式根本不需要 portal）
   (0, eval)(source);                   // 再求值一次 bundle，拿一个新的 factory
   const plugin2 = captured.factory((name) => {
     if (name === 'react') return React;
@@ -920,15 +913,13 @@ async function ensureSidebarTab() {
     effect: () => () => {},
     get: () => undefined,
   });
-  const dock2 = regs2.find((r) => r.name === 'conversation.input.dock');
+  const dock2 = regs2.find((r) => r.name === 'conversation.hero.options');
   resetHooks();
   const noDom = render(DM_PROPS(), dock2.c);   // 注意：渲染的是**第二个实例**的组件
   const chips2 = byClass(noDom, 'rpc-chip');
   assert.equal(chips2.length, 1, '拿不到 react-dom 时 chip 仍要在（不能消失）');
-  assert.equal(findAll(noDom, (n) => n.type === 'Portal').length, 0, '没有 react-dom 时不能走 portal');
-  assert.equal(chips2[0].props['data-row'], 'true', '应仍按「在那一行里」的样式渲染');
-  assert.equal(chips2[0].props.style?.position, 'fixed', '没有 portal 就用量出来的位置贴上去');
-  assert.equal(chips2[0].props.style?.left, '306px', '横向应接在那一行最后一个 chip 后面（right+6）');
+  assert.equal(findAll(noDom, (n) => n.type === 'Portal').length, 0, 'inline 模式不依赖 portal');
+  assert.equal(chips2[0].props['data-inline'], 'true', 'inline 模式不需要 DOM 测量（位置由槽位给）');
 }
 
 // ── 右栏页签类型只在 DM 会话注册（用户报的「右侧栏每个会话都有 RP 跑团面板」）──
@@ -2006,7 +1997,7 @@ async function ensureSidebarTab() {
 // 而宿主那边也只记内存。两处都不知道 → 卡库根落空。这里钉住界面这一半的兜底：
 // cwd 缺失 → 必须去 /rp-tools/session 问一次，并把拿到的 cwd 用在后续读盘请求上。
 {
-  const tab = slotRegs.find((r) => r.name === 'conversation.input.dock');
+  const tab = slotRegs.find((r) => r.name === 'conversation.hero.options');
   calls.length = 0;                 // 只关心这一段发出的请求
   resetHooks();                    // 重新挂载，清掉上一步的面板状态
   const noCwd = () => propsFor({ blank: true, preset: 'dm', cwd: '' });
@@ -2036,7 +2027,7 @@ async function ensureSidebarTab() {
 // 于是 `projectionValues.agentPreset` 读成空串 —— 只看投影的判定会让入口永久消失。
 // 宿主手里是活着的会话对象，所以它必须能推翻投影。
 {
-  const tab = slotRegs.find((r) => r.name === 'conversation.input.dock');
+  const tab = slotRegs.find((r) => r.name === 'conversation.hero.options');
   const waitFor = async (view, wanted) => {
     let tree = render(view(), tab.component);
     for (let i = 0; i < 14 && byClass(tree, 'rpc-chip').length !== wanted; i++) {
@@ -2229,6 +2220,6 @@ console.log(`  · apply 后样式表已注入（${style.textContent.length} 字�
 console.log(`  · 重复 apply 幂等`);
 console.log(`  · 已注册槽位：${[...new Set(registered)].join(', ')}`);
 console.log(`  · 故事书导入槽位：id=${dockReg.id} order=${dockReg.order}`);
-console.log(`  · 无头渲染全流程通过：portal 进工作区那一行 / 只在未开局的 DM 新会话出现 / 列表 / 预览 / 导入 / 结果留存（共 ${calls.length} 次请求）`);
+console.log(`  · 无头渲染全流程通过：inline 挂在新会话行（hero.options） / 只在未开局的 DM 新会话出现 / 列表 / 预览 / 导入 / 结果留存（共 ${calls.length} 次请求）`);
 // 与 smoke-dm 一致的收尾摘要（失败到不了这里 —— assert 失败会直接抛）
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);

@@ -444,6 +444,16 @@ window.__ModuleLoader__.load({
 .rpc-chip .t { overflow: hidden; text-overflow: ellipsis; }
 /* 定位用的空占位（chip 被 portal 送进那一行时，这里不能占空间） */
 .rpc .rpc-holder { display: none; }
+/* ── inline：注册在 conversation.hero.options（新会话行）时 ─────────────────────
+   chip 与旁边的工作区 / 预设下拉垂直居中；展开的面板改为**浮层**，不撑高那一行。 */
+.rpc[data-inline='true'] { position: relative; flex: 0 0 auto; width: auto; }
+.rpc[data-inline='true'] .rpc-chip { align-self: center; }
+.rpc[data-inline='true'] .panel {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
+  width: min(560px, calc(100vw - 48px));
+  background: var(--dsw-alias-bg-layer-2, var(--dsh-surface, #1b1c1f));
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .45);
+}
 .rpc .panel {
   display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 12px;
   border: 1px solid color-mix(in oklab, currentColor 14%, transparent);
@@ -2480,6 +2490,9 @@ window.__ModuleLoader__.load({
       //            chip 的可见性依赖投影/宿主两侧的判定，历史上两度因为那两侧不一致而消失，
       //            面板里的这条只要你在 DM 会话里就一定能打开（头部 🎲 RP 入口是另一条独立判定）。
       const embedMode = props?.variant === 'embed';
+      // inline：由宿主槽位 `conversation.hero.options` 直接放进「新会话行」（与工作区 /
+      // 预设下拉同一行）。这时**不做** DOM 查找与 portal —— 位置已经是宿主给的。
+      const inlineMode = props?.inline === true;
       // 异步回调里要拿到最新 props（React 的闭包会留住旧值）
       const propsRef = React.useRef(props);
       propsRef.current = props;
@@ -2825,18 +2838,15 @@ window.__ModuleLoader__.load({
       }
 
       // 入口要待在「工作区 / DM 主持人」那一行上，而不是自己占一行。
-      // 那一行的两个座位（`conversation.hero.workspace` / `conversation.hero.agentPreset`）
-      // 都是 **single 且已被官方插件占满**，没有第三个槽位可注册 ——
-      // 所以只能在 DOM 上想办法：**优先**用 portal 把 chip 送进那一行（它是 flex 行，
-      // 送进去就是正经的第三个 chip）；拿不到 react-dom（或找不到那一行）时退回
-      // 「量出那一行的位置、把 chip 固定在它右边」，最差也只是自己占一行，不会消失。
+      // 0.2.x 起有官方槽位（conversation.hero.options，见 apply 里的注册），inline 模式不走这里；
+      // 这段 DOM 查找只作为**老宿主 / 兜底**路径保留（找不到也不会消失，只是自己占一行）。
       //
       // ⚠️ 这两个 hook 必须在**早退之前**声明：早退（下面那两个 return null）会让后面的
       // hook 不再执行，等于「按条件调用 hook」—— 真实 React 下状态会错位（测试桩尤其会）。
       const rootRef = React.useRef(null);
       const [slot, setSlot] = React.useState(undefined);   // undefined=还没量 / null=找不到 / {kind,row|rect}
       React.useLayoutEffect(() => {
-        if (embedMode || slot !== undefined) return;       // embed 模式不进 DOM 找那一行
+        if (embedMode || inlineMode || slot !== undefined) return;   // 槽位模式不进 DOM 找那一行
         setSlot(findHeroRowSlot(rootRef.current));
       }, [slot, sessionId]);
 
@@ -2848,13 +2858,14 @@ window.__ModuleLoader__.load({
       // embed 模式不受「未开局的 DM 新会话」这条限制：它就在 RP 面板里，用户是主动打开的
       if (!embedMode && !(unstarted && dmNow) && !keepOpen) return null;
 
-      const isRow = slot?.kind === 'portal';
+      const isRow = !inlineMode && slot?.kind === 'portal';
       const chip = h('button', {
         key: 'chip', type: 'button',
         // 样式类不带 .rpc 前缀：这枚 chip 会被 portal 到那一行里，那时它不在 .rpc 内部
         className: 'rpc-chip',
         'data-open': open ? 'true' : 'false',
         'data-row': slot ? 'true' : 'false',
+        'data-inline': inlineMode ? 'true' : 'false',
         'aria-expanded': open,
         style: slot?.kind === 'fixed' ? slot.style : undefined,
         onClick: () => setOpen((v) => !v),
@@ -2867,12 +2878,17 @@ window.__ModuleLoader__.load({
 
       // 定位用的空节点：chip 被送走之后，根元素里还得留个锚
       const holder = h('span', { key: 'holder', className: 'rpc-holder', 'aria-hidden': 'true' });
-      const entry = slot === undefined
-        ? null                                     // 首帧先不画，等 useLayoutEffect 量完（它在绘制前跑，不会闪）
-        : (slot?.kind === 'portal' ? ReactDOM.createPortal(chip, slot.row) : chip);
+      const entry = inlineMode
+        ? chip                                     // 槽位已把根元素放进那一行，直接画 chip
+        : slot === undefined
+          ? null                                   // 首帧先不画，等 useLayoutEffect 量完（它在绘制前跑，不会闪）
+          : (slot?.kind === 'portal' ? ReactDOM.createPortal(chip, slot.row) : chip);
 
       if (!open) {
-        return h('div', { className: 'rpc', ref: rootRef }, [holder, entry]);
+        return h('div', {
+          className: 'rpc', ref: rootRef,
+          'data-inline': inlineMode ? 'true' : 'false',
+        }, [holder, entry]);
       }
 
       const previewCard = preview ? h('div', { key: 'prev', className: 'prev' }, [
@@ -3035,7 +3051,10 @@ window.__ModuleLoader__.load({
 
       // embed：只出面板块（外面的 RP 面板负责收起/展开，也不再判定预设/开局）
       if (embedMode) return h('div', { className: 'rpc embed' }, [panelBody]);
-      return h('div', { className: 'rpc', ref: rootRef }, [holder, entry, panelBody]);
+      return h('div', {
+        className: 'rpc', ref: rootRef,
+        'data-inline': inlineMode ? 'true' : 'false',
+      }, [holder, entry, panelBody]);
     }
 
     const name = 'dsh-rp-tools';
@@ -3201,14 +3220,17 @@ window.__ModuleLoader__.load({
         label: () => 'RP',
       }, (props) => h(RpHeaderButton, props)));
 
-      // 工作区/输入框上方那一行的「📖 导入 PNG 故事书」入口。
-      // 用 input.dock（整宽条目）而不是输入框工具行：导入面板要放列表 + 预览，两列需要横向空间。
-      ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
-        name: 'conversation.input.dock',
+      // 新会话行（工作区 / 预设选择器那一行）右侧的「📖 导入 PNG 故事书」入口。
+      // dsh 0.2.x 提供 `conversation.hero.options` —— 「New Session 行里、工作区与预设控件
+      // 之后的紧凑选项位」，正是和那两个下拉**同一行**的官方座位。
+      // 旧实现没有这个槽位，只能靠 DOM portal 猜「那一行」；0.2.x 的 DOM 结构变了之后
+      // 猜不中，chip 就退回自己占一行（用户反馈的「导入按钮和选择器不在同一行」）。
+      ctx.slots.inject('conversation.hero.options', () => ctx.slots.register({
+        name: 'conversation.hero.options',
         id: 'rp-card-import',
         order: 15,
         label: () => 'PNG 故事书',
-      }, (props) => h(RpCardImport, props)));
+      }, (props) => h(RpCardImport, { ...props, inline: true })));
 
       // 右栏页签（RP 面板本体）**不在这里注册**：它是应用级的类型注册，注册一次就会让
       // 每个会话的右栏引导页都列着「🎲 RP 跑团面板」。改由会话头部按钮按「本会话是不是 DM」
