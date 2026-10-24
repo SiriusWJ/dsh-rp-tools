@@ -2519,8 +2519,9 @@ window.__ModuleLoader__.load({
     /**
      * 量出「中间会话列」的矩形 —— 导入面板只盖这一块，**左右侧栏保持可见、不被遮挡**。
      *
-     * 做法：从 chip 的根节点往上走，取**最外层**那个「宽度明显小于视口、高度超过四成屏」
-     * 的容器。在 DSH 的三栏布局里那就是中间列（左右两栏占掉一部分宽度）。
+     * 做法：从 chip 的根节点往上走，取**第一个**（最内层）满足「宽度明显小于视口、
+     * 高度超过四成屏」的容器。三栏布局里那就是中间列的会话内容区 —— 它从会话头部
+     * 下方开始，所以面板不会盖住窗口标题栏（用户反馈的「上面头上还有遮挡」）。
      * 量不到（测试桩 / 极老宿主 / 窗口太小）返回 null，调用方退回整屏覆盖。
      */
     function measureColumnRect(el) {
@@ -2530,16 +2531,15 @@ window.__ModuleLoader__.load({
         const vh = Number(window.innerHeight) || 0;
         if (vw < 480 || vh < 320) return null;
         let node = el.parentElement;
-        let found = null;
         while (node && node !== document.body && node.parentElement) {
           const r = node.getBoundingClientRect();
           // 中栏：宽度小于视口（左右栏占位），高度足够撑满主要区域
           if (r && r.width >= 320 && r.width <= vw - 24 && r.height >= vh * 0.4) {
-            found = { top: r.top, left: r.left, width: r.width, height: r.height };
+            return { top: r.top, left: r.left, width: r.width, height: r.height };
           }
           node = node.parentElement;
         }
-        return found;
+        return null;
       } catch { return null; }
     }
 
@@ -2908,6 +2908,25 @@ window.__ModuleLoader__.load({
       // 导入面板只盖**中间会话列**（用户要求：左右侧栏不要占、不要遮）。
       // 打开时量出中栏矩形，面板 fixed 到那块区域；量不到就退回整屏。
       const [colRect, setColRect] = React.useState(null);
+      // 手机 / 窄屏（≤720px）：卡库列表改成**顶部下拉选择**（用户要求：手机去掉左侧列表）。
+      // 只在 inline 的整页面板里用；右栏里的 embed 面板保持列表（那一栏本来就窄，列表能用）。
+      const [narrow, setNarrow] = React.useState(false);
+      React.useEffect(() => {
+        try {
+          const mq = typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 720px)') : null;
+          const update = () => setNarrow(mq ? mq.matches : (Number(window.innerWidth) || 9999) <= 720);
+          update();
+          if (mq && typeof mq.addEventListener === 'function') {
+            mq.addEventListener('change', update);
+            return () => mq.removeEventListener('change', update);
+          }
+          if (typeof window.addEventListener === 'function') {
+            window.addEventListener('resize', update);
+            return () => window.removeEventListener('resize', update);
+          }
+        } catch { /* 忽略 */ }
+        return undefined;
+      }, []);
       React.useLayoutEffect(() => {
         if (!inlineMode || !open) return undefined;
         const update = () => { try { setColRect(measureColumnRect(rootRef.current)); } catch { /* 忽略 */ } };
@@ -3108,8 +3127,21 @@ window.__ModuleLoader__.load({
                 + (lib?.rootSource === 'none' ? '（拿不到会话工作区 —— 去设置页填一个卡库目录）' : '')
                 + (lib?.indexSource === 'scan' ? '（目录扫描：卡名取文件名）' : '')
                 + `｜命中 ${total} 张`),
+          // 手机上：列表改成**顶部下拉**，面板里只留「选中的内容」（用户要求）。
+          narrow && inlineMode
+            ? h('div', { key: 'picker', className: 'row', style: { gap: 8 } }, [
+              h('select', {
+                key: 'sel', value: sel || '', style: { flex: '1 1 auto' },
+                onChange: (e) => { if (e.target.value) void pick(e.target.value); },
+              }, [
+                h('option', { key: '', value: '' }, `— 选择一张卡（共 ${items.length} 张）—`),
+                ...items.map((it, i) => h('option', { key: itemKey(it, i), value: it.path },
+                  `${it.name}${it.kind ? ` · ${it.kind}` : ''}`)),
+              ]),
+            ])
+            : null,
           h('div', { key: 'split', className: 'split' }, [
-            h('div', { key: 'list', className: 'list' }, items.length
+            narrow && inlineMode ? null : h('div', { key: 'list', className: 'list' }, items.length
               ? items.map((it, i) => h('div', {
                 key: itemKey(it, i), className: 'item', 'data-sel': it.path === sel ? 'true' : 'false',
                 onClick: () => void pick(it.path),
@@ -3152,7 +3184,10 @@ window.__ModuleLoader__.load({
           }
           : undefined;
         const layer = h('div', {
-          key: 'layer', className: 'rpc-full', role: 'dialog', 'aria-modal': 'true',
+          // ⚠️ 必须同时带 `rpc`：面板 portal 到 body 后**不在 .rpc 子树里**，
+          // 少了它会丢掉 .rpc .split / .rpc input / .rpc button 等一整批样式 ——
+          // 左右两栏会退化成上下堆叠（用户截图里就是这个现象）。
+          key: 'layer', className: 'rpc rpc-full', role: 'dialog', 'aria-modal': 'true',
           style: rectStyle,
         }, [bar, body]);
         return h('div', {

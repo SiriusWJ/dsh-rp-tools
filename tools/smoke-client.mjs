@@ -894,6 +894,11 @@ async function ensureSidebarTab() {
   // portal 到 body（hero 行可能带 transform / 溢出裁剪，fixed 相对它会跑偏）。
   assert.ok(findAll(reopened, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpc-full')).length >= 1,
     '打开后应渲染占满会话区的导入面板（.rpc-full）');
+  // ⚠️ 面板 portal 到 body 后不在 .rpc 子树里，必须自己带 `rpc` class ——
+  //    否则 .rpc .split / .rpc input 等整批样式丢失，左右两栏会退化成上下堆叠。
+  const fullLayer = findAll(reopened, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpc-full'))[0];
+  assert.ok(String(fullLayer?.props?.className ?? '').split(/\s+/).includes('rpc'),
+    '面板根元素必须同时带 rpc class（样式祖先，否则左右结构失效）');
   assert.ok(findAll(reopened, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpc-full-bar')).length >= 1,
     '面板要有顶栏（标题 + 退出）');
   assert.ok(findAll(reopened, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpc-full-x')).length >= 1,
