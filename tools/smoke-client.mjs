@@ -890,14 +890,14 @@ async function ensureSidebarTab() {
   byClass(stillBlank, 'rpc-chip')[0].props.onClick();
   const reopened = render(DM_PROPS());
   assert.ok(textOf(reopened).includes('rp-worldbook.md'), '再点开仍能看到上一次的导入结果');
-  // 点开后是**居中浮窗**（用户要求）：浮窗本体 + 遮罩都在；顶部条带标题与关闭按钮。
+  // 点开后是**占满会话区的导入面板**（用户要求）：整屏层 + 顶栏 + 右上角退出按钮。
   // portal 到 body（hero 行可能带 transform / 溢出裁剪，fixed 相对它会跑偏）。
-  assert.ok(findAll(reopened, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpc-float')).length >= 1,
-    '打开后应渲染居中浮窗（.rpc-float）');
-  assert.ok(findAll(reopened, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpc-mask')).length >= 1,
-    '浮窗应带遮罩（点遮罩关闭）');
-  assert.ok(findAll(reopened, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpc-float-x')).length >= 1,
-    '浮窗顶部要有关闭按钮');
+  assert.ok(findAll(reopened, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpc-full')).length >= 1,
+    '打开后应渲染占满会话区的导入面板（.rpc-full）');
+  assert.ok(findAll(reopened, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpc-full-bar')).length >= 1,
+    '面板要有顶栏（标题 + 退出）');
+  assert.ok(findAll(reopened, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpc-full-x')).length >= 1,
+    '右上角要退出按钮');
 }
 
 // ── 关键断言 ③：inline 模式不依赖 react-dom / DOM 结构 ─────────────────────

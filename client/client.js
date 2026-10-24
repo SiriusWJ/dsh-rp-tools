@@ -445,49 +445,46 @@ window.__ModuleLoader__.load({
 /* 定位用的空占位（chip 被 portal 送进那一行时，这里不能占空间） */
 .rpc .rpc-holder { display: none; }
 /* ── inline：注册在 conversation.hero.options（新会话行）时 ─────────────────────
-   chip 与旁边的工作区 / 预设下拉垂直居中；点开后面板以**居中浮窗**呈现
-   （用户反馈：贴在新会话行下方的下拉面板又窄又长，浮窗更好用）。 */
+   chip 与旁边的工作区 / 预设下拉垂直居中；点开后是**占满会话区的导入面板**
+   （用户要求：铺满中间会话面板、右上角退出、里面左右结构）。 */
 .rpc[data-inline='true'] { position: relative; flex: 0 0 auto; width: auto; }
 .rpc[data-inline='true'] .rpc-chip { align-self: center; }
-.rpc-float-layer { position: fixed; inset: 0; z-index: 90; }
-.rpc-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); }
-/* 浮窗：居中、限高、自身滚动。两列（卡库 + 预览）在 760px 宽度下才舒展。 */
-.rpc-float {
-  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  width: min(760px, calc(100vw - 40px)); max-height: min(82vh, 760px);
-  overflow: auto; overscroll-behavior: contain; z-index: 91;
-  padding: 14px 16px 16px; border-radius: 14px;
-  border: 1px solid color-mix(in oklab, currentColor 14%, transparent);
-  background: var(--dsw-alias-bg-layer-1, var(--dsh-surface, #1b1c1f));
-  box-shadow: 0 24px 64px rgba(0, 0, 0, .55);
+/* 面板本体：fixed 铺满视口（视觉上就是「会话区被这一页接管」），纵向 flex：
+   顶栏固定 + 内容区铺满剩余高度并自己滚动。 */
+.rpc-full {
+  position: fixed; inset: 0; z-index: 95;
+  display: flex; flex-direction: column;
+  background: var(--dsw-alias-bg-base, var(--dsh-surface, #1b1c1f));
   color: var(--dsw-alias-label-primary, inherit);
   font-size: 13px; line-height: 1.5;
 }
-/* 浮窗顶部条：标题 + 关闭（sticky，长内容滚动时也点得到） */
-.rpc-float-bar { position: sticky; top: -14px; z-index: 2; display: flex; align-items: center; gap: 8px;
-  margin: -14px -16px 10px; padding: 12px 16px 8px;
-  background: inherit; backdrop-filter: blur(8px);
-  border-bottom: 1px solid color-mix(in oklab, currentColor 10%, transparent); }
-.rpc-float-title { font-size: 13px; font-weight: 600; }
-.rpc-float-x { margin-left: auto; flex: none; width: 26px; height: 26px; padding: 0;
-  border-radius: 8px; font-size: 13px; line-height: 1;
+/* 顶栏：标题 + 右上角退出 */
+.rpc-full-bar {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 10px 18px;
+  border-bottom: 1px solid color-mix(in oklab, currentColor 12%, transparent);
+}
+.rpc-full-title { font-size: 14px; font-weight: 600; }
+.rpc-full-sub { font-size: 12px; }
+.rpc-full-x {
+  margin-left: auto; flex: none; height: 30px; padding: 0 12px; border-radius: 8px;
   border: 1px solid color-mix(in oklab, currentColor 20%, transparent);
-  background: transparent; color: inherit; cursor: pointer; }
-.rpc-float-x:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
-/* 浮窗里的 panel 只当内容容器（背景/边框由浮窗给） */
-.rpc-float .panel { padding: 0; border: none; background: transparent; }
-/* 列表与预览各占有限高度，避免两条滚动条互相打架 */
-.rpc-float .list { height: auto; min-height: 0; max-height: min(52vh, 440px); }
-.rpc-float .prevbox { max-height: 140px; }
-/* 手机 / 窄屏：浮窗改成**底部弹层**（左右留边、宽度占满、限高 86vh），列表再压矮一档 */
-@media (max-width: 640px) {
-  .rpc-float {
-    left: 8px; right: 8px; bottom: 8px; top: auto; transform: none;
-    width: auto; max-height: 86vh; padding: 12px;
-  }
-  .rpc-float-bar { margin: -12px -12px 8px; padding: 10px 12px 8px; top: -12px; }
-  .rpc-float .list { max-height: min(38vh, 300px); }
-  .rpc-float .prevbox { max-height: 100px; }
+  background: transparent; color: inherit; font: inherit; cursor: pointer;
+}
+.rpc-full-x:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
+/* 内容区：左栏卡库列表 / 右栏卡面与预览；整块铺满高度，列表自己滚 */
+.rpc-full-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 18px 18px; }
+.rpc-full .panel { padding: 0; border: none; background: transparent; }
+.rpc-full .split { grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); align-items: start; }
+.rpc-full .list { height: auto; min-height: 0; max-height: calc(100vh - 210px); overflow: auto; }
+.rpc-full .prevbox { max-height: min(34vh, 320px); }
+/* 手机 / 窄屏：左右变上下（单栏一屏到底），顶栏收紧、副标题隐藏 */
+@media (max-width: 720px) {
+  .rpc-full-bar { padding: 8px 12px; }
+  .rpc-full-sub { display: none; }
+  .rpc-full-body { padding: 10px 12px 16px; }
+  .rpc-full .list { max-height: calc(100vh - 190px); }
+  .rpc-full .prevbox { max-height: 120px; }
 }
 .rpc .panel {
   display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 12px;
@@ -3090,21 +3087,21 @@ window.__ModuleLoader__.load({
       // 又窄又长。浮窗有整屏空间，两列（卡库 + 预览）看得舒服，手机上收成底部弹层。
       // 浮窗挂到 body（portal）：hero 行可能带 transform / overflow 裁剪，fixed 相对它会跑偏。
       if (inlineMode && open) {
-        const mask = h('div', {
-          key: 'mask', className: 'rpc-mask',
-          onClick: () => setOpen(false),
-        });
-        const bar = h('div', { key: 'bar', className: 'rpc-float-bar' }, [
-          h('span', { key: 't', className: 'rpc-float-title' }, '📖 导入 PNG 故事书'),
+        // 占满会话区的导入面板（用户要求）：铺满整个中间区域，右上角退出，
+        // 内容左右两栏（左：卡库列表 / 右：卡面与开场白预览）。挂到 body 上，
+        // 避免 hero 行的 transform / overflow 影响 fixed 定位。
+        const bar = h('div', { key: 'bar', className: 'rpc-full-bar' }, [
+          h('span', { key: 't', className: 'rpc-full-title' }, '📖 导入 PNG 故事书'),
+          h('span', { key: 's', className: 'rpc-full-sub dim' }, '左栏选卡 · 右栏看卡面与开场白'),
           h('button', {
-            key: 'x', type: 'button', className: 'rpc-float-x', title: '关闭',
+            key: 'x', type: 'button', className: 'rpc-full-x', title: '退出',
             onClick: () => setOpen(false),
-          }, '✕'),
+          }, '✕ 退出'),
         ]);
-        const dialog = h('div', {
-          key: 'dialog', className: 'rpc-float', role: 'dialog', 'aria-modal': 'true',
-        }, [bar, panelBody]);
-        const layer = h('div', { key: 'layer', className: 'rpc-float-layer' }, [mask, dialog]);
+        const body = h('div', { key: 'body', className: 'rpc-full-body' }, [panelBody]);
+        const layer = h('div', {
+          key: 'layer', className: 'rpc-full', role: 'dialog', 'aria-modal': 'true',
+        }, [bar, body]);
         return h('div', {
           className: 'rpc', ref: rootRef, 'data-inline': 'true',
         }, [
