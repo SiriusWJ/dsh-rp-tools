@@ -1,0 +1,50 @@
+{
+  "format": 1,
+  "title": {
+    "en": "dsh-rp-tools",
+    "zh": "dsh-rp-tools 跑团工具"
+  },
+  "description": {
+    "en": "TRPG / DM tools for DeepSeek Harness: neutral random rulings, per-session campaign config, world books and state tracking, a session image asset library, character portrait slots, and SillyTavern PNG story-book import.",
+    "zh": "为 DeepSeek Harness 提供的跑团 / DM 工具：中立随机裁决、按会话隔离的战役配置、世界书与状态追踪、会话图片资源库、角色立绘位，以及 SillyTavern PNG 故事书导入。"
+  },
+  "plugins": [
+    {
+      "name": "dsh-rp-tools",
+      "title": {
+        "en": "dsh-rp-tools — TRPG / DM tools",
+        "zh": "dsh-rp-tools 跑团工具"
+      },
+      "description": {
+        "en": "Adds neutral random rulings (rp_random), per-session campaign config (worlds, character cards, random tables, macro tables), world books and state tracking, a session image asset library (rp_assets), character portrait slots, settings page and session panel, plus SillyTavern PNG story-book import. RP tools register only in the dm preset session.",
+        "zh": "提供中立随机裁决 rp_random、按会话隔离的战役配置（世界 / 角色卡 / 随机表 / 宏表）、世界书与状态追踪、会话图片资源库 rp_assets、角色立绘位、设置页与会话面板，以及 SillyTavern PNG 故事书导入（世界书 / 卡全文 / 卡面落进工作区）；RP 工具只在 dm 预设会话注册。"
+      },
+      "author": "SiriusWJ",
+      "homepage": "https://github.com/SiriusWJ/dsh-rp-tools#readme",
+      "repository": {
+        "url": "https://github.com/SiriusWJ/dsh-rp-tools"
+      },
+      "metadata": {
+        "keywords": [
+          "dsh-plugin",
+          "deepseek-harness",
+          "trpg",
+          "ttrpg",
+          "dungeon-master",
+          "roleplay"
+        ]
+      },
+      "versions": [
+        {
+          "version": "1.16.0",
+          "publishTimestamp": 1789646128,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/SiriusWJ/dsh-rp-tools",
+            "commit": "8628ceb6b757aa7ce69c6e71b970173c8c711cc2"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="RP Tools">
+  <defs>
+    <linearGradient id="face" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8ab4ff"/>
+      <stop offset="1" stop-color="#3f63d8"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2c3f96"/>
+      <stop offset="1" stop-color="#1b2761"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="52" height="52" rx="13" fill="url(#edge)"/>
+  <rect x="9" y="9" width="46" height="46" rx="11" fill="url(#face)"/>
+  <g fill="#ffffff" opacity="0.95">
+    <circle cx="21" cy="21" r="4.2"/>
+    <circle cx="32" cy="21" r="4.2"/>
+    <circle cx="43" cy="21" r="4.2"/>
+    <circle cx="21" cy="32" r="4.2"/>
+    <circle cx="32" cy="32" r="4.2"/>
+    <circle cx="43" cy="32" r="4.2"/>
+    <circle cx="21" cy="43" r="4.2"/>
+    <circle cx="32" cy="43" r="4.2"/>
+    <circle cx="43" cy="43" r="4.2"/>
+  </g>
+</svg>

@@ -13,25 +13,40 @@ import { Readable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 
 const TEST_HOME = mkdtempSync(join(tmpdir(), 'dsh-rp-smoke-'));
-process.env.DSH_HOME = TEST_HOME;
 
 /** 本文件所在目录（tools/），用来 import png-fixture.mjs。 */
 const here = new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 
 // 插件依赖 @deepseek-ai/dsh-tools 等，只有 profile 的 node_modules 里有 ——
 // 从那里解析（与 dm/rp-bridge.mjs 同一个办法），所以本文件可以在仓库里直接跑。
-const PROFILE_PACKAGE = process.env.DSH_RP_PROFILE_PACKAGE
-  || join(process.env.USERPROFILE || process.env.HOME || '', '.dsh', 'profiles', 'web', 'package.json');
+// profile 解析与 dm 预设共用同一个函数（那个函数知道桌面版是 desktop profile，
+// 也认得「哪个 profile 真的装了本插件」）——别在测试里另写一份会走散的默认值。
+// ⚠️ 必须在把 DSH_HOME 指向临时目录**之前**解析：resolveProfilePackage 读的是 DSH_HOME，
+//    顺序反了就会永远只看到临时目录（真实 profile 里装了插件也解析不到）。
+const PROFILE_PACKAGE = await (async () => {
+  try {
+    const bridge = await import(pathToFileURL(join(here, '..', 'preset', 'rp-bridge.mjs')).href);
+    return bridge.resolveProfilePackage();
+  } catch {
+    return process.env.DSH_RP_PROFILE_PACKAGE
+      || join(process.env.USERPROFILE || process.env.HOME || '', '.dsh', 'profiles', 'desktop', 'package.json');
+  }
+})();
+// 被测入口：profile 里装了就用装的那份（验证真实安装形态）；
+// **没装就直接测仓库源码** —— 修插件时不必先把它同步进 profile，这样才跑得动。
 let entry;
 try {
   entry = createRequire(PROFILE_PACKAGE).resolve('dsh-rp-tools');
-} catch (error) {
-  console.error(`解析 dsh-rp-tools 失败（profile=${PROFILE_PACKAGE}）：${error?.message ?? error}`);
-  console.error('先同步源码到 profile，或用 DSH_RP_PROFILE_PACKAGE 指定 profile 的 package.json。');
-  rmSync(TEST_HOME, { recursive: true, force: true });
-  process.exit(2);
+} catch {
+  entry = join(here, '..', 'lib', 'index.js');
+  console.log(`profile 里没装 dsh-rp-tools（${PROFILE_PACKAGE}），直接测仓库源码：${entry}`);
 }
 console.log(`被测模块: ${entry}\n`);
+
+// ⚠️ 从这里开始一切落盘都进临时目录 —— 绝不碰真实数据目录。
+// 但**必须先解析完 PROFILE_PACKAGE**（它读 DSH_HOME 找真实 profile），并且要赶在
+// import 插件之前生效：插件模块顶层会根据 DSH_HOME 定位数据目录。
+process.env.DSH_HOME = TEST_HOME;
 const mod = await import(pathToFileURL(entry).href);
 
 const routes = new Map();
@@ -3479,15 +3494,33 @@ if (onSessionCreated) {
 {
   let yaml = null;
   // js-yaml 是宿主的依赖，不一定在被测的那份 profile 里（用临时 profile 跑源码时会缺）——
-  // 先问被测 profile，再退回默认 profile，都拿不到才跳过（别让套件因为解析器缺失而红）。
-  for (const pkg of [PROFILE_PACKAGE, join(homedir(), '.dsh', 'profiles', 'web', 'package.json')]) {
+  // 先问被测 profile，再问本仓库（开发时通常从这里解析），最后问桌面版 profile，
+  // 都拿不到才跳过（别让套件因为解析器缺失而红）。
+  for (const pkg of [
+    PROFILE_PACKAGE,
+    join(here, '..', 'package.json'),
+    join(process.env.USERPROFILE || process.env.HOME || '', '.dsh', 'profiles', 'desktop', 'package.json'),
+  ]) {
     try { yaml = createRequire(pkg)('js-yaml'); break; } catch { /* 换下一个 */ }
   }
   if (!yaml) { console.log('WARN: 拿不到 js-yaml，跳过 dm 预设断言'); }
   else {
-    const presetFile = join(here, '..', 'preset', 'agent.cordis.yml');
-    const doc = yaml.load(readFileSync(presetFile, 'utf8'));
-    const rows = Array.isArray(doc) ? doc : [];
+    // 0.2.x 起 agent 预设**不再是目录**（0.1.x 的 preset/agent.cordis.yml + ~/.dsh/.agent-presets/<id>/），
+    // 而是 bundle patch 里一条 `@deepseek-ai/dsh-agent-preset`：config.id 是 preset id、
+    // config.plugins 是子插件列表。断言直接读真源 cordis.patch.yml（别去读已废弃的目录形态）。
+    const patchFile = join(here, '..', 'cordis.patch.yml');
+    const patchLayers = yaml.load(readFileSync(patchFile, 'utf8'));
+    const insertRows = (Array.isArray(patchLayers) ? patchLayers : [])
+      .flatMap((layer) => (Array.isArray(layer?.insert) ? layer.insert : []));
+    const presetRow = insertRows.find((row) => row?.id === 'preset-dm');
+    const rows = Array.isArray(presetRow?.config?.plugins) ? presetRow.config.plugins : [];
+    check('预设：bundle patch 里有插件行 dsh-rp-tools', insertRows.some((row) => row?.id === 'dsh-rp-tools'), true);
+    check('预设：bundle patch 里声明了 preset-dm', Boolean(presetRow), true);
+    check('预设：preset id = dm（会话里保存的就是它）', presetRow?.config?.id, 'dm');
+    // ⚠️ 子插件必须是**包内子路径**：Loader 对 `.` 开头按 profile 的 baseUrl 解析，
+    //    写 `./rp-bridge.mjs` 在真机上会去 profile 目录找文件（找不到 → 整个预设挂载失败）。
+    const subPaths = rows.map((row) => String(row?.name ?? '')).filter((n) => n.startsWith('.'));
+    check('预设：没有 ./ 相对路径的子插件行（必须用包内子路径）', subPaths.length, 0);
     const persona = rows.find((row) => row?.id === 'persona');
     const prefix = String(persona?.config?.prefix ?? '');
     check('预设：persona 段存在', Boolean(persona), true);

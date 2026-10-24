@@ -28,26 +28,47 @@ import { dirname, join } from 'node:path';
  *
  * ⚠️ 这里**绝不能写死绝对路径**。早先默认值是某个开发机的 `/Users/...` / `C:/Users/xxx/...`
  * 路径 —— 换台机器上桥接就只打印「注册 RP 工具失败」，**8 个工具与两条注入通道一个都不生效**，
- * 而且看起来像插件本身坏了。解析顺序：
+ * 而且看起来像插件本身坏了。
+ *
+ * ⚠️ 也**不能假设 profile 叫 `web`**：DSH 0.2.x 的桌面版用的是 `desktop` profile，
+ * 老 web 环境（0.1.5-rc.3）可能根本不存在。解析顺序：
  *   ① `DSH_RP_PROFILE_PACKAGE` 环境变量（多 profile / 非默认位置时用）
- *   ② `<DSH_HOME>/profiles/web/package.json`（默认 profile）
- *   ③ `<DSH_HOME>/profiles/` 下**恰好只有一个** profile 时用它（省掉环境变量）
- * 都不成立就返回第 ② 个候选（保持报错信息里有一条真实路径可看）。
+ *   ② `<DSH_HOME>/profiles/*` 里**真的装了 `dsh-rp-tools`** 的那个 profile（最可靠；
+ *      多个都装了时优先 `desktop`）
+ *   ③ `<DSH_HOME>/profiles/desktop/package.json`（桌面版默认 profile）
+ *   ④ profiles 下恰好只有一个 profile 时用它
+ * 都不成立就返回 ③ 的候选（保持报错信息里有一条真实路径可看）。
  */
 export function resolveProfilePackage() {
   const fromEnv = String(process.env.DSH_RP_PROFILE_PACKAGE ?? '').trim();
   if (fromEnv) return fromEnv;
   const home = process.env.DSH_HOME || join(homedir(), '.dsh');
-  const web = join(home, 'profiles', 'web', 'package.json');
-  if (existsSync(web)) return web;
+  const profilesDir = join(home, 'profiles');
+
+  /** 某个 profile 目录里是否真的装了本插件（只看 node_modules，不读 profile 配置）。 */
+  const hasPlugin = (name) => existsSync(join(profilesDir, name, 'node_modules', 'dsh-rp-tools', 'package.json'));
+
+  let names = [];
   try {
-    const dirs = readdirSync(join(home, 'profiles'), { withFileTypes: true })
+    names = readdirSync(profilesDir, { withFileTypes: true })
       .filter((d) => d.isDirectory())
-      .map((d) => join(home, 'profiles', d.name, 'package.json'))
-      .filter((p) => existsSync(p));
-    if (dirs.length === 1) return dirs[0];
+      .map((d) => d.name)
+      .filter((name) => existsSync(join(profilesDir, name, 'package.json')));
   } catch { /* 没有 profiles 目录就退回默认候选 */ }
-  return web;
+
+  // ② 装了本插件的 profile（桌面版优先，其次按名字稳定排序）
+  const installed = names.filter(hasPlugin)
+    .sort((a, b) => (a === 'desktop' ? -1 : b === 'desktop' ? 1 : a.localeCompare(b)));
+  if (installed.length > 0) return join(profilesDir, installed[0], 'package.json');
+
+  // ③ 桌面版默认 profile
+  const desktop = join(profilesDir, 'desktop', 'package.json');
+  if (existsSync(desktop)) return desktop;
+
+  // ④ 恰好一个 profile
+  if (names.length === 1) return join(profilesDir, names[0], 'package.json');
+
+  return desktop;
 }
 
 const PROFILE_PACKAGE = resolveProfilePackage();

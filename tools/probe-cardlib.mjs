@@ -11,24 +11,35 @@
 import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
+const HERE = dirname(fileURLToPath(import.meta.url));
 const SAMPLE_PER_CAT = Math.max(1, Number(process.argv[2]) || 12);
 const TEST_HOME = mkdtempSync(join(tmpdir(), 'dsh-rp-probe-'));
-process.env.DSH_HOME = TEST_HOME;
 
-const PROFILE_PACKAGE = process.env.DSH_RP_PROFILE_PACKAGE
-  || join(process.env.USERPROFILE || process.env.HOME || '', '.dsh', 'profiles', 'web', 'package.json');
+// profile 解析与 dm 预设共用同一个函数（认得桌面版的 desktop profile 与「哪个 profile 真装了插件」）
+// ⚠️ 必须在把 DSH_HOME 指向临时目录**之前**解析（该函数读 DSH_HOME）。
+const PROFILE_PACKAGE = await (async () => {
+  try {
+    const bridge = await import(pathToFileURL(join(HERE, '..', 'preset', 'rp-bridge.mjs')).href);
+    return bridge.resolveProfilePackage();
+  } catch {
+    return process.env.DSH_RP_PROFILE_PACKAGE
+      || join(process.env.USERPROFILE || process.env.HOME || '', '.dsh', 'profiles', 'desktop', 'package.json');
+  }
+})();
 let entry;
 try {
   entry = createRequire(PROFILE_PACKAGE).resolve('dsh-rp-tools');
-} catch (error) {
-  console.error(`解析 dsh-rp-tools 失败（profile=${PROFILE_PACKAGE}）：${error?.message ?? error}`);
-  rmSync(TEST_HOME, { recursive: true, force: true });
-  process.exit(2);
+} catch {
+  entry = join(HERE, '..', 'lib', 'index.js');
+  console.log(`profile 里没装 dsh-rp-tools（${PROFILE_PACKAGE}），直接测仓库源码：${entry}`);
 }
+// ⚠️ 先解析完 PROFILE_PACKAGE（读真实 DSH_HOME 找 profile），再切到临时目录；
+// import 插件必须发生在切换之后（插件模块顶层按 DSH_HOME 定位数据目录）。
+process.env.DSH_HOME = TEST_HOME;
 const mod = await import(pathToFileURL(entry).href);
 
 const routes = new Map();

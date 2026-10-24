@@ -20,3 +20,6 @@ temp_output/
 # 排障时写的一次性脚本与提交信息文件（tools/_probe.mjs、tools/_msg1.txt 之类）——
 # 别再让它们被 `git add -A` 顺手提交进去（踩过一次）
 tools/_*
+
+# Lead 做环境清理时留的本地备份（web profile 配置 / 计划任务 XML），不进仓库
+.archive/
