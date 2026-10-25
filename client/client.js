@@ -480,6 +480,12 @@ window.__ModuleLoader__.load({
 .rpe-retry:hover:not(:disabled) { opacity: 1; background: color-mix(in oklab, currentColor 10%, transparent); }
 .rpe-retry:disabled { opacity: .3; cursor: default; }
 .rpe-retry svg { display: block; }
+/* 用户消息旁的「✏️ 编辑提问」（DOM 注入的悬浮小按钮）：默认很淡，悬停消息行时明显起来 */
+.rpe-user-edit { position: absolute; top: 3px; right: 4px; width: 20px; height: 20px; padding: 0;
+  border: 0; border-radius: 6px; background: transparent; color: inherit; opacity: 0;
+  font-size: 12px; line-height: 1; cursor: pointer; transition: opacity .12s ease; }
+[data-chat-flow-kind="user"]:hover .rpe-user-edit { opacity: .55; }
+.rpe-user-edit:hover { opacity: .95 !important; background: color-mix(in oklab, currentColor 12%, transparent); }
 /* 内容区：左栏卡库列表 / 右栏卡面与预览；整块铺满高度，列表自己滚 */
 .rpc-full-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 18px 18px; }
 .rpc-full .panel { padding: 0; border: none; background: transparent; }
@@ -2638,6 +2644,107 @@ window.__ModuleLoader__.load({
       try { return await res.json(); } catch { return { ok: false, error: `HTTP ${res.status}` }; }
     }
 
+    // 最近一次渲染助手消息时看到的会话 id —— 用户消息旁的 DOM 注入按钮靠它知道往哪个会话发请求
+    // （DOM 里拿不到 sessionId；当前打开的会话必然有助手消息在渲染，所以这个值总是最新）。
+    // 同时写一份到 window 上：真实页面只有一个插件实例，但测试/热重载可能有多套闭包，
+    // 共享值能保证「记录方」与「读取方」拿到同一个会话 id。
+    let lastKnownSessionId = '';
+    function rememberSessionId(sessionId) {
+      if (typeof sessionId !== 'string' || !sessionId) return;
+      lastKnownSessionId = sessionId;
+      try { if (typeof window !== 'undefined') window.__dshRpToolsSessionId = sessionId; } catch { /* 忽略 */ }
+    }
+    function currentSessionId() {
+      try {
+        const shared = typeof window !== 'undefined' ? window.__dshRpToolsSessionId : '';
+        if (typeof shared === 'string' && shared) return shared;
+      } catch { /* 忽略 */ }
+      return lastKnownSessionId;
+    }
+    let userEditObserver = null;
+
+    /**
+     * 用户消息旁的「✏️」：官方 `conversation.chat.node` 的 key='user' 被内置渲染器占着，
+     * 同 key 叠加在真机上被遮蔽（active:false），所以退到 **DOM 注入**：
+     * 观察聊天流里 `[data-chat-flow-kind="user"]` 的节点，插一个悬浮小按钮；
+     * 点击时读官方给的 `data-chat-turn`（回合编号），让宿主按回合找回这轮提问再走编辑/分支逻辑。
+     */
+    function attachUserEditButtons(ctx) {
+      try {
+        if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+        const rows = document.querySelectorAll('[data-chat-flow-kind="user"]');
+        for (const row of rows) {
+          if (!row || row.dataset?.rpEdit === 'true' || typeof row.appendChild !== 'function') continue;
+          row.dataset.rpEdit = 'true';
+          try { if (!row.style.position || row.style.position === 'static') row.style.position = 'relative'; } catch { /* 忽略 */ }
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'rpe-user-edit';
+          btn.title = '编辑这条提问并重新发送（最后一条不开分支；更早的会开新分支）';
+          btn.setAttribute('aria-label', '编辑提问');
+          btn.textContent = '✏️';
+          btn.addEventListener('click', (event) => {
+            try { event.stopPropagation(); } catch { /* 忽略 */ }
+            void onUserEditClick(ctx, row);
+          });
+          row.appendChild(btn);
+        }
+      } catch { /* DOM 不可用（测试 / SSR）时静默跳过 */ }
+    }
+
+    async function onUserEditClick(ctx, row) {
+      const turn = Number(row?.dataset?.chatTurn);
+      const sessionId = currentSessionId();
+      if (!Number.isSafeInteger(turn) || !sessionId) {
+        try { console.warn('[rp-tools] 编辑提问：拿不到回合编号或会话 id'); } catch { /* 忽略 */ }
+        return;
+      }
+      try {
+        const res = await fetch('/rp-tools/edit-turn', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sessionId, turn }),
+        });
+        const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+        if (!data?.ok) {
+          try { console.warn('[rp-tools] 编辑提问失败：', data?.error ?? '未知错误'); } catch { /* 忽略 */ }
+          return;
+        }
+        if (data.mode === 'inplace') {
+          const { inputActions } = boundComposer(ctx, sessionId);
+          if (typeof inputActions?.setDraft === 'function') inputActions.setDraft(data.text);
+          else copyEditText(data.text);
+          return;
+        }
+        if (data.mode === 'branch' && data.sessionId) {
+          try { ctx.get('uiWorkspace')?.openSession?.({ sessionId: data.sessionId }); } catch { /* 忽略 */ }
+          const ok = await prefillComposer(ctx, data.sessionId, data.text);
+          if (!ok) copyEditText(data.text);
+          return;
+        }
+        copyEditText(data.text);
+      } catch { /* 忽略 */ }
+    }
+
+    function installUserEditButtons(ctx) {
+      try {
+        if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return;
+        let timer = null;
+        const schedule = () => {
+          if (timer !== null) return;
+          timer = setTimeout(() => { timer = null; attachUserEditButtons(ctx); }, 200);
+        };
+        attachUserEditButtons(ctx);
+        userEditObserver = new MutationObserver(schedule);
+        userEditObserver.observe(document.body, { childList: true, subtree: true });
+        ctx.effect(() => () => {
+          try { userEditObserver?.disconnect(); } catch { /* 忽略 */ }
+          userEditObserver = null;
+          if (timer !== null) { clearTimeout(timer); timer = null; }
+        }, 'rp-tools: user edit buttons');
+      } catch { /* 忽略 */ }
+    }
+
     function makeAssistantRetryAction(deps) {
       return function AssistantRetryAction(props) {
         const [busy, setBusy] = React.useState(false);
@@ -2657,6 +2764,8 @@ window.__ModuleLoader__.load({
           }
         };
         if (!messageId || typeof sessionId !== 'string') return null;
+        // 记下当前会话 id：用户消息旁的 DOM 注入按钮靠它发请求（DOM 本身拿不到 sessionId）。
+        if (sessionId) rememberSessionId(sessionId);
         return h('button', {
           type: 'button',
           className: 'rpe-retry',
@@ -3519,6 +3628,11 @@ window.__ModuleLoader__.load({
         id: 'rp-retry-message',
         order: 30,
       }, makeAssistantRetryAction({ ctx })));
+
+      // 用户消息旁的「✏️ 编辑提问」：聊天节点槽位被内置渲染器占着（叠加会 active:false），
+      // 改用 DOM 注入 —— 观察 `[data-chat-flow-kind="user"]` 行，按钮点击时用官方
+      // `data-chat-turn` 让宿主按回合找回这轮提问（不开分支 / 开分支的语义同宿主实现）。
+      installUserEditButtons(ctx);
 
       // 右栏页签（RP 面板本体）**不在这里注册**：它是应用级的类型注册，注册一次就会让
       // 每个会话的右栏引导页都列着「🎲 RP 跑团面板」。改由会话头部按钮按「本会话是不是 DM」

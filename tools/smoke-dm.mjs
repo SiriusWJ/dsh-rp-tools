@@ -3447,6 +3447,55 @@ if (onSessionCreated) {
   }
 }
 
+// ── 「按回合编辑提问」（用户消息旁 DOM 注入按钮的宿主侧）────────────────────────
+{
+  const appendCalls = [];
+  const forkCalls = [];
+  const turnEvents = new Map([
+    [0, { seq: 0, type: 'turn/start', data: { turn: 1 } }],
+    [1, { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: '第一轮提问' }], source: { kind: 'user' } } }],
+    [2, { seq: 2, type: 'assistant/message', data: { message: { id: 'a-2' } } }],
+    [3, { seq: 3, type: 'turn/end', data: { turn: 1 } }],
+    [4, { seq: 4, type: 'turn/start', data: { turn: 2 } }],
+    [5, { seq: 5, type: 'user/message', data: { content: [{ type: 'text', text: '最后一轮提问' }], source: { kind: 'user' } } }],
+    [6, { seq: 6, type: 'assistant/message', data: { message: { id: 'a-6' } } }],
+    [7, { seq: 7, type: 'turn/end', data: { turn: 2 } }],
+  ]);
+  const turnSession = {
+    id: 'turn-1',
+    seq: 8,
+    header: { cwd: process.cwd() },
+    eventAt: (seq) => turnEvents.get(seq),
+    surface: { nodes: [0, 1, 2, 3, 4, 5, 6, 7] },
+    append: (type, data, opts) => { appendCalls.push({ type, data, opts }); return { seq: 8 }; },
+  };
+  liveSessions.set('turn-1', turnSession);
+  const origGet = hostCtx.get;
+  hostCtx.get = (name) => (name === 'sessions'
+    ? {
+      get: (id) => liveSessions.get(id),
+      fork: (source, boundary) => { forkCalls.push({ source: source?.id, boundary }); return { id: 'turn-child' }; },
+      create: () => ({ id: 'turn-child-empty' }),
+    }
+    : origGet(name));
+  try {
+    const last = await callPost('/rp-tools/edit-turn', { sessionId: 'turn-1', turn: 2 });
+    check('按回合编辑：最后一轮 → inplace（不开分支）', last.json.mode, 'inplace');
+    check('按回合编辑：返回该回合提问原文', last.json.text, '最后一轮提问');
+    check('按回合编辑：遮蔽起点 = 该回合的用户消息 seq', appendCalls[0]?.opts?.surfaceOp?.startSeq, 5);
+    const early = await callPost('/rp-tools/edit-turn', { sessionId: 'turn-1', turn: 1 });
+    check('按回合编辑：更早的回合 → branch', early.json.mode, 'branch');
+    check('按回合编辑：fork boundary = 该回合提问前一个 surface 节点', forkCalls[0]?.boundary, 0);
+    const missing = await callPost('/rp-tools/edit-turn', { sessionId: 'turn-1', turn: 99 });
+    check('按回合编辑：不存在的回合 → 400', missing.status, 400);
+    const badTurn = await callPost('/rp-tools/edit-turn', { sessionId: 'turn-1', turn: -1 });
+    check('按回合编辑：非法 turn → 400', badTurn.status, 400);
+  } finally {
+    hostCtx.get = origGet;
+    liveSessions.delete('turn-1');
+  }
+}
+
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 console.log(`数据目录（临时，即将删除）: ${TEST_HOME}`);
 rmSync(TEST_HOME, { recursive: true, force: true });

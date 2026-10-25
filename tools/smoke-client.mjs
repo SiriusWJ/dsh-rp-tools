@@ -52,10 +52,23 @@ const bundlePath = join(here, '..', 'client', 'client.js');
 
 // ── 最小 DOM 桩 ────────────────────────────────────────────────────────────
 const head = [];
+/** 用户消息行（DOM 注入测试用）：测试块里替换/清空。 */
+let fakeUserRows = [];
+/** MutationObserver 桩：记录回调，测试里手动触发一次（模拟聊天流变化）。 */
+let mutationCallback = null;
+globalThis.MutationObserver = class {
+  constructor(cb) { mutationCallback = cb; }
+  observe() { /* 桩：不自动触发 */ }
+  disconnect() { /* 桩 */ }
+};
 globalThis.document = {
   createElement(tag) {
-    const el = { tagName: String(tag).toUpperCase(), dataset: {}, textContent: '', isConnected: false };
+    const el = { tagName: String(tag).toUpperCase(), dataset: {}, textContent: '', isConnected: false,
+      className: '', style: {}, children: [], handlers: {} };
     el.setAttribute = (k, v) => { el[k] = v; };
+    el.appendChild = (child) => { el.children.push(child); child.isConnected = true; return child; };
+    el.addEventListener = (type, fn) => { el.handlers[type] = fn; };
+    el.removeEventListener = () => {};
     return el;
   },
   head: { appendChild: (el) => { el.isConnected = true; head.push(el); } },
@@ -66,6 +79,7 @@ globalThis.document = {
   addEventListener: () => {},
   removeEventListener: () => {},
   querySelector: () => null,
+  querySelectorAll: (selector) => (String(selector).includes('data-chat-flow-kind') ? fakeUserRows : []),
 };
 
 // ── 极小 React 运行时 ──────────────────────────────────────────────────────
@@ -242,6 +256,7 @@ let gateReply = { ok: true, dm: true, started: false };
 let sessionReplyIsDm = true;
 /** `/rp-tools/edit-message` / `/rp-tools/retry-last` 的回复（用例可切）。 */
 let editReply = { ok: true, mode: 'inplace', text: '改过的文本' };
+let editTurnReply = { ok: true, mode: 'inplace', text: '改过的回合提问' };
 let retryReply = { ok: true, retried: true };
 globalThis.fetch = async (url, options = {}) => {
   const method = options.method ?? 'GET';
@@ -249,6 +264,7 @@ globalThis.fetch = async (url, options = {}) => {
   const target = String(url);
   const reply = (json) => ({ ok: true, status: 200, json: async () => json });
   if (target.startsWith('/rp-tools/edit-message')) return reply(editReply);
+  if (target.startsWith('/rp-tools/edit-turn')) return reply(editTurnReply);
   if (target.startsWith('/rp-tools/retry-last')) return reply(retryReply);
   if (target.startsWith('/rp-tools/gate')) return reply(gateReply);
   // 「恢复默认」走这条（桩里以前**没有**这条，
@@ -2260,6 +2276,38 @@ async function ensureSidebarTab() {
   // 没有 messageId（或 session）时不渲染，别在别的节点上多出一个按钮
   const nothing = renderNode({ type: retryReg.component, props: { sessionId: 's1' } });
   assert.equal(nothing, null, '没有 messageId 时不渲染按钮');
+}
+
+// ── 用户消息旁的「✏️ 编辑提问」（DOM 注入；官方 chat.node 槽位叠加被遮蔽，改走 DOM）──────
+{
+  // 先渲染一次助手消息操作行，把 lastKnownSessionId 记成 s9（DOM 按钮靠它发请求）
+  const retryReg = slotRegs.find((r) => r.id === 'rp-retry-message');
+  renderNode({ type: retryReg.component, props: { messageId: 'm-1', sessionId: 's9' } });
+  const row = {
+    dataset: {},
+    style: {},
+    children: [],
+    appendChild(child) { this.children.push(child); child.isConnected = true; return child; },
+  };
+  fakeUserRows = [row];
+  // 触发一次观察器回调（模拟聊天流变化）→ 内部节流 200ms 后给用户行插按钮
+  mutationCallback?.();
+  await tick(280);
+  assert.ok(row.children.length >= 1, '用户消息行里应注入编辑按钮');
+  const btn = row.children[0];
+  assert.equal(btn.className, 'rpe-user-edit', '注入的按钮用 rpe-user-edit 样式');
+  assert.ok(String(btn.title).includes('编辑这条提问'), '按钮提示要说明「编辑这条提问」');
+  row.dataset.chatTurn = '3';
+  editTurnReply = { ok: true, mode: 'inplace', text: '改过的回合提问' };
+  await btn.handlers.click({ stopPropagation() { /* 不冒泡 */ } });
+  await tick(60);
+  const call = calls.find((c) => c.url === '/rp-tools/edit-turn');
+  assert.ok(call && call.method === 'POST', '点击要 POST /rp-tools/edit-turn');
+  assert.deepEqual(call.body, { sessionId: 's9', turn: 3 }, '请求要带当前会话 id + 官方回合编号');
+  // 已注入过的行不重复插（重复观察器回调不应叠按钮）
+  mutationCallback?.();
+  await tick(280);
+  assert.equal(row.children.length, 1, '同一行只注入一次按钮');
 }
 
 console.log('客户端冒烟测试通过：');
