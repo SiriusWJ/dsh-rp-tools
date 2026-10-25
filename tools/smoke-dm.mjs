@@ -3379,6 +3379,7 @@ if (onSessionCreated) {
     check('编辑：只需要 append 一次（占位与替换是同一个事件）', appendCalls.length, 1);
     check('编辑：占位改 developer/message（空 user 消息会进模型历史，真机报错过）', appendCalls[0]?.type, 'developer/message');
     check('编辑：占位消息 role=developer', appendCalls[0]?.data?.message?.role, 'developer');
+    check('编辑：占位带 turn（developer/message 必填，真机报错过）', appendCalls[0]?.data?.turn, 0);
     check('编辑：占位内容为空（派生模型历史时被过滤）', appendCalls[0]?.data?.message?.content?.length, 0);
     // ⚠️ 真机错误「surface replace: sourceEventSeqs must include every shadowed surface node」：
     // replace 必须列出被遮蔽范围内**每个** surface 节点（这里是 3、4），只给首尾会被日志层拒绝。
@@ -3448,6 +3449,7 @@ if (onSessionCreated) {
     check('重试：先遮蔽旧回合（从最后一条提问开始）', appendCalls[0]?.opts?.surfaceOp?.startSeq, 3);
     check('重试：遮蔽到 surface 末尾', appendCalls[0]?.opts?.surfaceOp?.endSeq, 4);
     check('重试：占位改 developer/message', appendCalls[0]?.type, 'developer/message');
+    check('重试：占位带 turn', appendCalls[0]?.data?.turn, 0);
     check('重试：占位 role=developer 且内容为空', `${appendCalls[0]?.data?.message?.role}/${appendCalls[0]?.data?.message?.content?.length}`, 'developer/0');
     check('重试：replace 列出被遮蔽的每个节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '3,4');
     check('重试：用同一提问重新 followup', followups[0]?.content?.[0]?.text, '最后的问题');
@@ -3501,6 +3503,7 @@ if (onSessionCreated) {
     check('按回合编辑：返回该回合提问原文', last.json.text, '最后一轮提问');
     check('按回合编辑：遮蔽起点 = 该回合的用户消息 seq', appendCalls[0]?.opts?.surfaceOp?.startSeq, 5);
     check('按回合编辑：replace 列出被遮蔽的每个节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '5,6,7');
+    check('按回合编辑：占位 turn = 该回合编号', appendCalls[0]?.data?.turn, 2);
     const early = await callPost('/rp-tools/edit-turn', { sessionId: 'turn-1', turn: 1 });
     check('按回合编辑：更早的回合 → branch', early.json.mode, 'branch');
     check('按回合编辑：fork boundary = 该回合提问前一个 surface 节点', forkCalls[0]?.boundary, 0);
