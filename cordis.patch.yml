@@ -173,3 +173,32 @@
               suppressRuntimeContext: false
           - id: rp-bridge
             name: dsh-rp-tools/preset/rp-bridge.mjs
+          # ── 压缩 / 上下文管理组（用户要求：放行 billion-context、dsh-context 等压缩插件）──
+          # 标准预设（standard / ptc / minimal / cordis）都挂了这个组；自定义预设不挂，就等于
+          # **没有自动压缩、没有 /compact、工具结果也不裁剪** —— 长团本会话会先撞上下文上限。
+          # 这里照抄标准预设的同一组（isolate 自己的压缩服务，不碰宿主全局层）：
+          #   compaction-basic    自动压缩（命中阈值前后各压一次）
+          #   command-compact     /compact 手动压一次
+          #   tool-result-pruner  工具结果超预算先裁剪（8192 字符阈值）
+          # 关于 billion-context：它靠 bundle patch 给「预设行」按 id 注入自己的压缩策略服务
+          # （biliBasicCompactionPolicy），而它的补丁只认 preset-standard/ptc/minimal/cordis，
+          # 自定义的 dm 预设不在名单里；硬注入「未安装插件」的服务会让整个预设挂不上（Cordis
+          # 没有可选注入）。所以这里保证 DM 会话至少有宿主自带的压缩能力，装了 billion-context
+          # 也不会把 dm 顶层的压缩行关掉（bundle patch 不能按 id 寻址预设内部的嵌套行）。
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: "@deepseek-ai/dsh-compaction-basic"
+              - id: command-compact
+                name: "@deepseek-ai/dsh-command-compact"
+              - id: tool-result-pruner
+                name: "@deepseek-ai/dsh-compaction-tool-result-pruner"
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024

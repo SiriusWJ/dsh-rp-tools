@@ -3251,6 +3251,17 @@ if (onSessionCreated) {
     //    写 `./rp-bridge.mjs` 在真机上会去 profile 目录找文件（找不到 → 整个预设挂载失败）。
     const subPaths = rows.map((row) => String(row?.name ?? '')).filter((n) => n.startsWith('.'));
     check('预设：没有 ./ 相对路径的子插件行（必须用包内子路径）', subPaths.length, 0);
+    // 用户要求：放行压缩 / 上下文管理插件 —— 自定义预设必须自己挂压缩组，否则 DM 会话
+    // 既没有自动压缩也没有 /compact（标准预设都有这一组，自定义预设默认什么都不挂）。
+    const compactionGroup = rows.find((row) => row?.id === 'compaction');
+    check('预设：挂了压缩组（自动压缩 / /compact / 工具结果裁剪）', Boolean(compactionGroup), true);
+    check('预设：压缩组是 cordis:group 且 isolate 自己的压缩服务',
+      [compactionGroup?.name, String(compactionGroup?.group), String(compactionGroup?.isolate?.compaction), String(compactionGroup?.isolate?.toolResultPruner)].join('/'),
+      'cordis:group/true/true/true');
+    const compactionSubIds = (compactionGroup?.config ?? []).map((row) => row?.id);
+    check('预设：压缩组含 compaction-basic', compactionSubIds.includes('compaction-basic'), true);
+    check('预设：压缩组含 command-compact（/compact）', compactionSubIds.includes('command-compact'), true);
+    check('预设：压缩组含 tool-result-pruner', compactionSubIds.includes('tool-result-pruner'), true);
     const persona = rows.find((row) => row?.id === 'persona');
     const prefix = String(persona?.config?.prefix ?? '');
     check('预设：persona 段存在', Boolean(persona), true);
