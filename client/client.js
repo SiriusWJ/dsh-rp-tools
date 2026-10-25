@@ -2733,26 +2733,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 编辑成功后把界面上的这条回复文本**立即换掉**（真内容已写进会话记录；但宿主内存里的
-     * 事件是 deepFreeze 的、改不了，界面数据仍来自宿主推送 —— 所以直接改 DOM 观感）。
-     * 重启桌面版后宿主从磁盘重读，界面会回到正常渲染。
-     */
-    function patchReplyDom(triggerEl, newText) {
-      try {
-        const row = triggerEl?.closest?.('[data-chat-turn]');
-        if (!row || typeof row.querySelectorAll !== 'function') return false;
-        const nodes = row.querySelectorAll('[data-chat-flow-kind="assistant-step"]');
-        if (!nodes || nodes.length === 0) return false;
-        const node = nodes[nodes.length - 1];
-        if (!node) return false;
-        node.textContent = String(newText ?? '');
-        node.dataset.rpEdited = 'true';
-        node.title = '已编辑（重启桌面版后模型上下文同步）';
-        return true;
-      } catch { return false; }
-    }
-
-    /**
      * 助手操作行里的「编辑这条回复」：两段式 —— 先取原文弹输入框，再提交生成新版本分支
      * （参考 dsh-wm-toolkit 的 branchAssistantEdit：新会话 = 父会话前缀 + 改写后的回复）。
      */
@@ -2775,7 +2755,6 @@ window.__ModuleLoader__.load({
       };
       const onEdit = async (event) => {
         if (busy) return;
-        const triggerEl = event?.currentTarget;
         setBusy(true);
         try {
           const prep = await post({ sessionId, messageId });
@@ -2784,13 +2763,15 @@ window.__ModuleLoader__.load({
           const input = await openReplyEditor(prep.oldText ?? '');
           if (typeof input !== 'string' || input.trim().length === 0 || input === prep.oldText) return;
           const out = await post({ sessionId, messageId, text: input });
-          if (!out?.ok) { showRpToast(`编辑失败：${out?.error ?? '未知错误'}`); return; }
-          // 原地改写：不建分支、不动工作区。宿主内存里的旧事件改不了，界面先直接换文本；
-          // 重启桌面版后宿主从磁盘重读，模型上下文也同步。
-          const patched = patchReplyDom(triggerEl, input);
-          showRpToast(patched
-            ? '已改写这条回复（界面已更新；重启桌面版后模型上下文同步）'
-            : '已改写这条回复（重启桌面版后界面与模型上下文同步）');
+          if (!out?.ok || !out.childId) { showRpToast(`编辑失败：${out?.error ?? '未知错误'}`); return; }
+          // 新版本分支已建好：立刻打开它 → 界面马上显示编辑后的内容（旧会话原样保留可切回）。
+          try {
+            const uiWorkspace = typeof props?.ctx?.get === 'function' ? props.ctx.get('uiWorkspace') : null;
+            uiWorkspace?.openSession?.({ sessionId: out.childId });
+          } catch { /* 忽略 */ }
+          showRpToast(out.attach === 'attached' || out.attach === 'attached-fallback'
+            ? '已生成编辑后的新版本并打开（旧版本保留在同工作区）'
+            : '已生成编辑后的新版本并打开（旧版本仍保留；新会话可能显示在未分组）');
         } finally {
           setBusy(false);
         }
@@ -2799,7 +2780,7 @@ window.__ModuleLoader__.load({
         type: 'button',
         className: 'rpe-edit',
         disabled: busy,
-        title: '编辑这条回复（原地改写会话记录）',
+        title: '编辑这条回复（生成新版本并打开）',
         'aria-label': '编辑回复',
         onClick: (event) => { event.stopPropagation(); void onEdit(event); },
       }, busy ? '…' : editReplyIcon());

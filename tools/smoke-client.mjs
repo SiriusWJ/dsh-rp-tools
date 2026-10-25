@@ -270,7 +270,7 @@ let sessionReplyIsDm = true;
 let deleteReply = { ok: true, kind: 'reply', deleted: 2 };
 /** `/rp-tools/edit-reply` 两段式回复：准备原文 / 提交分支。 */
 let editReplyPrepareReply = { ok: true, mode: 'prepare', oldText: '原来的回复' };
-let editReplyCommitReply = { ok: true, mode: 'inplace', wasLive: true };
+let editReplyCommitReply = { ok: true, mode: 'branch', childId: 'child-edit-1', attach: 'attached' };
 let editReply = { ok: true, mode: 'inplace', text: '改过的文本' };
 let editTurnReply = { ok: true, mode: 'inplace', text: '改过的回合提问' };
 let retryReply = { ok: true, retried: true };
@@ -2324,9 +2324,7 @@ async function ensureSidebarTab() {
   assert.ok(editBtn, '助手操作行要有编辑按钮');
   assert.equal(findAll(editBtn, (n) => n.type === 'svg').length, 1, '编辑按钮用铅笔图标（svg）');
   // 模拟真实 Chat DOM：按钮所在的回合行里有一个 assistant-step 内容节点
-  const contentNode = { dataset: {}, textContent: '原来的回复' };
-  const turnRow = { querySelectorAll: () => [contentNode] };
-  await editBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ }, currentTarget: { closest: () => turnRow } });
+  await editBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
   await tick(80);
   const prepCall = calls.find((c) => c.url === '/rp-tools/edit-reply' && !c.body?.text);
   assert.ok(prepCall, '第一段要取原文（不带 text）');
@@ -2352,10 +2350,8 @@ async function ensureSidebarTab() {
   await tick(80);
   const commitCall = calls.find((c) => c.url === '/rp-tools/edit-reply' && c.body?.text === '改过的回复');
   assert.ok(commitCall, '第二段要带编辑后的文本提交');
-  // 原地改写：不建分支、不切会话，只提示重启/切会话后生效
-  assert.equal(openedSessions.includes('child-edit-1'), false, '原地改写不应切到新会话');
-  // 宿主内存改不了 → 客户端直接改界面文本（立即看到变化）
-  assert.equal(contentNode.textContent, '改过的回复', '编辑后界面上的回复文本要立即更新');
+  // 建好新版本分支后要立刻打开它（界面马上显示编辑后的内容）
+  assert.ok(openedSessions.includes('child-edit-1'), '编辑后要打开新版本分支会话');
 }
 
 console.log('客户端冒烟测试通过：');
