@@ -2234,49 +2234,33 @@ async function ensureSidebarTab() {
   globalThis.window.confirm = realConfirm2;
   resetHooks();
 }
-// ── 用户消息「✏️ 编辑并重发」入口（2026-10 用户要求）───────────────────────────
+// ── 「✏️ 编辑提问」入口（2026-10 用户要求；挂在助手消息操作行）────────────────────
 {
-  const editReg = slotRegs.find((r) => r.name === 'conversation.chat.node');
-  assert.ok(editReg, '应注册 conversation.chat.node（用户消息编辑入口）');
-  assert.equal(editReg.key, 'user', '编辑入口挂在 user 节点上');
-  // ⚠️ 必须 > 内置的 0：同 key 多个注册时只有优先级最高的那个会被渲染。
-  // （真机教训：用 -1 时注册在、inspect 里 active:false，界面上什么都不出现。）
-  assert.equal(editReg.priority, 10, '叠加在内置渲染器之上（priority 10 > 内置 0）');
+  const editReg = slotRegs.find((r) => r.name === 'conversation.chat.assistant-actions');
+  assert.ok(editReg, '应注册 conversation.chat.assistant-actions（助手消息操作行）');
+  assert.equal(editReg.id, 'rp-edit-message', '操作行条目的 id');
+  assert.equal(editReg.order, 30, '排在官方 feedback(10) / context-jump(20) 之后');
   assert.equal(typeof editReg.component, 'function');
-  // 内置 user 渲染器：真机由 dsh-client-ui-chat 注册（priority 0）。桩里给两条，
-  // 一并钉住「只认 priority 0 那条」——别把别人的叠加层当内置组件再包一层。
-  const fakeUserNode = { type: 'div', props: { className: 'user-msg' }, children: [] };
-  slotsStub.entries = (name) => (name === 'conversation.chat.node'
-    ? [
-      { options: { key: 'user', priority: 6 }, component: () => ({ type: 'div', props: { className: 'other-seat' }, children: [] }) },
-      { options: { key: 'user', priority: 0 }, component: () => fakeUserNode },
-    ]
-    : []);
   const drafts = [];
   const inputActions = { setDraft: (text) => drafts.push(text) };
   const tree2 = renderNode({
     type: editReg.component,
-    props: { node: { anchorSeq: 7, data: { source: { kind: 'user' } } }, sessionId: 's1', inputActions },
+    props: { messageId: 'msg-assistant-1', sessionId: 's1', inputActions },
   });
-  assert.equal(findAll(tree2, (n) => String(n.props?.className ?? '').split(/\s+/).includes('user-msg')).length, 1,
-    '编辑入口要原样渲染内置 user 消息（不重复渲染叠加层）');
   const editBtn = findAll(tree2, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpe-btn'))[0];
-  assert.ok(editBtn, '每条用户消息旁要有「编辑并重发」按钮');
+  assert.ok(editBtn, '助手消息操作行要有「✏️ 编辑提问」按钮');
   assert.ok(String(editBtn.props.title).includes('最后一条不开分支'), '按钮提示要说明开分支语义');
   // 最后一条 = inplace：宿主原地遮蔽，原文回填输入框
-  editReply = { ok: true, mode: 'inplace', text: '改过的最后一条' };
+  editReply = { ok: true, mode: 'inplace', text: '改过的提问' };
   await editBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
   await tick(40);
   const editCall = calls.find((c) => c.url === '/rp-tools/edit-message');
   assert.ok(editCall && editCall.method === 'POST', '点击要 POST /rp-tools/edit-message');
-  assert.deepEqual(editCall.body, { sessionId: 's1', seq: 7 }, '请求要带 sessionId + 这条消息的 seq');
-  assert.deepEqual(drafts, ['改过的最后一条'], 'inplace 模式要把原文回填输入框（用户自己点发送）');
-  // 占位消息（宿主内部簿记，source.kind 以 rp-tools 开头）不渲染成空气泡
-  const hidden = renderNode({
-    type: editReg.component,
-    props: { node: { anchorSeq: 8, data: { source: { kind: 'rp-tools-edit-placeholder' } } }, sessionId: 's1' },
-  });
-  assert.equal(hidden, null, '遮蔽用的占位消息不该渲染');
+  assert.deepEqual(editCall.body, { sessionId: 's1', messageId: 'msg-assistant-1' }, '请求要带 sessionId + 助手消息 id');
+  assert.deepEqual(drafts, ['改过的提问'], 'inplace 模式要把原文回填输入框（用户自己点发送）');
+  // 没有 messageId（或 session）时不渲染，别在别的节点上多出一个按钮
+  const nothing = renderNode({ type: editReg.component, props: { sessionId: 's1' } });
+  assert.equal(nothing, null, '没有 messageId 时不渲染按钮');
 }
 
 console.log('客户端冒烟测试通过：');

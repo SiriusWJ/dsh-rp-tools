@@ -3340,9 +3340,9 @@ if (onSessionCreated) {
   const editEvents = new Map([
     [0, { seq: 0, type: 'system/message', data: {} }],
     [1, { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: '第一问' }], source: { kind: 'user' } } }],
-    [2, { seq: 2, type: 'assistant/message', data: {} }],
+    [2, { seq: 2, type: 'assistant/message', data: { message: { id: 'msg-2' } } }],
     [3, { seq: 3, type: 'user/message', data: { content: [{ type: 'text', text: '最后一问\n第二行' }], source: { kind: 'user' } } }],
-    [4, { seq: 4, type: 'assistant/message', data: {} }],
+    [4, { seq: 4, type: 'assistant/message', data: { message: { id: 'msg-4' } } }],
   ]);
   const makeEditSession = (id, nodes) => ({
     id,
@@ -3376,9 +3376,18 @@ if (onSessionCreated) {
     check('编辑：branch 返回子会话 id', early.json.sessionId, 'edit-child');
     check('编辑：fork 到目标消息之前（boundary = 前一个 surface 节点）', forkCalls[0]?.boundary, 0);
     check('编辑：branch 不动当前会话日志', appendCalls.length, 1);
+    // 助手消息操作行入口（客户端挂在 conversation.chat.assistant-actions）：
+    // 只给 messageId，宿主往前找同一回合的提问。
+    const byAssistant = await callPost('/rp-tools/edit-message', { sessionId: 'edit-last', messageId: 'msg-4' });
+    check('编辑：messageId（助手消息）→ 找到本回合提问，inplace', byAssistant.json.mode, 'inplace');
+    check('编辑：messageId 用例取到同一段原文', byAssistant.json.text, '最后一问\n第二行');
+    const byAssistantEarly = await callPost('/rp-tools/edit-message', { sessionId: 'edit-early', messageId: 'msg-2' });
+    check('编辑：messageId 指向更早的回合 → branch', byAssistantEarly.json.mode, 'branch');
+    const byAssistantMissing = await callPost('/rp-tools/edit-message', { sessionId: 'edit-last', messageId: 'nope' });
+    check('编辑：未知 messageId → 400', byAssistantMissing.status, 400);
     const notUser = await callPost('/rp-tools/edit-message', { sessionId: 'edit-last', seq: 999 });
     check('编辑：seq 不存在 → 400', notUser.status, 400);
-    check('编辑：错误文案说明不是用户消息', String(notUser.json.error).includes('不是用户消息'), true);
+    check('编辑：错误文案说明消息已不在表面', String(notUser.json.error).includes('不在当前对话表面'), true);
     const missing = await callPost('/rp-tools/edit-message', { sessionId: 'no-such-session', seq: 3 });
     check('编辑：会话不在进程里 → 404', missing.status, 404);
     const badSeq = await callPost('/rp-tools/edit-message', { sessionId: 'edit-last', seq: -1 });

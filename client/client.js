@@ -473,12 +473,11 @@ window.__ModuleLoader__.load({
   background: transparent; color: inherit; font: inherit; cursor: pointer;
 }
 .rpc-full-x:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
-/* 每条用户消息旁的「编辑并重发」小按钮（叠在内置消息节点下面，hover 才明显） */
-.rpe-row { display: flex; justify-content: flex-end; margin-top: 2px; }
-.rpe-btn { border: 0; background: transparent; color: inherit; opacity: .4; cursor: pointer;
-  font: inherit; font-size: 12px; line-height: 1; padding: 2px 5px; border-radius: 6px; }
+/* 助手消息操作行里的「✏️ 编辑提问」小按钮（与复制 / fork 并排，hover 才明显） */
+.rpe-btn { border: 0; background: transparent; color: inherit; opacity: .65; cursor: pointer;
+  font: inherit; font-size: 12px; line-height: 1; padding: 2px 6px; border-radius: 6px; }
 .rpe-btn:hover:not(:disabled) { opacity: 1; background: color-mix(in oklab, currentColor 10%, transparent); }
-.rpe-btn:disabled { opacity: .2; cursor: default; }
+.rpe-btn:disabled { opacity: .3; cursor: default; }
 /* 内容区：左栏卡库列表 / 右栏卡面与预览；整块铺满高度，列表自己滚 */
 .rpc-full-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 18px 18px; }
 .rpc-full .panel { padding: 0; border: none; background: transparent; }
@@ -2556,19 +2555,16 @@ window.__ModuleLoader__.load({
       } catch { return null; }
     }
 
-    // ── 「编辑并重发」：每条用户消息旁的小按钮（用户要求，2026-10）─────────────────
-    // 点击 → POST /rp-tools/edit-message（宿主判断该消息是不是最后一条用户消息）：
-    //   · 最后一条 → 宿主原地遮蔽「这条 → 末尾」的旧回合（**不开新分支**），原文回填输入框；
-    //   · 不是最后一条 → 宿主 fork 一个新分支，客户端切过去，再把原文回填新会话的输入框。
-    // 挂法：`conversation.chat.node`（key='user'）**叠加**在内置渲染器上（priority -1）——
-    // 先找内置组件（priority 0）原样渲染，再在它下面挂自己的按钮，不改官方 UI 的样子。
-    function findChatNodeBuiltin(slots, key) {
-      try {
-        const entries = slots.entries('conversation.chat.node') ?? [];
-        const same = entries.filter((entry) => entry?.options?.key === key);
-        return (same.find((entry) => (entry.options?.priority ?? 0) === 0) ?? same[0])?.component;
-      } catch { return undefined; }
-    }
+    // ── 「编辑这轮提问并重发」（用户要求，2026-10）────────────────────────────
+    // 挂在**每条最终助手消息的操作行**里：官方 list 槽位 `conversation.chat.assistant-actions`
+    // （复制 / fork 按钮就在这一排），参数是助手消息的 durable id。
+    // 为什么不挂「用户消息旁」：`conversation.chat.node` 的同 key 叠加会被内置渲染器遮蔽
+    // （真机 inspect：注册存在、active:false，界面完全不渲染）；助手消息动作区才是官方
+    // 公开的扩展位（`dsh-context` 的 context-jump 也注册在这里，active:true）。
+    //
+    // 点击 → POST /rp-tools/edit-message（宿主按 messageId 找到本回合的提问，再判断语义）：
+    //   · 最后一条用户消息 → 宿主原地遮蔽旧回合（**不开新分支**），原文回填输入框；
+    //   · 不是最后一条 → 宿主 fork 新分支，客户端切过去再把原文回填新会话的输入框。
 
     /** 拿某会话物化后的输入框绑定（uiSession 服务把 session binding 变成可用的 inputActions）。 */
     function boundComposer(ctx, sessionId) {
@@ -2606,11 +2602,11 @@ window.__ModuleLoader__.load({
       });
     }
 
-    async function requestEditMessage(sessionId, seq) {
+    async function requestEditMessage(sessionId, extra) {
       const res = await fetch('/rp-tools/edit-message', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionId, seq }),
+        body: JSON.stringify({ sessionId, ...(extra ?? {}) }),
       });
       try { return await res.json(); } catch { return { ok: false, error: `HTTP ${res.status}` }; }
     }
@@ -2619,31 +2615,16 @@ window.__ModuleLoader__.load({
       try { void navigator.clipboard?.writeText?.(text); } catch { /* 剪贴板不可用就算了 */ }
     }
 
-    function makeUserEditView(deps) {
-      return function UserEditNode(props) {
-        const [builtin, setBuiltin] = React.useState(() => findChatNodeBuiltin(deps.slots, 'user'));
-        React.useEffect(() => {
-          if (builtin) return undefined;
-          const timer = setInterval(() => {
-            const found = findChatNodeBuiltin(deps.slots, 'user');
-            if (found) { setBuiltin(found); clearInterval(timer); }
-          }, 250);
-          return () => clearInterval(timer);
-        }, [builtin]);
+    function makeAssistantEditAction(deps) {
+      return function AssistantEditAction(props) {
         const [busy, setBusy] = React.useState(false);
-        // 宿主的「原地遮蔽」会追加一条空内容占位消息（source.kind 以 rp-tools 开头）：
-        // 那是内部簿记，不在界面上画成空气泡。
-        const sourceKind = String(props.node?.data?.source?.kind ?? '');
-        if (sourceKind.startsWith('rp-tools-')) return null;
-        if (!builtin) return null;
-        const Builtin = builtin;
-        const seq = Number(props.node?.anchorSeq);
+        const messageId = String(props.messageId ?? '');
         const sessionId = props.sessionId;
         const onEdit = async () => {
-          if (busy || !Number.isSafeInteger(seq) || typeof sessionId !== 'string') return;
+          if (busy || !messageId || typeof sessionId !== 'string') return;
           setBusy(true);
           try {
-            const data = await requestEditMessage(sessionId, seq);
+            const data = await requestEditMessage(sessionId, { messageId });
             if (!data?.ok) {
               try { console.warn('[rp-tools] 编辑并重发失败：', data?.error ?? '未知错误'); } catch { /* 忽略 */ }
               return;
@@ -2664,19 +2645,15 @@ window.__ModuleLoader__.load({
             setBusy(false);
           }
         };
-        return [
-          h(Builtin, { key: 'builtin', ...props }),
-          Number.isSafeInteger(seq)
-            ? h('div', { key: 'edit', className: 'rpe-row' }, h('button', {
-              type: 'button',
-              className: 'rpe-btn',
-              disabled: busy,
-              title: '编辑这条消息并重新发送（最后一条不开分支；更早的消息会开一个新分支）',
-              'aria-label': '编辑并重发',
-              onClick: (event) => { event.stopPropagation(); void onEdit(); },
-            }, busy ? '…' : '✏️'))
-            : null,
-        ];
+        if (!messageId || typeof sessionId !== 'string') return null;
+        return h('button', {
+          type: 'button',
+          className: 'rpe-btn',
+          disabled: busy,
+          title: '编辑本回合的提问并重新发送（最后一条不开分支；更早的会开一个新分支）',
+          'aria-label': '编辑这轮提问',
+          onClick: (event) => { event.stopPropagation(); void onEdit(); },
+        }, busy ? '…' : '✏️ 编辑提问');
       };
     }
 
@@ -3523,15 +3500,14 @@ window.__ModuleLoader__.load({
         label: () => 'PNG 故事书',
       }, (props) => h(RpCardImport, { ...props, inline: true })));
 
-      // 每条用户消息旁的「✏️ 编辑并重发」（用户要求）。叠加在内置 user 节点渲染器上：
-      // 先原样渲染内置组件（priority 0），再挂自己的按钮。
-      // ⚠️ priority 必须**大于**内置的 0：keyed 槽位同 key 有多个注册时，只有优先级最高的
-      // 那个会被选中渲染。真机教训：用 -1 时注册存在、inspect 里 active:false、界面什么都不出现。
-      ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
-        name: 'conversation.chat.node',
-        key: 'user',
-        priority: 10,
-      }, makeUserEditView({ slots: ctx.slots, ctx })));
+      // 「✏️ 编辑提问」挂在**每条最终助手消息的操作行**里（用户提议的位置，也是最稳的）：
+      // `conversation.chat.assistant-actions` 是官方公开的 list 槽位（复制 / fork 按钮就在这排），
+      // 注册即生效；不像替换 `conversation.chat.node` 那种同 key 叠加会被内置渲染器遮蔽。
+      ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({
+        name: 'conversation.chat.assistant-actions',
+        id: 'rp-edit-message',
+        order: 30,
+      }, makeAssistantEditAction({ ctx })));
 
       // 右栏页签（RP 面板本体）**不在这里注册**：它是应用级的类型注册，注册一次就会让
       // 每个会话的右栏引导页都列着「🎲 RP 跑团面板」。改由会话头部按钮按「本会话是不是 DM」
