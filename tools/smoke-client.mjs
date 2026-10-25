@@ -2291,6 +2291,9 @@ async function ensureSidebarTab() {
   const hideStyle = head.find((el) => String(el.textContent ?? '').includes('[data-chat-turn="3"]'));
   assert.ok(hideStyle, '重试成功后要把旧回合的 data-chat-turn 用 CSS 隐藏（界面回收）');
   assert.ok(String(hideStyle.textContent).includes('display:none'), '隐藏规则要带 display:none');
+  // ⚠️ 只藏助手侧节点：整轮隐藏会把提问一起藏掉（第一轮重试后界面空白）
+  assert.ok(String(hideStyle.textContent).includes('[data-chat-flow-kind="assistant-step"]'), '要隐藏旧回合的助手消息（assistant-step）');
+  assert.equal(String(hideStyle.textContent).includes('[data-chat-turn="3"]{'), false, '不能整轮隐藏（会连提问一起藏掉）');
   // 成功要有界面可见的反馈（toast）：别只闷在控制台里
   const okToast = document.body.children.find((el) => el.id === 'rp-tools-toast');
   assert.ok(okToast && String(okToast.textContent).includes('重新发送'), '重试成功后要弹一条可见提示');

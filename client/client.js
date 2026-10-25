@@ -2667,9 +2667,13 @@ window.__ModuleLoader__.load({
           el.dataset.pluginCss = 'dsh-rp-tools-hide';
           document.head.appendChild(el);
         }
+        // ⚠️ 只隐藏「助手侧」节点：整轮隐藏会把用户提问一起藏掉，第一轮重试后
+        // 会话会看起来一片空白（真机踩到）。保留 user，藏 assistant-step / turn-tail /
+        // turn-process / tool-call / turn-trigger 等旧回合的输出节点。
+        const HIDDEN_KINDS = ['assistant-step', 'turn-tail', 'turn-process', 'tool-call', 'turn-trigger', 'turn-error', 'turn-max-tokens'];
         el.textContent = [...hiddenTurns]
           .sort((a, b) => a - b)
-          .map((turn) => `[data-chat-turn="${turn}"]{display:none !important}`)
+          .flatMap((turn) => HIDDEN_KINDS.map((kind) => `[data-chat-turn="${turn}"][data-chat-flow-kind="${kind}"]{display:none !important}`))
           .join('\n');
       } catch { /* 忽略 */ }
     }
