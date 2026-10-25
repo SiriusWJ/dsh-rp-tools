@@ -2323,7 +2323,10 @@ async function ensureSidebarTab() {
   const editBtn = findAll(tree, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpe-edit'))[0];
   assert.ok(editBtn, '助手操作行要有编辑按钮');
   assert.equal(findAll(editBtn, (n) => n.type === 'svg').length, 1, '编辑按钮用铅笔图标（svg）');
-  await editBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
+  // 模拟真实 Chat DOM：按钮所在的回合行里有一个 assistant-step 内容节点
+  const contentNode = { dataset: {}, textContent: '原来的回复' };
+  const turnRow = { querySelectorAll: () => [contentNode] };
+  await editBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ }, currentTarget: { closest: () => turnRow } });
   await tick(80);
   const prepCall = calls.find((c) => c.url === '/rp-tools/edit-reply' && !c.body?.text);
   assert.ok(prepCall, '第一段要取原文（不带 text）');
@@ -2351,6 +2354,8 @@ async function ensureSidebarTab() {
   assert.ok(commitCall, '第二段要带编辑后的文本提交');
   // 原地改写：不建分支、不切会话，只提示重启/切会话后生效
   assert.equal(openedSessions.includes('child-edit-1'), false, '原地改写不应切到新会话');
+  // 宿主内存改不了 → 客户端直接改界面文本（立即看到变化）
+  assert.equal(contentNode.textContent, '改过的回复', '编辑后界面上的回复文本要立即更新');
 }
 
 console.log('客户端冒烟测试通过：');
