@@ -2621,6 +2621,25 @@ window.__ModuleLoader__.load({
 
     function copyEditText(text) {
       try { void navigator.clipboard?.writeText?.(text); } catch { /* 剪贴板不可用就算了 */ }
+      showEditToast('原文已复制到剪贴板');
+    }
+
+    /** 界面可见的小提示：失败/成功都让用户知道发生了什么（别只闷在控制台里）。 */
+    function showEditToast(message) {
+      try {
+        if (typeof document === 'undefined' || !document.body || typeof document.createElement !== 'function') return;
+        const old = typeof document.getElementById === 'function' ? document.getElementById('rp-tools-toast') : null;
+        if (old && typeof old.remove === 'function') old.remove();
+        const el = document.createElement('div');
+        el.id = 'rp-tools-toast';
+        el.textContent = String(message ?? '');
+        el.style.cssText = 'position:fixed;left:50%;bottom:30px;transform:translateX(-50%);z-index:99999;'
+          + 'max-width:min(560px,90vw);padding:9px 14px;border-radius:10px;font-size:13px;line-height:1.5;'
+          + 'background:rgba(28,28,32,.96);color:#fff;box-shadow:0 10px 30px rgba(0,0,0,.45);'
+          + 'pointer-events:none;white-space:pre-wrap;';
+        document.body.appendChild(el);
+        setTimeout(() => { try { if (typeof el.remove === 'function') el.remove(); } catch { /* 忽略 */ } }, 6000);
+      } catch { /* 忽略 */ }
     }
 
     /** 重试图标（官方操作行风格：描边 currentColor，白色主题下即白色）。 */
@@ -2696,7 +2715,7 @@ window.__ModuleLoader__.load({
       const turn = Number(row?.dataset?.chatTurn);
       const sessionId = currentSessionId();
       if (!Number.isSafeInteger(turn) || !sessionId) {
-        try { console.warn('[rp-tools] 编辑提问：拿不到回合编号或会话 id'); } catch { /* 忽略 */ }
+        showEditToast('编辑提问：拿不到回合编号或会话 id，请刷新页面再试');
         return;
       }
       try {
@@ -2707,23 +2726,30 @@ window.__ModuleLoader__.load({
         });
         const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
         if (!data?.ok) {
-          try { console.warn('[rp-tools] 编辑提问失败：', data?.error ?? '未知错误'); } catch { /* 忽略 */ }
+          showEditToast(`编辑提问失败：${data?.error ?? '未知错误'}`);
           return;
         }
         if (data.mode === 'inplace') {
           const { inputActions } = boundComposer(ctx, sessionId);
-          if (typeof inputActions?.setDraft === 'function') inputActions.setDraft(data.text);
-          else copyEditText(data.text);
+          if (typeof inputActions?.setDraft === 'function') {
+            inputActions.setDraft(data.text);
+            showEditToast('原文已回填输入框，改完点发送即可');
+          } else {
+            copyEditText(data.text);
+          }
           return;
         }
         if (data.mode === 'branch' && data.sessionId) {
           try { ctx.get('uiWorkspace')?.openSession?.({ sessionId: data.sessionId }); } catch { /* 忽略 */ }
           const ok = await prefillComposer(ctx, data.sessionId, data.text);
-          if (!ok) copyEditText(data.text);
+          if (ok) showEditToast('已切到新分支，原文已回填输入框');
+          else copyEditText(data.text);
           return;
         }
         copyEditText(data.text);
-      } catch { /* 忽略 */ }
+      } catch (error) {
+        showEditToast(`编辑提问失败：${String(error?.message ?? error)}`);
+      }
     }
 
     function installUserEditButtons(ctx) {
@@ -2751,14 +2777,21 @@ window.__ModuleLoader__.load({
         const messageId = String(props.messageId ?? '');
         const sessionId = props.sessionId;
         const onRetry = async () => {
-          if (busy || !messageId || typeof sessionId !== 'string') return;
+          if (busy) return;
+          if (!messageId || typeof sessionId !== 'string') {
+            showEditToast('重试：拿不到消息标识或会话 id，请刷新页面再试');
+            return;
+          }
           setBusy(true);
           try {
             const data = await requestRetryLast(sessionId, messageId);
             if (!data?.ok) {
-              try { console.warn('[rp-tools] 重试失败：', data?.error ?? '未知错误'); } catch { /* 忽略 */ }
+              showEditToast(`重试失败：${data?.error ?? '未知错误'}`);
+            } else {
+              showEditToast('已重新发送这一轮，等待新回复…');
             }
-            // 成功：宿主已遮蔽旧回合并重新 followup，新的回复会流式出现，这里不用做事
+          } catch (error) {
+            showEditToast(`重试失败：${String(error?.message ?? error)}`);
           } finally {
             setBusy(false);
           }

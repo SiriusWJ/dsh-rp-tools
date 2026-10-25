@@ -64,22 +64,31 @@ globalThis.MutationObserver = class {
 globalThis.document = {
   createElement(tag) {
     const el = { tagName: String(tag).toUpperCase(), dataset: {}, textContent: '', isConnected: false,
-      className: '', style: {}, children: [], handlers: {} };
+      className: '', style: {}, children: [], handlers: {}, removed: false };
     el.setAttribute = (k, v) => { el[k] = v; };
     el.appendChild = (child) => { el.children.push(child); child.isConnected = true; return child; };
     el.addEventListener = (type, fn) => { el.handlers[type] = fn; };
     el.removeEventListener = () => {};
+    el.remove = () => {
+      el.removed = true;
+      const at = globalThis.document.body.children.indexOf(el);
+      if (at >= 0) globalThis.document.body.children.splice(at, 1);
+    };
     return el;
   },
   head: { appendChild: (el) => { el.isConnected = true; head.push(el); } },
   // body 必须存在：共享大编辑器（世界书/角色卡/DM 设定）走 createPortal(content, document.body)，
   // 没有它就永远走「退回原位」那条分支，测出来的不是真实布局。
-  body: { children: [] },
+  body: {
+    children: [],
+    appendChild(el) { el.isConnected = true; this.children.push(el); return el; },
+  },
   activeElement: null,
   addEventListener: () => {},
   removeEventListener: () => {},
   querySelector: () => null,
   querySelectorAll: (selector) => (String(selector).includes('data-chat-flow-kind') ? fakeUserRows : []),
+  getElementById: (id) => globalThis.document.body.children.find((el) => el.id === id && !el.removed) ?? null,
 };
 
 // ── 极小 React 运行时 ──────────────────────────────────────────────────────
@@ -2273,6 +2282,16 @@ async function ensureSidebarTab() {
   const retryCall = calls.find((c) => c.url === '/rp-tools/retry-last');
   assert.ok(retryCall && retryCall.method === 'POST', '点击要 POST /rp-tools/retry-last');
   assert.deepEqual(retryCall.body, { sessionId: 's1', messageId: 'msg-assistant-1' }, '请求要带 sessionId + 助手消息 id');
+  // 成功要有界面可见的反馈（toast）：别只闷在控制台里
+  const okToast = document.body.children.find((el) => el.id === 'rp-tools-toast');
+  assert.ok(okToast && String(okToast.textContent).includes('重新发送'), '重试成功后要弹一条可见提示');
+  // 失败时也要弹提示（真机「点了没反应」就是因为它只写了 console.warn）
+  retryReply = { ok: false, error: '只能重试最后一条回复' };
+  await retryBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
+  await tick(40);
+  const failToast = document.body.children.find((el) => el.id === 'rp-tools-toast');
+  assert.ok(failToast && String(failToast.textContent).includes('重试失败'), '重试失败要弹可见提示（含错误原因）');
+  assert.ok(String(failToast.textContent).includes('只能重试最后一条'), '提示里要带服务端错误原因');
   // 没有 messageId（或 session）时不渲染，别在别的节点上多出一个按钮
   const nothing = renderNode({ type: retryReg.component, props: { sessionId: 's1' } });
   assert.equal(nothing, null, '没有 messageId 时不渲染按钮');
