@@ -37,11 +37,11 @@
       "versions": [
         {
           "version": "1.24.1",
-          "publishTimestamp": 1792939534,
+          "publishTimestamp": 1792939822,
           "source": {
             "type": "git",
             "url": "https://github.com/SiriusWJ/dsh-rp-tools",
-            "commit": "16ff1fc51152ff6fffc7f82af4e241785ab8cdb0"
+            "commit": "9f8a65dbc30f03c067c262a19e7f7ca0c080852e"
           },
           "engines": {
             "dsh": "^0.2.1-rc.2"
