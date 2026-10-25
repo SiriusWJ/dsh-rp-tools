@@ -3429,23 +3429,22 @@ if (onSessionCreated) {
   };
   try {
     const ok = await callPost('/rp-tools/retry-last', { sessionId: 'retry-1', messageId: 'a-4' });
-    check('重试：返回 prefill（把提问交回输入框）', ok.json.mode, 'prefill');
-    check('重试：返回最后一条提问原文', ok.json.text, '最后的问题');
-    // ⚠️ 不能再 followup：followup 会再追加一条用户消息（真机表现为「重试后又发了一次提问」）
-    check('重试：不调用 followup（不偷偷发用户消息）', followups.length, 0);
-    // 遮蔽旧回合：照抄 dsh-wm-toolkit 的删除写法（完整 UserMessage + replace + 被遮蔽列表）
-    check('重试：写一次 replace 遮蔽', appendCalls.length, 1);
+    check('重试：一键成功（retried）', ok.json.retried, true);
+    check('重试：先遮蔽旧回合（写一次 replace）', appendCalls.length, 1);
     check('重试：占位是完整 UserMessage（id/role/content/source）',
       `${typeof appendCalls[0]?.data?.id}/${appendCalls[0]?.data?.role}/${appendCalls[0]?.data?.content?.[0]?.text}/${appendCalls[0]?.data?.source?.kind}`,
       'string/user/[deleted]/plugin:dsh-rp-tools');
     check('重试：replace 范围 = 提问 seq → 末尾',
       `${appendCalls[0]?.opts?.surfaceOp?.startSeq}/${appendCalls[0]?.opts?.surfaceOp?.endSeq}`, '3/4');
     check('重试：完整列出被遮蔽节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '3,4');
-    // 宽容语义：messageId 对不上也取最后一条提问
+    check('重试：旧回合删掉后用同一提问自动重发（followup 一次）', followups.length, 1);
+    check('重试：followup 用原提问文本', followups[0]?.content?.[0]?.text, '最后的问题');
+    check('重试：返回 hiddenTurns 供界面收起旧行', Array.isArray(ok.json.hiddenTurns), true);
+    // 宽容语义：messageId 对不上也按「最后一条」重试
     const wrongId = await callPost('/rp-tools/retry-last', { sessionId: 'retry-1', messageId: 'a-2' });
-    check('重试：messageId 对不上也宽容取最后一条', wrongId.json.text, '最后的问题');
+    check('重试：messageId 对不上也宽容执行', wrongId.json.retried, true);
     const noAgent = await callPost('/rp-tools/retry-last', { sessionId: 'retry-noagent', messageId: 'a-4' });
-    check('重试：不依赖活 agent（只取回文本）', noAgent.json.mode, 'prefill');
+    check('重试：没有活 agent 时降级为 prefill（只回填输入框）', noAgent.json.mode, 'prefill');
   } finally {
     hostCtx.get = origGet;
     liveSessions.delete('retry-1');

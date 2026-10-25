@@ -2758,6 +2758,40 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // 界面回收：官方 Chat 渲染的是**事件流**，数据层 replace 不会让已显示的行消失
+    // （wm-toolkit 客户端也是自己藏）。宿主已经把整轮从上下文删掉并用同一提问重新发起，
+    // 所以这里按 turn 整轮隐藏旧行 —— 界面只剩新的提问+回复。
+    const hiddenTurns = new Set();
+    function hideTurnsForSession(turns) {
+      try {
+        if (Array.isArray(turns)) {
+          for (const turn of turns) {
+            const value = Number(turn);
+            if (Number.isSafeInteger(value) && value >= 0) hiddenTurns.add(value);
+          }
+        }
+        if (typeof document === 'undefined' || !document.head || typeof document.createElement !== 'function') return;
+        const existing = typeof document.querySelector === 'function'
+          ? document.querySelector('style[data-plugin-css="dsh-rp-tools-hide"]')
+          : null;
+        if (hiddenTurns.size === 0) {
+          if (existing) existing.textContent = '';
+          return;
+        }
+        let el = existing;
+        if (!el) {
+          el = document.createElement('style');
+          el.dataset.plugin = 'dsh-rp-tools';
+          el.dataset.pluginCss = 'dsh-rp-tools-hide';
+          document.head.appendChild(el);
+        }
+        el.textContent = [...hiddenTurns]
+          .sort((a, b) => a - b)
+          .map((turn) => `[data-chat-turn="${turn}"]{display:none !important}`)
+          .join('\n');
+      } catch { /* 忽略 */ }
+    }
+
     /** 启动时清掉可能残留的隐藏规则（旧版本 / HMR 留下的 <style> 会把正常消息也藏掉）。 */
     function clearStaleHideRules() {
       try {
@@ -2802,16 +2836,18 @@ window.__ModuleLoader__.load({
             const data = await requestRetryLast(sessionId, messageId);
             if (!data?.ok) {
               showEditToast(`重试失败：${data?.error ?? '未知错误'}`);
+            } else if (data.retried === true) {
+              // 一键重试：宿主已删除旧回合并自动重发，这里把旧行从界面收起
+              hideTurnsForSession(data.hiddenTurns);
+              showEditToast('旧回复已删除，正在重新生成…');
             } else if (typeof data.text === 'string') {
-              // 优先用槽位直接给的 inputActions（官方 Chat 节点标准 props），拿不到再退回 uiSession。
+              // 降级：没有活 agent 时只回填输入框
               const setDraft = typeof props.inputActions?.setDraft === 'function'
                 ? props.inputActions.setDraft
                 : boundComposer(deps.ctx, sessionId).inputActions?.setDraft;
               if (typeof setDraft === 'function') {
                 setDraft(data.text);
-                showEditToast(data.deleted === true
-                  ? '旧回复已从对话与上下文里删除，提问已放回输入框，按回车重新生成'
-                  : '已把这一轮提问放回输入框，按回车重新发送即可');
+                showEditToast('旧回复已删除，提问已放回输入框，按回车重新生成');
               } else {
                 copyEditText(data.text);
               }

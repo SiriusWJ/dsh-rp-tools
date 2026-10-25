@@ -2276,24 +2276,22 @@ async function ensureSidebarTab() {
   assert.ok(retryBtn, '助手消息操作行要有重试按钮');
   assert.ok(String(retryBtn.props.title).includes('重新输出'), '按钮提示要说明「重新输出这一轮回复」');
   assert.equal(findAll(retryBtn, (n) => n.type === 'svg').length, 1, '按钮用图标（官方风格 svg），不是文字');
-  // 重试 = 把这一轮提问放回输入框（不再偷偷 followup 发消息、也不隐藏界面）
-  const retryDrafts = [];
-  retryReply = { ok: true, mode: 'prefill', text: '把这个问题放回输入框' };
+  // 一键重试：宿主删除旧回合 + 自动重发，客户端负责把旧行从界面收起
+  retryReply = { ok: true, retried: true, deleted: true, hiddenTurns: [3] };
   const retryBtn2 = findAll(renderNode({
     type: retryReg.component,
-    props: { messageId: 'msg-assistant-1', sessionId: 's1', inputActions: { setDraft: (text) => retryDrafts.push(text) } },
+    props: { messageId: 'msg-assistant-1', sessionId: 's1' },
   }), (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpe-retry'))[0];
   await retryBtn2.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
   await tick(40);
   const retryCall = calls.find((c) => c.url === '/rp-tools/retry-last');
   assert.ok(retryCall && retryCall.method === 'POST', '点击要 POST /rp-tools/retry-last');
   assert.deepEqual(retryCall.body, { sessionId: 's1', messageId: 'msg-assistant-1' }, '请求要带 sessionId + 助手消息 id');
-  assert.deepEqual(retryDrafts, ['把这个问题放回输入框'], '重试要把提问回填到输入框（用户自己按回车发送）');
+  const hideStyle = head.find((el) => String(el.textContent ?? '').includes('[data-chat-turn="3"]'));
+  assert.ok(hideStyle, '一键重试后要把旧回合用 CSS 从界面收起（官方 Chat 渲染事件流，replace 不会自动消失）');
+  assert.ok(String(hideStyle.textContent).includes('display:none'), '隐藏规则要带 display:none');
   const retryOkToast = document.body.children.find((el) => el.id === 'rp-tools-toast');
-  assert.ok(retryOkToast && String(retryOkToast.textContent).includes('放回输入框'), '回填后要提示用户按回车发送');
-  // 成功要有界面可见的反馈（toast）：别只闷在控制台里
-  const okToast = document.body.children.find((el) => el.id === 'rp-tools-toast');
-  assert.ok(okToast && String(okToast.textContent).includes('重新发送'), '重试成功后要弹一条可见提示');
+  assert.ok(retryOkToast && String(retryOkToast.textContent).includes('重新生成'), '一键重试后要提示正在重新生成');
   // 失败时也要弹提示（真机「点了没反应」就是因为它只写了 console.warn）
   retryReply = { ok: false, error: '只能重试最后一条回复' };
   await retryBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
