@@ -3217,9 +3217,10 @@ if (onSessionCreated) {
   check('封面迁移：属于角色的卡面不当封面', got2.json.session?.cover, null);
 }
 
-// ── dm 预设本身：渲染方案与过滤开关（真机踩过坑，放这里当回归闸门）────────────
-// 用户实测：导入的卡自带的 ASCII「状态面板 / 战斗面板」被 DM 当成模板照抄，
-// 于是回复里全是代码块画的方框 —— 预设必须明确「一律用 GenUI 组件重画」。
+// ── dm 预设本身：输出排版与过滤开关（真机踩过坑，放这里当回归闸门）────────────
+// 用户要求（1.18.0）：不再按「组件 / JSON 围栏」格式输出 —— 改成**纯文本为主、选项每个一行**，
+// 有 UI 控件时也可以用；同时删掉所有 GenUI / dsh-ui / render_ui / validate_dsh_ui 的说明
+// （桌面版根本没装 GenUI 插件，那些要求本来就是空话）。
 {
   let yaml = null;
   // js-yaml 是宿主的依赖，不一定在被测的那份 profile 里（用临时 profile 跑源码时会缺）——
@@ -3253,14 +3254,20 @@ if (onSessionCreated) {
     const persona = rows.find((row) => row?.id === 'persona');
     const prefix = String(persona?.config?.prefix ?? '');
     check('预设：persona 段存在', Boolean(persona), true);
-    check('预设：有「渲染方案」小节', prefix.includes('## 渲染方案'), true);
-    check('预设：点明不要照抄卡里的 ASCII 面板', prefix.includes('不要照抄卡里的画法'), true);
-    check('预设：给了替代组件（keyvalue/progress/table）',
-      ['`keyvalue`', '`progress`', '`table`'].every((k) => prefix.includes(k)), true);
-    check('预设：把「必须输出面板」解释成「必须给出数据」', prefix.includes('不是必须用代码块'), true);
-    check('预设：禁止同一批数据发两份', prefix.includes('同一批数据只出现一次'), true);
-    check('预设：图片用 image 组件且不许贴裸 URL',
-      prefix.includes('图片一律用 `image` 组件') && prefix.includes('不要贴裸 URL'), true);
+    check('预设：有「输出排版」小节', prefix.includes('## 输出排版'), true);
+    check('预设：点明不要照抄卡里的 ASCII 面板', prefix.includes('那不是要你照抄的模板'), true);
+    check('预设：把「必须输出面板」解释成「必须给出数据」', prefix.includes('不是必须画成那个样子'), true);
+    check('预设：同一批信息只说一次', prefix.includes('同一批信息只说一次'), true);
+    // 用户要求：选项改纯文本、每个一行；有 UI 控件时也可以用（不强推、不禁用）
+    check('预设：选项每个单独一行', prefix.includes('每个选项单独一行'), true);
+    check('预设：允许使用 UI 控件（有就用，没有纯文本也够）',
+      prefix.includes('UI 控件') && prefix.includes('纯文本完全够用'), true);
+    check('预设：图片给地址即可（有控件时可用组件）',
+      prefix.includes('图片地址') && prefix.includes('也可以放进组件显示'), true);
+    // 防回归：GenUI / 围栏 / 组件名不该再出现在 persona 里（桌面版没有这些工具）
+    check('预设：不再提 GenUI / dsh-ui / render_ui / validate_dsh_ui / 组件名',
+      ['GenUI', 'dsh-ui', 'render_ui', 'validate_dsh_ui', 'keyvalue', 'progress', 'timeline', 'badge']
+        .every((k) => !prefix.includes(k)), true);
     // ── 生图 / 配图（已按用户要求整段删除）────────────────────────────────
     // 预设里不再有任何「配图 / generate_image / 本插件不出图」的说明：DM 不负责配图，
     // 资源库只做「已有图片的收录与复用」。下面三条是**防回归闸门**（删掉的东西不许长回来）。
@@ -3285,10 +3292,10 @@ if (onSessionCreated) {
     check('预设：强调没地图就别硬造', prefix.includes('不要给每个场景临时造一张图'), true);
     check('预设：运行时变化不写回静态图', prefix.includes('运行时变化绝不写回 rp-map.json'), true);
     check('预设：mermaid 节点 ID 必须 ASCII', prefix.includes('**必须 ASCII**'), true);
-    check('预设：按钮只从当前节点的邻接边生成', prefix.includes('按钮只从「当前节点的邻接边」生成'), true);
-    check('预设：点明跨端生成按钮会被判相邻失败', prefix.includes('点了必然被判「两点不相邻」而失败'), true);
-    check('预设：地图走面板原地更新', prefix.includes('地图走面板'), true);
-    check('预设：收到地图 action 先校验再写状态', prefix.includes('非法就说明原因并重绘当前地图，**不要写状态**'), true);
+    check('预设：可走的选项每个单独一行（纯文本为准）', prefix.includes('可走的选项每个单独一行'), true);
+    check('预设：只列当前节点的邻接边', prefix.includes('只列「当前节点的邻接边」'), true);
+    check('预设：地图画一次就够（不每轮重画）', prefix.includes('地图画一次就够'), true);
+    check('预设：收到地图 action 先校验再写状态', prefix.includes('非法就说明原因并重画当前地图，**不要写状态**'), true);
     // 约定 ≠ 状态（报告 BUG-01/02 的种子）
     check('预设：说明「常驻条目 / 已有可用图」是规则而不是已有状态',
       prefix.includes('是**规则说明**；本会话真的有没有，看它下面列的东西'), true);
