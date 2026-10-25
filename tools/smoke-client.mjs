@@ -2323,19 +2323,33 @@ async function ensureSidebarTab() {
   const editBtn = findAll(tree, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpe-edit'))[0];
   assert.ok(editBtn, '助手操作行要有编辑按钮');
   assert.equal(findAll(editBtn, (n) => n.type === 'svg').length, 1, '编辑按钮用铅笔图标（svg）');
-  const realPrompt = globalThis.window.prompt;
-  globalThis.window.prompt = () => '改过的回复';
-  try {
-    await editBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
-    await tick(60);
-    const prepCall = calls.find((c) => c.url === '/rp-tools/edit-reply' && !c.body?.text);
-    assert.ok(prepCall, '第一段要取原文（不带 text）');
-    const commitCall = calls.find((c) => c.url === '/rp-tools/edit-reply' && c.body?.text === '改过的回复');
-    assert.ok(commitCall, '第二段要带编辑后的文本提交');
-    assert.ok(openedSessions.includes('child-edit-1'), '创建分支后要切到新会话');
-  } finally {
-    globalThis.window.prompt = realPrompt;
-  }
+  await editBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
+  await tick(80);
+  const prepCall = calls.find((c) => c.url === '/rp-tools/edit-reply' && !c.body?.text);
+  assert.ok(prepCall, '第一段要取原文（不带 text）');
+  // 面板是自绘的（Electron 里 window.prompt 不可用）：找到遮罩/输入框/保存按钮
+  const overlay = globalThis.document.body.children.find((el) => String(el.className ?? '').includes('rpe-editor-overlay'));
+  assert.ok(overlay, '点击编辑后要弹出编辑面板（自绘，不依赖 window.prompt）');
+  const findDeep = (el, cls) => {
+    if (!el) return null;
+    if (String(el.className ?? '').split(/\s+/).includes(cls)) return el;
+    for (const child of el.children ?? []) {
+      const hit = findDeep(child, cls);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const area = findDeep(overlay, 'rpe-editor-area');
+  assert.ok(area, '面板里要有文本输入框');
+  assert.equal(area.value, '原来的回复', '输入框要预填原文');
+  area.value = '改过的回复';
+  const saveBtn = findDeep(overlay, 'rpe-editor-save');
+  assert.ok(saveBtn, '面板里要有保存按钮');
+  saveBtn.handlers.click();
+  await tick(80);
+  const commitCall = calls.find((c) => c.url === '/rp-tools/edit-reply' && c.body?.text === '改过的回复');
+  assert.ok(commitCall, '第二段要带编辑后的文本提交');
+  assert.ok(openedSessions.includes('child-edit-1'), '创建分支后要切到新会话');
 }
 
 console.log('客户端冒烟测试通过：');

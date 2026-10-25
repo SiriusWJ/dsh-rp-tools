@@ -492,6 +492,23 @@ window.__ModuleLoader__.load({
 .rpe-edit:hover:not(:disabled) { opacity: 1; background: rgba(96, 165, 250, .14); }
 .rpe-edit:active:not(:disabled) { background: rgba(96, 165, 250, .24); }
 .rpe-edit:disabled { opacity: .3; cursor: default; }
+/* 编辑回复面板（Electron 里 window.prompt 不可用，自己画一个） */
+.rpe-editor-overlay { position: fixed; inset: 0; z-index: 99998; display: flex; align-items: center;
+  justify-content: center; background: rgba(0, 0, 0, .45); backdrop-filter: blur(2px); }
+.rpe-editor-card { width: min(640px, 92vw); max-height: 80vh; display: flex; flex-direction: column; gap: 10px;
+  padding: 16px 18px; border-radius: 14px; background: #1f2330; color: #e8eaf0;
+  border: 1px solid rgba(255, 255, 255, .12); box-shadow: 0 24px 60px rgba(0, 0, 0, .5); }
+.rpe-editor-title { font-size: 13px; opacity: .85; }
+.rpe-editor-area { width: 100%; min-height: 220px; max-height: 50vh; resize: vertical; box-sizing: border-box;
+  padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, .16);
+  background: #161a24; color: #e8eaf0; font: inherit; font-size: 13px; line-height: 1.6; outline: none; }
+.rpe-editor-area:focus { border-color: rgba(96, 165, 250, .6); }
+.rpe-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.rpe-editor-btn { padding: 6px 14px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, .18);
+  background: transparent; color: inherit; font: inherit; font-size: 13px; cursor: pointer; }
+.rpe-editor-btn:hover { background: rgba(255, 255, 255, .08); }
+.rpe-editor-save { border-color: rgba(96, 165, 250, .55); background: rgba(96, 165, 250, .18); }
+.rpe-editor-save:hover { background: rgba(96, 165, 250, .3); }
 /* 内容区：左栏卡库列表 / 右栏卡面与预览；整块铺满高度，列表自己滚 */
 .rpc-full-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 18px 18px; }
 .rpc-full .panel { padding: 0; border: none; background: transparent; }
@@ -2661,6 +2678,61 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 编辑回复面板（**自绘**：Electron 里 window.prompt 不可用，点了会毫无反应）。
+     * 返回用户输入的新文本；取消/关闭返回 null。
+     */
+    function openReplyEditor(initialText) {
+      return new Promise((resolve) => {
+        try {
+          if (typeof document === 'undefined' || !document.body || typeof document.createElement !== 'function') {
+            resolve(null);
+            return;
+          }
+          const overlay = document.createElement('div');
+          overlay.className = 'rpe-editor-overlay';
+          const card = document.createElement('div');
+          card.className = 'rpe-editor-card';
+          const title = document.createElement('div');
+          title.className = 'rpe-editor-title';
+          title.textContent = '编辑这条回复（保存后生成新版本分支，旧版本保留）';
+          const area = document.createElement('textarea');
+          area.className = 'rpe-editor-area';
+          area.value = String(initialText ?? '');
+          const actions = document.createElement('div');
+          actions.className = 'rpe-editor-actions';
+          const cancel = document.createElement('button');
+          cancel.type = 'button';
+          cancel.className = 'rpe-editor-btn';
+          cancel.textContent = '取消';
+          const save = document.createElement('button');
+          save.type = 'button';
+          save.className = 'rpe-editor-btn rpe-editor-save';
+          save.textContent = '保存并生成新版本';
+          let settled = false;
+          const close = (value) => {
+            if (settled) return;
+            settled = true;
+            try { if (typeof overlay.remove === 'function') overlay.remove(); } catch { /* 忽略 */ }
+            resolve(value);
+          };
+          cancel.addEventListener('click', () => close(null));
+          save.addEventListener('click', () => close(String(area.value ?? '')));
+          overlay.addEventListener('click', (event) => { if (event?.target === overlay) close(null); });
+          actions.appendChild(cancel);
+          actions.appendChild(save);
+          card.appendChild(title);
+          card.appendChild(area);
+          card.appendChild(actions);
+          overlay.appendChild(card);
+          document.body.appendChild(overlay);
+          try { if (typeof area.focus === 'function') area.focus(); } catch { /* 忽略 */ }
+        } catch {
+          resolve(null);
+        }
+      });
+    }
+
+    /**
      * 助手操作行里的「编辑这条回复」：两段式 —— 先取原文弹输入框，再提交生成新版本分支
      * （参考 dsh-wm-toolkit 的 branchAssistantEdit：新会话 = 父会话前缀 + 改写后的回复）。
      */
@@ -2687,9 +2759,8 @@ window.__ModuleLoader__.load({
         try {
           const prep = await post({ sessionId, messageId });
           if (!prep?.ok) { showRpToast(`编辑失败：${prep?.error ?? '未知错误'}`); return; }
-          const input = typeof window.prompt === 'function'
-            ? window.prompt('编辑这条回复（改完会生成一个新版本分支，旧版本保留）', prep.oldText ?? '')
-            : null;
+          // 自绘编辑面板（Electron 不支持 window.prompt —— 用它点了会毫无反应）。
+          const input = await openReplyEditor(prep.oldText ?? '');
           if (typeof input !== 'string' || input.trim().length === 0 || input === prep.oldText) return;
           const out = await post({ sessionId, messageId, text: input });
           if (!out?.ok || !out.childId) { showRpToast(`编辑失败：${out?.error ?? '未知错误'}`); return; }
