@@ -473,15 +473,17 @@ window.__ModuleLoader__.load({
   background: transparent; color: inherit; font: inherit; cursor: pointer;
 }
 .rpc-full-x:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
-/* 删除按钮（助手操作行 / 用户消息旁）：白色描边风格，悬停才明显 */
+/* 删除按钮（助手操作行 / 用户消息旁）：红色描边垃圾桶图标，悬停才明显 */
 .rpe-del { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
-  padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit;
-  opacity: .5; cursor: pointer; font-size: 12px; line-height: 1; }
-.rpe-del:hover:not(:disabled) { opacity: 1; background: color-mix(in oklab, currentColor 10%, transparent); }
+  padding: 0; border: 0; border-radius: 6px; background: transparent; color: #ef4444;
+  opacity: .6; cursor: pointer; font: inherit; line-height: 1; }
+.rpe-del svg { display: block; }
+.rpe-del:hover:not(:disabled) { opacity: 1; background: rgba(239, 68, 68, .14); }
+.rpe-del:active:not(:disabled) { background: rgba(239, 68, 68, .24); }
 .rpe-del:disabled { opacity: .3; cursor: default; }
 [data-chat-flow-kind="user"] .rpe-del { position: absolute; top: 3px; right: 4px; width: 20px; height: 20px; opacity: 0; transition: opacity .12s ease; }
-[data-chat-flow-kind="user"]:hover .rpe-del { opacity: .55; }
-[data-chat-flow-kind="user"] .rpe-del:hover { opacity: .95 !important; }
+[data-chat-flow-kind="user"]:hover .rpe-del { opacity: .7; }
+[data-chat-flow-kind="user"] .rpe-del:hover { opacity: 1 !important; }
 /* 内容区：左栏卡库列表 / 右栏卡面与预览；整块铺满高度，列表自己滚 */
 .rpc-full-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 18px 18px; }
 .rpc-full .panel { padding: 0; border: none; background: transparent; }
@@ -2623,6 +2625,21 @@ window.__ModuleLoader__.load({
       } catch { /* 忽略 */ }
     }
 
+    /** 垃圾桶图标（描边 currentColor，颜色由 CSS 控制为红色）。 */
+    function deleteIcon() {
+      return h('svg', {
+        viewBox: '0 0 16 16', width: 15, height: 15, fill: 'none',
+        stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+        'aria-hidden': 'true', focusable: 'false',
+      }, [
+        h('path', { key: 'lid', d: 'M2.6 4.6h10.8' }),
+        h('path', { key: 'handle', d: 'M6.1 4.6V3.3a.7.7 0 0 1 .7-.7h2.4a.7.7 0 0 1 .7.7v1.3' }),
+        h('path', { key: 'body', d: 'M4 4.6l.7 8.1a1.2 1.2 0 0 0 1.2 1.1h4.2a1.2 1.2 0 0 0 1.2-1.1l.7-8.1' }),
+        h('path', { key: 'line1', d: 'M6.5 7.1v4.3' }),
+        h('path', { key: 'line2', d: 'M9.5 7.1v4.3' }),
+      ]);
+    }
+
     /** 助手操作行里的「删除这条回复」按钮：删该回合的所有输出（提问保留）。 */
     function DeleteReplyAction(props) {
       const [busy, setBusy] = React.useState(false);
@@ -2660,7 +2677,7 @@ window.__ModuleLoader__.load({
         title: '删除这条回复（模型上下文与界面）',
         'aria-label': '删除回复',
         onClick: (event) => { event.stopPropagation(); void onDelete(event); },
-      }, busy ? '…' : '🗑');
+      }, busy ? '…' : deleteIcon());
     }
 
     /** 用户消息旁的「删除这一轮」按钮（DOM 注入）：提问 + 回复一起删。 */
@@ -2705,7 +2722,12 @@ window.__ModuleLoader__.load({
           btn.className = 'rpe-del';
           btn.title = '删除这一轮（提问 + 回复）';
           btn.setAttribute('aria-label', '删除这一轮');
-          btn.textContent = '🗑';
+          // 与助手操作行一致的红色垃圾桶图标（DOM 注入，用固定 SVG 字符串）。
+          btn.innerHTML = '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" '
+            + 'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">'
+            + '<path d="M2.6 4.6h10.8"/><path d="M6.1 4.6V3.3a.7.7 0 0 1 .7-.7h2.4a.7.7 0 0 1 .7.7v1.3"/>'
+            + '<path d="M4 4.6l.7 8.1a1.2 1.2 0 0 0 1.2 1.1h4.2a1.2 1.2 0 0 0 1.2-1.1l.7-8.1"/>'
+            + '<path d="M6.5 7.1v4.3"/><path d="M9.5 7.1v4.3"/></svg>';
           btn.addEventListener('click', (event) => {
             try { event.stopPropagation(); } catch { /* 忽略 */ }
             void deleteTurnByRow(row);

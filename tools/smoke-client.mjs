@@ -2277,6 +2277,7 @@ async function ensureSidebarTab() {
   const delBtn = findAll(tree, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpe-del'))[0];
   assert.ok(delBtn, '助手操作行要有删除按钮');
   assert.ok(String(delBtn.props.title).includes('删除'), '按钮提示要说明删除');
+  assert.equal(findAll(delBtn, (n) => n.type === 'svg').length, 1, '删除按钮用图标（红色 svg），不是 emoji');
   await delBtn.props.onClick({
     stopPropagation() { /* 不冒泡 */ },
     currentTarget: { closest: () => ({ dataset: { chatTurn: '3' } }) },
@@ -2298,6 +2299,7 @@ async function ensureSidebarTab() {
   const rowDelBtn = delRow.children.find((child) => String(child.className ?? '').includes('rpe-del'));
   assert.ok(rowDelBtn, '用户消息行应注入删除按钮');
   assert.ok(String(rowDelBtn.title).includes('删除这一轮'), '用户行按钮要说明删除整轮');
+  assert.ok(String(rowDelBtn.innerHTML).includes('<svg'), '用户行删除按钮也用 svg 图标');
   fakeUserRows = [];
 }
 
