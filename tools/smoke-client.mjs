@@ -272,7 +272,7 @@ let sessionReplyIsDm = true;
 let deleteReply = { ok: true, kind: 'reply', deleted: 2 };
 /** `/rp-tools/edit-reply` 两段式回复：准备原文 / 提交分支。 */
 let editReplyPrepareReply = { ok: true, mode: 'prepare', oldText: '原来的回复' };
-let editReplyCommitReply = { ok: true, mode: 'branch', childId: 'child-edit-1', parentId: 'parent-1', attach: 'attached' };
+let editReplyCommitReply = { ok: true, mode: 'inplace', persisted: true };
 let editReply = { ok: true, mode: 'inplace', text: '改过的文本' };
 let editTurnReply = { ok: true, mode: 'inplace', text: '改过的回合提问' };
 let retryReply = { ok: true, retried: true };
@@ -2356,10 +2356,9 @@ async function ensureSidebarTab() {
   await tick(80);
   const commitCall = calls.find((c) => c.url === '/rp-tools/edit-reply' && c.body?.text === '改过的回复');
   assert.ok(commitCall, '第二段要带编辑后的文本提交');
-  // 建好新版本分支后要立刻打开它（界面马上显示编辑后的内容）
-  assert.ok(openedSessions.includes('child-edit-1'), '编辑后要打开新版本分支会话');
-  // 切换后归档旧会话（假装在当前分支修改）
-  assert.ok(archivedSessions.includes('parent-1'), '编辑后要把旧会话归档');
+  // 原地改写：不建分支、不切会话、不归档 —— 会话本身不变
+  assert.equal(openedSessions.length, 0, '原地改写不应切换会话');
+  assert.equal(archivedSessions.length, 0, '原地改写不应归档会话');
 }
 
 console.log('客户端冒烟测试通过：');

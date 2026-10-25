@@ -3404,60 +3404,59 @@ if (onSessionCreated) {
   }
 }
 
-// ── 编辑助手回复：建新版本分支（seed = 前缀 + 改写后的回复）+ 挂工作区 ────────────
+// ── 编辑助手回复：原地改写会话磁盘记录（会话 id/工作区不变，重启后内容仍是修改后的）──────
 {
-  const created = [];
+  const { join: joinPath } = await import('node:path');
+  const { mkdirSync: mkdirP, writeFileSync: writeP, existsSync: existsP, readFileSync: readP } = await import('node:fs');
+  const sessionId = 'session-er-1';
+  const sessionDir = joinPath(TEST_HOME, 'sessions', 'proj-er', sessionId);
+  mkdirP(sessionDir, { recursive: true });
+  const artifactPath = joinPath(sessionDir, 'session.v4.jsonl.zstd');
+  const headerLine = JSON.stringify({ type: 'session', version: 4, id: sessionId, createdAt: Date.now(), cwd: process.cwd(), isSeeded: false });
+  const assistantLine = JSON.stringify({
+    type: 'assistant/message', seq: 3, time: Date.now(), surfaceOp: 'append',
+    data: { turn: 1, step: 1, message: { id: 'a-1', role: 'assistant', content: [{ type: 'text', text: '原来的回复' }], source: { kind: 'model', provider: 'p', model: 'm' } }, stream: [] },
+  });
+  writeP(artifactPath, Buffer.concat([
+    zstdCompressSync(Buffer.from(headerLine + '\n', 'utf8')),
+    zstdCompressSync(Buffer.from(assistantLine + '\n', 'utf8')),
+  ]));
   const erEvents = new Map([
-    [0, { seq: 0, type: 'system/message', data: { message: { id: 's', role: 'system', content: [], source: { kind: 'system-prompt' } } } }],
+    [0, { seq: 0, type: 'system/message', data: {} }],
     [1, { seq: 1, type: 'turn/start', data: { turn: 1 } }],
     [2, { seq: 2, type: 'user/message', data: { content: [{ type: 'text', text: '提问' }], source: { kind: 'user' } } }],
     [3, { seq: 3, type: 'assistant/message', data: { turn: 1, step: 1, message: { id: 'a-1', role: 'assistant', content: [{ type: 'text', text: '原来的回复' }], source: { kind: 'model', provider: 'p', model: 'm' } }, stream: [] } }],
     [4, { seq: 4, type: 'turn/end', data: { turn: 1 } }],
-    [5, { seq: 5, type: 'turn/start', data: { turn: 2 } }],
-    [6, { seq: 6, type: 'user/message', data: { content: [{ type: 'text', text: '第二问' }], source: { kind: 'user' } } }],
-    [7, { seq: 7, type: 'turn/end', data: { turn: 2 } }],
   ]);
   const erSession = {
-    id: 'er-1',
+    id: sessionId,
     header: { cwd: process.cwd() },
     eventAt: (seq) => erEvents.get(seq),
-    surface: { nodes: [0, 2, 3, 6] },
+    surface: { nodes: [0, 2, 3] },
     snapshotEvents: () => [...erEvents.values()],
-    append: () => { throw new Error('编辑回复不应写源会话'); },
+    append: () => { throw new Error('原地改写不应写源会话'); },
   };
-  liveSessions.set('er-1', erSession);
+  liveSessions.set(sessionId, erSession);
+  const originalBytes = readP(artifactPath);
   const origGet = hostCtx.get;
-  hostCtx.get = (name) => {
-    if (name === 'sessions') {
-      return {
-        get: (id) => liveSessions.get(id),
-        create: (id, opts) => { created.push({ id, opts }); return { id }; },
-        flush: async () => { /* 检查点 */ },
-      };
-    }
-    if (name === 'workspaceRegistry') return undefined; // 测试环境没有工作区服务 → attach = no-registry
-    return origGet(name);
-  };
+  hostCtx.get = (name) => (name === 'sessions'
+    ? { get: (id) => liveSessions.get(id), flush: async () => { /* 检查点 */ } }
+    : origGet(name));
   try {
-    // 1) 准备：不带 text → 返回原文（不建分支）
-    const prep = await callPost('/rp-tools/edit-reply', { sessionId: 'er-1', messageId: 'a-1' });
+    const prep = await callPost('/rp-tools/edit-reply', { sessionId, messageId: 'a-1' });
     check('编辑回复：准备阶段返回原文', prep.json.oldText, '原来的回复');
-    check('编辑回复：准备阶段不建分支', created.length, 0);
-    // 2) 提交：带 text → 建新版本分支（seed = 前缀 + 改写后的回复）
-    const commit = await callPost('/rp-tools/edit-reply', { sessionId: 'er-1', messageId: 'a-1', text: '改过的回复' });
-    check('编辑回复：提交后创建分支', commit.json.mode, 'branch');
-    check('编辑回复：返回子会话 id（客户端据此立即打开）', typeof commit.json.childId, 'string');
-    check('编辑回复：只 create 一次', created.length, 1);
-    check('编辑回复：响应带父会话 id（客户端用于归档旧分支）', commit.json.parentId, 'er-1');
-    const seed = created[0]?.opts?.seed ?? [];
-    const patched = seed.find((event) => event.seq === 3);
-    check('编辑回复：seed 里目标回复文本已替换', patched?.data?.message?.content?.[0]?.text, '改过的回复');
-    check('编辑回复：seed 截到本回合后（turn/end 之后、下一个 turn/start 前）', seed.length, 5);
-    check('编辑回复：meta 记录父会话', created[0]?.opts?.meta?.parentSession, 'er-1');
-    check('编辑回复：挂工作区结果随响应返回', commit.json.attach, 'no-registry');
+    check('编辑回复：准备阶段不写磁盘', readP(artifactPath).equals(originalBytes), true);
+    const commit = await callPost('/rp-tools/edit-reply', { sessionId, messageId: 'a-1', text: '改过的回复' });
+    check('编辑回复：原地改写成功', commit.json.mode, 'inplace');
+    check('编辑回复：响应标记已持久化', commit.json.persisted, true);
+    check('编辑回复：不返回分支 id（不建会话）', commit.json.childId, undefined);
+    const after = zstdDecompressSync(readP(artifactPath)).toString('utf8');
+    check('编辑回复：磁盘里的回复文本已替换', after.includes('改过的回复'), true);
+    check('编辑回复：旧文本不再出现在该行', after.includes('"text":"原来的回复"'), false);
+    check('编辑回复：留下了备份文件', existsP(commit.json.backup), true);
   } finally {
     hostCtx.get = origGet;
-    liveSessions.delete('er-1');
+    liveSessions.delete(sessionId);
   }
 }
 
