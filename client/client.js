@@ -2762,7 +2762,9 @@ window.__ModuleLoader__.load({
             else if (typeof props?.openSession === 'function') props.openSession(out.childId);
           // 切换后把旧会话**归档**（列表里消失、历史仍保留）→ 看起来就是「在当前分支上修改」。
           const parentId = String(out.parentId ?? '');
-          if (parentId) {
+          // 只有新分支确认落盘（persisted !== false）才归档旧会话：否则重启后新分支消失、
+          // 旧会话又被归档 → 两边都看不到（真机「编辑后重启会话消失」就是这么来的）。
+          if (parentId && out.persisted !== false) {
             try {
               let workspaces = clientWorkspacesRef;
               if (!workspaces && typeof props?.ctx?.get === 'function') {
