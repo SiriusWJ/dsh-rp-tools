@@ -270,7 +270,7 @@ let sessionReplyIsDm = true;
 let deleteReply = { ok: true, kind: 'reply', deleted: 2 };
 /** `/rp-tools/edit-reply` 两段式回复：准备原文 / 提交分支。 */
 let editReplyPrepareReply = { ok: true, mode: 'prepare', oldText: '原来的回复' };
-let editReplyCommitReply = { ok: true, mode: 'branch', childId: 'child-edit-1', seedEvents: 42 };
+let editReplyCommitReply = { ok: true, mode: 'inplace', wasLive: true };
 let editReply = { ok: true, mode: 'inplace', text: '改过的文本' };
 let editTurnReply = { ok: true, mode: 'inplace', text: '改过的回合提问' };
 let retryReply = { ok: true, retried: true };
@@ -2349,7 +2349,8 @@ async function ensureSidebarTab() {
   await tick(80);
   const commitCall = calls.find((c) => c.url === '/rp-tools/edit-reply' && c.body?.text === '改过的回复');
   assert.ok(commitCall, '第二段要带编辑后的文本提交');
-  assert.ok(openedSessions.includes('child-edit-1'), '创建分支后要切到新会话');
+  // 原地改写：不建分支、不切会话，只提示重启/切会话后生效
+  assert.equal(openedSessions.includes('child-edit-1'), false, '原地改写不应切到新会话');
 }
 
 console.log('客户端冒烟测试通过：');

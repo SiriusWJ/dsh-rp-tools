@@ -2763,11 +2763,9 @@ window.__ModuleLoader__.load({
           const input = await openReplyEditor(prep.oldText ?? '');
           if (typeof input !== 'string' || input.trim().length === 0 || input === prep.oldText) return;
           const out = await post({ sessionId, messageId, text: input });
-          if (!out?.ok || !out.childId) { showRpToast(`编辑失败：${out?.error ?? '未知错误'}`); return; }
-          // 组件定义在 apply 外层（factory 作用域），拿不到闭包 ctx —— 由注册处通过 props 注入。
-          const uiWorkspace = typeof props?.ctx?.get === 'function' ? props.ctx.get('uiWorkspace') : null;
-          try { uiWorkspace?.openSession?.({ sessionId: out.childId }); } catch { /* 忽略 */ }
-          showRpToast('已生成编辑后的新版本分支（旧版本仍保留），正在切换…');
+          if (!out?.ok) { showRpToast(`编辑失败：${out?.error ?? '未知错误'}`); return; }
+          // 原地改写：不建分支、不动工作区；内存副本是 deepFreeze 的，切换会话或重启后生效。
+          showRpToast('已改写这条回复（原会话与工作区不变）：切换会话或重启桌面版后生效');
         } finally {
           setBusy(false);
         }
