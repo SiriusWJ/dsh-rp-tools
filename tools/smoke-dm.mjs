@@ -3366,8 +3366,9 @@ if (onSessionCreated) {
     check('编辑：最后一条用户消息 → inplace（不开新分支）', last.json.mode, 'inplace');
     check('编辑：返回可编辑原文（保留换行）', last.json.text, '最后一问\n第二行');
     check('编辑：只需要 append 一次（占位与替换是同一个事件）', appendCalls.length, 1);
-    check('编辑：占位消息 source.kind 是内部标记', appendCalls[0]?.data?.source?.kind, 'rp-tools-edit-placeholder');
-    check('编辑：占位内容为空（界面不画空气泡）', appendCalls[0]?.data?.content?.length, 0);
+    check('编辑：占位改 developer/message（空 user 消息会进模型历史，真机报错过）', appendCalls[0]?.type, 'developer/message');
+    check('编辑：占位消息 role=developer', appendCalls[0]?.data?.message?.role, 'developer');
+    check('编辑：占位内容为空（派生模型历史时被过滤）', appendCalls[0]?.data?.message?.content?.length, 0);
     // ⚠️ 真机错误「surface replace: sourceEventSeqs must include every shadowed surface node」：
     // replace 必须列出被遮蔽范围内**每个** surface 节点（这里是 3、4），只给首尾会被日志层拒绝。
     check('编辑：replace 列出被遮蔽的每个节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '3,4');
@@ -3435,7 +3436,8 @@ if (onSessionCreated) {
     check('重试：成功', ok.json.retried, true);
     check('重试：先遮蔽旧回合（从最后一条提问开始）', appendCalls[0]?.opts?.surfaceOp?.startSeq, 3);
     check('重试：遮蔽到 surface 末尾', appendCalls[0]?.opts?.surfaceOp?.endSeq, 4);
-    check('重试：占位消息 source 是内部标记', appendCalls[0]?.data?.source?.kind, 'rp-tools-retry-placeholder');
+    check('重试：占位改 developer/message', appendCalls[0]?.type, 'developer/message');
+    check('重试：占位 role=developer 且内容为空', `${appendCalls[0]?.data?.message?.role}/${appendCalls[0]?.data?.message?.content?.length}`, 'developer/0');
     check('重试：replace 列出被遮蔽的每个节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '3,4');
     check('重试：用同一提问重新 followup', followups[0]?.content?.[0]?.text, '最后的问题');
     check('重试：followup 的 source 是 user（正常提问）', followups[0]?.source?.kind, 'user');
@@ -3498,6 +3500,49 @@ if (onSessionCreated) {
   } finally {
     hostCtx.get = origGet;
     liveSessions.delete('turn-1');
+  }
+}
+
+// ── 真实 dsh-session 折叠复核：占位消息不能进模型历史（真机 root cause）─────────
+// 真机报错「模型请求 messages[2]: missing field role」：空的 user/message 占位会真的派生进
+// 模型历史（{role:'user', content:[]}、无 id），DeepSeek API 直接拒绝；空 developer/message
+// 会被 deriveEventMessage 过滤。这里用真实折叠实现钉住结论，防止有人把占位改回 user。
+{
+  let foldSurface = null;
+  let deriveEventMessage = null;
+  for (const pkg of [PROFILE_PACKAGE, join(here, '..', 'package.json')]) {
+    try {
+      const mod = createRequire(pkg)('@deepseek-ai/dsh-session');
+      foldSurface = mod.foldSurface;
+      deriveEventMessage = mod.deriveEventMessage;
+      break;
+    } catch { /* 下一个 */ }
+  }
+  if (!foldSurface || !deriveEventMessage) {
+    console.log('WARN: 拿不到 dsh-session，跳过占位折叠集成测试');
+  } else {
+    const mkEvent = (seq, type, data, extra = {}) => ({ seq, time: seq, type, data, surfaceOp: 'append', ...extra });
+    const baseEvents = [
+      mkEvent(0, 'system/message', { message: { id: 's', role: 'system', content: [{ type: 'text', text: 'rule' }] } }),
+      mkEvent(1, 'user/message', { id: 'u', role: 'user', content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } }),
+      mkEvent(2, 'assistant/message', { message: { id: 'a', role: 'assistant', content: [{ type: 'text', text: 'yo' }] } }),
+    ];
+    const foldWith = (placeholderType, placeholderData) => {
+      const events = [...baseEvents, {
+        seq: 3, time: 3, type: placeholderType, data: placeholderData,
+        surfaceOp: { op: 'replace', startSeq: 1, endSeq: 2 }, sourceEventSeqs: [1, 2],
+      }];
+      const folded = foldSurface(events, []);
+      return folded.nodes
+        .map((seq) => deriveEventMessage(events[seq], folded.projectedMessages))
+        .filter((m) => m !== null && m !== undefined);
+    };
+    const bad = foldWith('user/message', { role: 'user', content: [], source: { kind: 'rp-tools-edit-placeholder' } });
+    check('占位复核：空 user 占位会进模型历史（真机 bug 成因）', bad.length, 2);
+    check('占位复核：那条空 user 消息没有 id（畸形）', bad[1]?.id, undefined);
+    const good = foldWith('developer/message', { message: { id: 'd', role: 'developer', content: [] } });
+    check('占位复核：developer 空占位不进模型历史', good.filter((m) => m.role === 'developer').length, 0);
+    check('占位复核：遮蔽后历史只剩 system（旧回合消失）', good.length, 1);
   }
 }
 
