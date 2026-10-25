@@ -3342,11 +3342,10 @@ if (onSessionCreated) {
   }
 }
 
-// ── 「编辑并重发」路由：最后一条回填输入框（不开分支）/ 更早的 fork ────────────
-// ⚠️ 已知取舍：会话日志层不允许「随便追加的遮蔽事件」——
-//   developer/message 必须落在打开着的 turn/step 内（真机报 turn/step must be…），
-//   空的 user/message 占位又会被模型 API 拒绝。所以 inplace **不写日志**：只把原文交回
-//   客户端回填输入框，旧回合仍留在上下文里，用户改完自己发送。
+// ── 「编辑并重发」路由：最后一条原地遮蔽（不开分支）/ 更早的 fork ────────────
+// 遮蔽写法与官方压缩（dsh-compaction-basic）同款：append 一条**完整合法**的 user/message
+// 作为替换者 + surfaceOp replace + sourceEventSeqs 列出被遮蔽的每个 surface 节点。
+// 真机教训：手写对象缺 id → 模型请求畸形（messages[2] missing field role）。
 {
   const appendCalls = [];
   const forkCalls = [];
@@ -3378,12 +3377,18 @@ if (onSessionCreated) {
     const last = await callPost('/rp-tools/edit-message', { sessionId: 'edit-last', seq: 3 });
     check('编辑：最后一条用户消息 → inplace（不开新分支）', last.json.mode, 'inplace');
     check('编辑：返回可编辑原文（保留换行）', last.json.text, '最后一问\n第二行');
-    check('编辑：inplace 不写会话日志（屏蔽做不到，见取舍说明）', appendCalls.length, 0);
+    check('编辑：inplace 写一次日志做遮蔽', appendCalls.length, 1);
+    check('编辑：替换者是 user/message', appendCalls[0]?.type, 'user/message');
+    check('编辑：占位消息带 id（缺 id 会让模型请求畸形）', typeof appendCalls[0]?.data?.id, 'string');
+    check('编辑：占位 role=user 且内容非空', `${appendCalls[0]?.data?.role}/${(appendCalls[0]?.data?.content?.length ?? 0) > 0}`, 'user/true');
+    check('编辑：替换范围从这条用户消息开始', appendCalls[0]?.opts?.surfaceOp?.startSeq, 3);
+    check('编辑：替换到最后一个 surface 节点', appendCalls[0]?.opts?.surfaceOp?.endSeq, 4);
+    check('编辑：sourceEventSeqs 列出被遮蔽的每个节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '3,4');
     const early = await callPost('/rp-tools/edit-message', { sessionId: 'edit-early', seq: 1 });
     check('编辑：更早的用户消息 → branch（开新分支）', early.json.mode, 'branch');
     check('编辑：branch 返回子会话 id', early.json.sessionId, 'edit-child');
     check('编辑：fork 到目标消息之前（boundary = 前一个 surface 节点）', forkCalls[0]?.boundary, 0);
-    check('编辑：branch 也不写当前会话日志', appendCalls.length, 0);
+    check('编辑：branch 不写日志', appendCalls.length, 1);
     const notUser = await callPost('/rp-tools/edit-message', { sessionId: 'edit-last', seq: 999 });
     check('编辑：seq 不存在 → 400', notUser.status, 400);
     check('编辑：错误文案说明消息已不在表面', String(notUser.json.error).includes('不在当前对话表面'), true);
@@ -3398,8 +3403,9 @@ if (onSessionCreated) {
   }
 }
 
-// ── 「重试最后一条回复」：直接重发同一提问（不遮蔽日志）────────────────────
+// ── 「重试最后一条回复」：先遮蔽旧回合，再用同一提问重发 ─────────────────────
 {
+  const appendCalls = [];
   const followups = [];
   const retryEvents = new Map([
     [0, { seq: 0, type: 'system/message', data: {} }],
@@ -3413,7 +3419,7 @@ if (onSessionCreated) {
     header: { cwd: process.cwd() },
     eventAt: (seq) => retryEvents.get(seq),
     surface: { nodes: [0, 1, 2, 3, 4] },
-    append: () => { throw new Error('重试不应写日志'); },
+    append: (type, data, opts) => { appendCalls.push({ type, data, opts }); return { seq: 5 }; },
   });
   liveSessions.set('retry-1', makeRetrySession('retry-1'));
   liveSessions.set('retry-noagent', makeRetrySession('retry-noagent'));
@@ -3428,12 +3434,16 @@ if (onSessionCreated) {
   try {
     const ok = await callPost('/rp-tools/retry-last', { sessionId: 'retry-1', messageId: 'a-4' });
     check('重试：成功', ok.json.retried, true);
+    check('重试：先遮蔽旧回合（写一次日志）', appendCalls.length, 1);
+    check('重试：遮蔽用 user/message 占位（带 id）', typeof appendCalls[0]?.data?.id, 'string');
+    check('重试：替换范围从最后一条提问开始', appendCalls[0]?.opts?.surfaceOp?.startSeq, 3);
+    check('重试：替换到 surface 末尾', appendCalls[0]?.opts?.surfaceOp?.endSeq, 4);
+    check('重试：sourceEventSeqs 覆盖被遮蔽节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '3,4');
     check('重试：用同一提问重新 followup', followups[0]?.content?.[0]?.text, '最后的问题');
     check('重试：followup 的 source 是 user（正常提问）', followups[0]?.source?.kind, 'user');
     // 宽容语义：messageId 对不上也按「最后一条」重试（客户端与事件的 id 口径可能不同）
     const wrongId = await callPost('/rp-tools/retry-last', { sessionId: 'retry-1', messageId: 'a-2' });
     check('重试：messageId 对不上也宽容执行', wrongId.json.retried, true);
-    check('重试：宽容时也只多发一次 followup', followups.length, 2);
     const noAgent = await callPost('/rp-tools/retry-last', { sessionId: 'retry-noagent', messageId: 'a-4' });
     check('重试：没有活 agent → 503', noAgent.status, 503);
   } finally {
@@ -3478,7 +3488,9 @@ if (onSessionCreated) {
     const last = await callPost('/rp-tools/edit-turn', { sessionId: 'turn-1', turn: 2 });
     check('按回合编辑：最后一轮 → inplace（不开分支）', last.json.mode, 'inplace');
     check('按回合编辑：返回该回合提问原文', last.json.text, '最后一轮提问');
-    check('按回合编辑：inplace 不写日志', appendCalls.length, 0);
+    check('按回合编辑：inplace 写一次日志做遮蔽', appendCalls.length, 1);
+    check('按回合编辑：遮蔽起点 = 该回合的用户消息 seq', appendCalls[0]?.opts?.surfaceOp?.startSeq, 5);
+    check('按回合编辑：sourceEventSeqs 覆盖被遮蔽节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '5,6,7');
     const early = await callPost('/rp-tools/edit-turn', { sessionId: 'turn-1', turn: 1 });
     check('按回合编辑：更早的回合 → branch', early.json.mode, 'branch');
     check('按回合编辑：fork boundary = 该回合提问前一个 surface 节点', forkCalls[0]?.boundary, 0);
@@ -3489,6 +3501,58 @@ if (onSessionCreated) {
   } finally {
     hostCtx.get = origGet;
     liveSessions.delete('turn-1');
+  }
+}
+
+// ── 真实 dsh-session 折叠复核：官方同款遮蔽（完整 UserMessage + replace）─────────
+// 真机报错「messages[2]: missing field role」的成因是占位消息**缺 id**；官方压缩
+// （dsh-compaction-basic）的写法是 \`createUserMessage(完整消息) + surfaceOp replace\`，
+// 折叠后旧回合消失、剩下的每条消息都带 id/role。这里用真实实现钉住结论。
+{
+  let foldSurface = null;
+  let deriveEventMessage = null;
+  for (const pkg of [PROFILE_PACKAGE, join(here, '..', 'package.json')]) {
+    try {
+      const mod = createRequire(pkg)('@deepseek-ai/dsh-session');
+      foldSurface = mod.foldSurface;
+      deriveEventMessage = mod.deriveEventMessage;
+      break;
+    } catch { /* 下一个 */ }
+  }
+  if (!foldSurface || !deriveEventMessage) {
+    console.log('WARN: 拿不到 dsh-session，跳过遮蔽折叠集成测试');
+  } else {
+    const mkEvent = (seq, type, data, extra = {}) => ({ seq, time: seq, type, data, surfaceOp: 'append', ...extra });
+    const baseEvents = [
+      mkEvent(0, 'system/message', { message: { id: 's', role: 'system', content: [{ type: 'text', text: 'rule' }] } }),
+      mkEvent(1, 'user/message', { id: 'u', role: 'user', content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } }),
+      mkEvent(2, 'assistant/message', { message: { id: 'a', role: 'assistant', content: [{ type: 'text', text: 'yo' }] } }),
+    ];
+    const shieldEvents = [
+      ...baseEvents,
+      {
+        seq: 3, time: 3, type: 'user/message',
+        data: { id: 'rp-tools-edit-placeholder-test', role: 'user', content: [{ type: 'text', text: '（上一轮对话已撤回，等待重新发送）' }], source: { kind: 'rp-tools-edit-placeholder' } },
+        surfaceOp: { op: 'replace', startSeq: 1, endSeq: 2 },
+        sourceEventSeqs: [1, 2],
+      },
+    ];
+    const folded = foldSurface(shieldEvents, []);
+    const msgs = folded.nodes
+      .map((seq) => deriveEventMessage(shieldEvents[seq], folded.projectedMessages))
+      .filter((m) => m !== null && m !== undefined);
+    check('遮蔽复核：旧回合从模型历史消失（只剩 system + 占位）', msgs.length, 2);
+    check('遮蔽复核：占位消息带 id（缺 id 就会畸形）', typeof msgs[1]?.id, 'string');
+    check('遮蔽复核：占位消息有 role', msgs[1]?.role, 'user');
+    // 反面：缺 id 的占位折叠后消息不合法（正是真机 missing field role 的成因）
+    const badPlaceholder = { role: 'user', content: [{ type: 'text', text: 'x' }], source: { kind: 'rp-tools-edit-placeholder' } };
+    const badEvents = [...baseEvents, {
+      seq: 3, time: 3, type: 'user/message', data: badPlaceholder,
+      surfaceOp: { op: 'replace', startSeq: 1, endSeq: 2 }, sourceEventSeqs: [1, 2],
+    }];
+    const badFolded = foldSurface(badEvents, []);
+    const badMsgs = badFolded.nodes.map((seq) => deriveEventMessage(badEvents[seq], badFolded.projectedMessages)).filter(Boolean);
+    check('遮蔽复核：缺 id 的占位确实没有 id（畸形成因）', typeof badMsgs[1]?.id, 'undefined');
   }
 }
 
