@@ -3448,6 +3448,7 @@ if (onSessionCreated) {
     check('编辑回复：提交后创建分支', commit.json.mode, 'branch');
     check('编辑回复：返回子会话 id（客户端据此立即打开）', typeof commit.json.childId, 'string');
     check('编辑回复：只 create 一次', created.length, 1);
+    check('编辑回复：响应带父会话 id（客户端用于归档旧分支）', commit.json.parentId, 'er-1');
     const seed = created[0]?.opts?.seed ?? [];
     const patched = seed.find((event) => event.seq === 3);
     check('编辑回复：seed 里目标回复文本已替换', patched?.data?.message?.content?.[0]?.text, '改过的回复');

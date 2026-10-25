@@ -215,6 +215,8 @@ globalThis.window = {
 const calls = [];
 /** 编辑回复流程调用 uiWorkspace.openSession 的目标（新分支会话 id）。 */
 const openedSessions = [];
+/** 编辑后归档的旧会话 id（假装在当前分支修改）。 */
+const archivedSessions = [];
 /** 立绘持久化的 POST 记录（面板里点「立绘」/「收起」时写会话配置）。 */
 const portraitPosts = [];
 /** 外部导入立绘的 POST 记录（`/rp-tools/portrait-upload`）。 */
@@ -270,7 +272,7 @@ let sessionReplyIsDm = true;
 let deleteReply = { ok: true, kind: 'reply', deleted: 2 };
 /** `/rp-tools/edit-reply` 两段式回复：准备原文 / 提交分支。 */
 let editReplyPrepareReply = { ok: true, mode: 'prepare', oldText: '原来的回复' };
-let editReplyCommitReply = { ok: true, mode: 'branch', childId: 'child-edit-1', attach: 'attached' };
+let editReplyCommitReply = { ok: true, mode: 'branch', childId: 'child-edit-1', parentId: 'parent-1', attach: 'attached' };
 let editReply = { ok: true, mode: 'inplace', text: '改过的文本' };
 let editTurnReply = { ok: true, mode: 'inplace', text: '改过的回合提问' };
 let retryReply = { ok: true, retried: true };
@@ -618,6 +620,9 @@ const ctx = {
         },
       };
     }
+    if (name === 'workspaces') return {
+      archiveSession: async (id) => { archivedSessions.push(id); },
+    };
     if (name === 'uiWorkspace') return {
       startSession: () => { startedSessions++; },
       // 官方签名传 SessionId 字符串（兼容对象以防实现变化）
@@ -2353,6 +2358,8 @@ async function ensureSidebarTab() {
   assert.ok(commitCall, '第二段要带编辑后的文本提交');
   // 建好新版本分支后要立刻打开它（界面马上显示编辑后的内容）
   assert.ok(openedSessions.includes('child-edit-1'), '编辑后要打开新版本分支会话');
+  // 切换后归档旧会话（假装在当前分支修改）
+  assert.ok(archivedSessions.includes('parent-1'), '编辑后要把旧会话归档');
 }
 
 console.log('客户端冒烟测试通过：');

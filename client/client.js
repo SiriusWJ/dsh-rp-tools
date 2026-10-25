@@ -2706,7 +2706,7 @@ window.__ModuleLoader__.load({
           };
           cancel.addEventListener('click', () => close(null));
           save.addEventListener('click', () => close(String(area.value ?? '')));
-          overlay.addEventListener('click', (event) => { if (event?.target === overlay) close(null); });
+          // 只允许「取消」按钮关闭：点到遮罩/鼠标移出卡片不应误关（用户要求）。
           actions.appendChild(cancel);
           actions.appendChild(save);
           card.appendChild(title);
@@ -2760,6 +2760,14 @@ window.__ModuleLoader__.load({
             const uiWorkspace = typeof props?.ctx?.get === 'function' ? props.ctx.get('uiWorkspace') : null;
             if (typeof uiWorkspace?.openSession === 'function') uiWorkspace.openSession(out.childId);
             else if (typeof props?.openSession === 'function') props.openSession(out.childId);
+          // 切换后把旧会话**归档**（列表里消失、历史仍保留）→ 看起来就是「在当前分支上修改」。
+          const parentId = String(out.parentId ?? '');
+          if (parentId) {
+            try {
+              const workspaces = typeof props?.ctx?.get === 'function' ? props.ctx.get('workspaces') : null;
+              if (typeof workspaces?.archiveSession === 'function') await workspaces.archiveSession(parentId);
+            } catch { /* 归档失败不影响编辑结果 */ }
+          }
           } catch { /* 忽略 */ }
           showRpToast(out.attach === 'attached' || out.attach === 'attached-fallback'
             ? '已生成编辑后的新版本并打开（旧版本保留在同工作区）'
