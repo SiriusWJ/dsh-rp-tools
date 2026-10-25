@@ -2766,8 +2766,11 @@ window.__ModuleLoader__.load({
           if (!out?.ok || !out.childId) { showRpToast(`编辑失败：${out?.error ?? '未知错误'}`); return; }
           // 新版本分支已建好：立刻打开它 → 界面马上显示编辑后的内容（旧会话原样保留可切回）。
           try {
+            // 官方签名：openSession(target: SessionTarget)，SessionTarget = SessionId | SubagentAddress
+            // —— 会话 id 直接传字符串（传对象会被当成 SubagentAddress 或忽略，导致不切换）。
             const uiWorkspace = typeof props?.ctx?.get === 'function' ? props.ctx.get('uiWorkspace') : null;
-            uiWorkspace?.openSession?.({ sessionId: out.childId });
+            if (typeof uiWorkspace?.openSession === 'function') uiWorkspace.openSession(out.childId);
+            else if (typeof props?.openSession === 'function') props.openSession(out.childId);
           } catch { /* 忽略 */ }
           showRpToast(out.attach === 'attached' || out.attach === 'attached-fallback'
             ? '已生成编辑后的新版本并打开（旧版本保留在同工作区）'

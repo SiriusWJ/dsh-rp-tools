@@ -620,7 +620,8 @@ const ctx = {
     }
     if (name === 'uiWorkspace') return {
       startSession: () => { startedSessions++; },
-      openSession: (arg) => { openedSessions.push(arg?.sessionId); },
+      // 官方签名传 SessionId 字符串（兼容对象以防实现变化）
+      openSession: (arg) => { openedSessions.push(typeof arg === 'string' ? arg : arg?.sessionId); },
     };
     return undefined;
   },
