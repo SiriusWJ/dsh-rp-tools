@@ -2621,32 +2621,21 @@ window.__ModuleLoader__.load({
       } catch { return null; }
     }
 
-    // 已经删过的行（turn + 模式）：删除后立刻用 CSS 把对应行从界面收起。
-    const deletedRows = new Set();
+    // 删除后把**当前界面上**这个回合对应的行直接隐藏（元素级，不写全局样式）。
+    // ⚠️ 不能用全局 CSS 按 [data-chat-turn] 隐藏：编辑/删除会产生新分支会话，分支里
+    //    回合编号相同 —— 全局规则会连带藏掉分支里的同名回合（真机反馈「两边都删了」）。
     function hideDeletedRows(turn, mode) {
       try {
         const value = Number(turn);
         if (!Number.isSafeInteger(value) || value < 0) return;
-        deletedRows.add(`${mode === 'reply' ? 'reply' : 'turn'}:${value}`);
-        if (typeof document === 'undefined' || !document.head || typeof document.createElement !== 'function') return;
-        let el = typeof document.querySelector === 'function'
-          ? document.querySelector('style[data-plugin-css="dsh-rp-tools-delete"]')
-          : null;
-        if (!el) {
-          el = document.createElement('style');
-          el.dataset.plugin = 'dsh-rp-tools';
-          el.dataset.pluginCss = 'dsh-rp-tools-delete';
-          document.head.appendChild(el);
+        if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+        const rows = document.querySelectorAll();
+        for (const row of rows ?? []) {
+          if (!row) continue;
+          // mode='reply' 只藏回复侧（保留提问行）；mode='turn' 整轮藏。
+          if (mode === 'reply' && String(row.dataset?.chatFlowKind ?? '') === 'user') continue;
+          try { row.style.display = 'none'; } catch { /* 忽略 */ }
         }
-        const rules = [];
-        for (const entry of deletedRows) {
-          const [kind, raw] = entry.split(':');
-          const n = Number(raw);
-          rules.push(kind === 'reply'
-            ? `[data-chat-turn="${n}"]:not([data-chat-flow-kind="user"]){display:none !important}`
-            : `[data-chat-turn="${n}"]{display:none !important}`);
-        }
-        el.textContent = rules.join('\n');
       } catch { /* 忽略 */ }
     }
 
