@@ -3399,6 +3399,54 @@ if (onSessionCreated) {
   }
 }
 
+// ── 「重试最后一条回复」：遮蔽旧回合 + 用同一提问重新 followup ────────────────
+{
+  const appendCalls = [];
+  const followups = [];
+  const retryEvents = new Map([
+    [0, { seq: 0, type: 'system/message', data: {} }],
+    [1, { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: '第一问' }], source: { kind: 'user' } } }],
+    [2, { seq: 2, type: 'assistant/message', data: { message: { id: 'a-2' } } }],
+    [3, { seq: 3, type: 'user/message', data: { content: [{ type: 'text', text: '最后的问题' }], source: { kind: 'user' } } }],
+    [4, { seq: 4, type: 'assistant/message', data: { message: { id: 'a-4' } } }],
+  ]);
+  const makeRetrySession = (id) => ({
+    id,
+    header: { cwd: process.cwd() },
+    eventAt: (seq) => retryEvents.get(seq),
+    surface: { nodes: [0, 1, 2, 3, 4] },
+    append: (type, data, opts) => { appendCalls.push({ type, data, opts }); return { seq: 5 }; },
+  });
+  liveSessions.set('retry-1', makeRetrySession('retry-1'));
+  liveSessions.set('retry-noagent', makeRetrySession('retry-noagent'));
+  const origGet = hostCtx.get;
+  hostCtx.get = (name) => {
+    if (name === 'sessions') return { get: (id) => liveSessions.get(id) };
+    if (name === 'agents') {
+      return { get: (id) => (id === 'retry-1' ? { followup: (input) => { followups.push(input); } } : undefined) };
+    }
+    return origGet(name);
+  };
+  try {
+    const ok = await callPost('/rp-tools/retry-last', { sessionId: 'retry-1', messageId: 'a-4' });
+    check('重试：成功', ok.json.retried, true);
+    check('重试：先遮蔽旧回合（从最后一条提问开始）', appendCalls[0]?.opts?.surfaceOp?.startSeq, 3);
+    check('重试：遮蔽到 surface 末尾', appendCalls[0]?.opts?.surfaceOp?.endSeq, 4);
+    check('重试：占位消息 source 是内部标记', appendCalls[0]?.data?.source?.kind, 'rp-tools-retry-placeholder');
+    check('重试：用同一提问重新 followup', followups[0]?.content?.[0]?.text, '最后的问题');
+    check('重试：followup 的 source 是 user（正常提问）', followups[0]?.source?.kind, 'user');
+    const wrongId = await callPost('/rp-tools/retry-last', { sessionId: 'retry-1', messageId: 'a-2' });
+    check('重试：只能重试最后一条回复', wrongId.status, 400);
+    check('重试：错误文案说明只能重试最后一条', String(wrongId.json.error).includes('只能重试最后一条'), true);
+    const noAgent = await callPost('/rp-tools/retry-last', { sessionId: 'retry-noagent', messageId: 'a-4' });
+    check('重试：没有活 agent → 503', noAgent.status, 503);
+  } finally {
+    hostCtx.get = origGet;
+    liveSessions.delete('retry-1');
+    liveSessions.delete('retry-noagent');
+  }
+}
+
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 console.log(`数据目录（临时，即将删除）: ${TEST_HOME}`);
 rmSync(TEST_HOME, { recursive: true, force: true });

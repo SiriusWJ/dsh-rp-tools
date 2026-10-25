@@ -473,11 +473,13 @@ window.__ModuleLoader__.load({
   background: transparent; color: inherit; font: inherit; cursor: pointer;
 }
 .rpc-full-x:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
-/* 助手消息操作行里的「✏️ 编辑提问」小按钮（与复制 / fork 并排，hover 才明显） */
-.rpe-btn { border: 0; background: transparent; color: inherit; opacity: .65; cursor: pointer;
-  font: inherit; font-size: 12px; line-height: 1; padding: 2px 6px; border-radius: 6px; }
-.rpe-btn:hover:not(:disabled) { opacity: 1; background: color-mix(in oklab, currentColor 10%, transparent); }
-.rpe-btn:disabled { opacity: .3; cursor: default; }
+/* 助手消息操作行里的「重试」图标按钮（与复制 / fork 并排的官方风格：白色描边、hover 变亮） */
+.rpe-retry { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+  padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit;
+  opacity: .55; cursor: pointer; }
+.rpe-retry:hover:not(:disabled) { opacity: 1; background: color-mix(in oklab, currentColor 10%, transparent); }
+.rpe-retry:disabled { opacity: .3; cursor: default; }
+.rpe-retry svg { display: block; }
 /* 内容区：左栏卡库列表 / 右栏卡面与预览；整块铺满高度，列表自己滚 */
 .rpc-full-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 18px 18px; }
 .rpc-full .panel { padding: 0; border: none; background: transparent; }
@@ -2615,32 +2617,41 @@ window.__ModuleLoader__.load({
       try { void navigator.clipboard?.writeText?.(text); } catch { /* 剪贴板不可用就算了 */ }
     }
 
-    function makeAssistantEditAction(deps) {
-      return function AssistantEditAction(props) {
+    /** 重试图标（官方操作行风格：描边 currentColor，白色主题下即白色）。 */
+    function retryIcon() {
+      return h('svg', {
+        viewBox: '0 0 16 16', width: 15, height: 15, fill: 'none',
+        stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+        'aria-hidden': 'true', focusable: 'false',
+      }, [
+        h('path', { key: 'a', d: 'M13.5 8a5.5 5.5 0 1 1-1.61-3.89' }),
+        h('path', { key: 'b', d: 'M13.5 2.5v3.2h-3.2' }),
+      ]);
+    }
+
+    async function requestRetryLast(sessionId, messageId) {
+      const res = await fetch('/rp-tools/retry-last', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId, messageId }),
+      });
+      try { return await res.json(); } catch { return { ok: false, error: `HTTP ${res.status}` }; }
+    }
+
+    function makeAssistantRetryAction(deps) {
+      return function AssistantRetryAction(props) {
         const [busy, setBusy] = React.useState(false);
         const messageId = String(props.messageId ?? '');
         const sessionId = props.sessionId;
-        const onEdit = async () => {
+        const onRetry = async () => {
           if (busy || !messageId || typeof sessionId !== 'string') return;
           setBusy(true);
           try {
-            const data = await requestEditMessage(sessionId, { messageId });
+            const data = await requestRetryLast(sessionId, messageId);
             if (!data?.ok) {
-              try { console.warn('[rp-tools] 编辑并重发失败：', data?.error ?? '未知错误'); } catch { /* 忽略 */ }
-              return;
+              try { console.warn('[rp-tools] 重试失败：', data?.error ?? '未知错误'); } catch { /* 忽略 */ }
             }
-            if (data.mode === 'inplace' && typeof props.inputActions?.setDraft === 'function') {
-              props.inputActions.setDraft(data.text);
-              return;
-            }
-            if (data.mode === 'branch' && data.sessionId) {
-              try { deps.ctx.get('uiWorkspace')?.openSession?.({ sessionId: data.sessionId }); } catch { /* 忽略 */ }
-              const ok = await prefillComposer(deps.ctx, data.sessionId, data.text);
-              if (!ok) copyEditText(data.text);
-              return;
-            }
-            const ok = await prefillComposer(deps.ctx, sessionId, data.text);
-            if (!ok) copyEditText(data.text);
+            // 成功：宿主已遮蔽旧回合并重新 followup，新的回复会流式出现，这里不用做事
           } finally {
             setBusy(false);
           }
@@ -2648,12 +2659,12 @@ window.__ModuleLoader__.load({
         if (!messageId || typeof sessionId !== 'string') return null;
         return h('button', {
           type: 'button',
-          className: 'rpe-btn',
+          className: 'rpe-retry',
           disabled: busy,
-          title: '编辑本回合的提问并重新发送（最后一条不开分支；更早的会开一个新分支）',
-          'aria-label': '编辑这轮提问',
-          onClick: (event) => { event.stopPropagation(); void onEdit(); },
-        }, busy ? '…' : '✏️ 编辑提问');
+          title: '重新输出这一轮回复',
+          'aria-label': '重试',
+          onClick: (event) => { event.stopPropagation(); void onRetry(); },
+        }, busy ? '…' : retryIcon());
       };
     }
 
@@ -3500,14 +3511,14 @@ window.__ModuleLoader__.load({
         label: () => 'PNG 故事书',
       }, (props) => h(RpCardImport, { ...props, inline: true })));
 
-      // 「✏️ 编辑提问」挂在**每条最终助手消息的操作行**里（用户提议的位置，也是最稳的）：
-      // `conversation.chat.assistant-actions` 是官方公开的 list 槽位（复制 / fork 按钮就在这排），
-      // 注册即生效；不像替换 `conversation.chat.node` 那种同 key 叠加会被内置渲染器遮蔽。
+      // 「重试」图标挂在**每条最终助手消息的操作行**里（官方公开的 list 槽位，复制 / fork 就在这排）：
+      // 点击 → 宿主遮蔽「这一轮提问 → 末尾」的旧回合并用同一条提问重新 followup，
+      // 于是模型重新输出这一轮（用户要求：和官方风格一致的白色重试图标，一键重新输出）。
       ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({
         name: 'conversation.chat.assistant-actions',
-        id: 'rp-edit-message',
+        id: 'rp-retry-message',
         order: 30,
-      }, makeAssistantEditAction({ ctx })));
+      }, makeAssistantRetryAction({ ctx })));
 
       // 右栏页签（RP 面板本体）**不在这里注册**：它是应用级的类型注册，注册一次就会让
       // 每个会话的右栏引导页都列着「🎲 RP 跑团面板」。改由会话头部按钮按「本会话是不是 DM」

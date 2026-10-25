@@ -240,14 +240,16 @@ let stateStub = {
 let gateReply = { ok: true, dm: true, started: false };
 /** `/rp-tools/session` 回复里的 isDm（宿主登记表的答案）。用例可切，默认是 DM。 */
 let sessionReplyIsDm = true;
-/** `/rp-tools/edit-message` 的回复（用户消息编辑入口用；用例可切 inplace / branch）。 */
+/** `/rp-tools/edit-message` / `/rp-tools/retry-last` 的回复（用例可切）。 */
 let editReply = { ok: true, mode: 'inplace', text: '改过的文本' };
+let retryReply = { ok: true, retried: true };
 globalThis.fetch = async (url, options = {}) => {
   const method = options.method ?? 'GET';
   calls.push({ url: String(url), method, body: options.body ? JSON.parse(options.body) : undefined });
   const target = String(url);
   const reply = (json) => ({ ok: true, status: 200, json: async () => json });
   if (target.startsWith('/rp-tools/edit-message')) return reply(editReply);
+  if (target.startsWith('/rp-tools/retry-last')) return reply(retryReply);
   if (target.startsWith('/rp-tools/gate')) return reply(gateReply);
   // 「恢复默认」走这条（桩里以前**没有**这条，
   // 于是 API.reset() 拿到 `{ok:false}`，代码直接跳进 catch）。
@@ -2234,32 +2236,29 @@ async function ensureSidebarTab() {
   globalThis.window.confirm = realConfirm2;
   resetHooks();
 }
-// ── 「✏️ 编辑提问」入口（2026-10 用户要求；挂在助手消息操作行）────────────────────
+// ── 「重试」图标按钮（2026-10 用户要求；挂在助手消息操作行，点击即重新输出这一轮）──────
 {
-  const editReg = slotRegs.find((r) => r.name === 'conversation.chat.assistant-actions');
-  assert.ok(editReg, '应注册 conversation.chat.assistant-actions（助手消息操作行）');
-  assert.equal(editReg.id, 'rp-edit-message', '操作行条目的 id');
-  assert.equal(editReg.order, 30, '排在官方 feedback(10) / context-jump(20) 之后');
-  assert.equal(typeof editReg.component, 'function');
-  const drafts = [];
-  const inputActions = { setDraft: (text) => drafts.push(text) };
+  const retryReg = slotRegs.find((r) => r.name === 'conversation.chat.assistant-actions');
+  assert.ok(retryReg, '应注册 conversation.chat.assistant-actions（助手消息操作行）');
+  assert.equal(retryReg.id, 'rp-retry-message', '操作行条目的 id');
+  assert.equal(retryReg.order, 30, '排在官方 feedback(10) / context-jump(20) 之后');
+  assert.equal(typeof retryReg.component, 'function');
   const tree2 = renderNode({
-    type: editReg.component,
-    props: { messageId: 'msg-assistant-1', sessionId: 's1', inputActions },
+    type: retryReg.component,
+    props: { messageId: 'msg-assistant-1', sessionId: 's1' },
   });
-  const editBtn = findAll(tree2, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpe-btn'))[0];
-  assert.ok(editBtn, '助手消息操作行要有「✏️ 编辑提问」按钮');
-  assert.ok(String(editBtn.props.title).includes('最后一条不开分支'), '按钮提示要说明开分支语义');
-  // 最后一条 = inplace：宿主原地遮蔽，原文回填输入框
-  editReply = { ok: true, mode: 'inplace', text: '改过的提问' };
-  await editBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
+  const retryBtn = findAll(tree2, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpe-retry'))[0];
+  assert.ok(retryBtn, '助手消息操作行要有重试按钮');
+  assert.ok(String(retryBtn.props.title).includes('重新输出'), '按钮提示要说明「重新输出这一轮回复」');
+  assert.equal(findAll(retryBtn, (n) => n.type === 'svg').length, 1, '按钮用图标（官方风格 svg），不是文字');
+  retryReply = { ok: true, retried: true };
+  await retryBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
   await tick(40);
-  const editCall = calls.find((c) => c.url === '/rp-tools/edit-message');
-  assert.ok(editCall && editCall.method === 'POST', '点击要 POST /rp-tools/edit-message');
-  assert.deepEqual(editCall.body, { sessionId: 's1', messageId: 'msg-assistant-1' }, '请求要带 sessionId + 助手消息 id');
-  assert.deepEqual(drafts, ['改过的提问'], 'inplace 模式要把原文回填输入框（用户自己点发送）');
+  const retryCall = calls.find((c) => c.url === '/rp-tools/retry-last');
+  assert.ok(retryCall && retryCall.method === 'POST', '点击要 POST /rp-tools/retry-last');
+  assert.deepEqual(retryCall.body, { sessionId: 's1', messageId: 'msg-assistant-1' }, '请求要带 sessionId + 助手消息 id');
   // 没有 messageId（或 session）时不渲染，别在别的节点上多出一个按钮
-  const nothing = renderNode({ type: editReg.component, props: { sessionId: 's1' } });
+  const nothing = renderNode({ type: retryReg.component, props: { sessionId: 's1' } });
   assert.equal(nothing, null, '没有 messageId 时不渲染按钮');
 }
 
