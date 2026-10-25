@@ -2262,47 +2262,6 @@ async function ensureSidebarTab() {
   resetHooks();
 }
 // ── 「重试」图标按钮（2026-10 用户要求；挂在助手消息操作行，点击即重新输出这一轮）──────
-{
-  const retryReg = slotRegs.find((r) => r.name === 'conversation.chat.assistant-actions');
-  assert.ok(retryReg, '应注册 conversation.chat.assistant-actions（助手消息操作行）');
-  assert.equal(retryReg.id, 'rp-retry-message', '操作行条目的 id');
-  assert.equal(retryReg.order, 30, '排在官方 feedback(10) / context-jump(20) 之后');
-  assert.equal(typeof retryReg.component, 'function');
-  const tree2 = renderNode({
-    type: retryReg.component,
-    props: { messageId: 'msg-assistant-1', sessionId: 's1' },
-  });
-  const retryBtn = findAll(tree2, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpe-retry'))[0];
-  assert.ok(retryBtn, '助手消息操作行要有重试按钮');
-  assert.ok(String(retryBtn.props.title).includes('重新输出'), '按钮提示要说明「重新输出这一轮回复」');
-  assert.equal(findAll(retryBtn, (n) => n.type === 'svg').length, 1, '按钮用图标（官方风格 svg），不是文字');
-  // 一键重试：宿主删除旧回合 + 自动重发，客户端负责把旧行从界面收起
-  retryReply = { ok: true, retried: true, deleted: true, hiddenTurns: [3] };
-  const retryBtn2 = findAll(renderNode({
-    type: retryReg.component,
-    props: { messageId: 'msg-assistant-1', sessionId: 's1' },
-  }), (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpe-retry'))[0];
-  await retryBtn2.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
-  await tick(40);
-  const retryCall = calls.find((c) => c.url === '/rp-tools/retry-last');
-  assert.ok(retryCall && retryCall.method === 'POST', '点击要 POST /rp-tools/retry-last');
-  assert.deepEqual(retryCall.body, { sessionId: 's1', messageId: 'msg-assistant-1' }, '请求要带 sessionId + 助手消息 id');
-  const hideStyle = head.find((el) => String(el.textContent ?? '').includes('[data-chat-turn="3"]'));
-  assert.ok(hideStyle, '一键重试后要把旧回合用 CSS 从界面收起（官方 Chat 渲染事件流，replace 不会自动消失）');
-  assert.ok(String(hideStyle.textContent).includes('display:none'), '隐藏规则要带 display:none');
-  const retryOkToast = document.body.children.find((el) => el.id === 'rp-tools-toast');
-  assert.ok(retryOkToast && String(retryOkToast.textContent).includes('重新生成'), '一键重试后要提示正在重新生成');
-  // 失败时也要弹提示（真机「点了没反应」就是因为它只写了 console.warn）
-  retryReply = { ok: false, error: '只能重试最后一条回复' };
-  await retryBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
-  await tick(40);
-  const failToast = document.body.children.find((el) => el.id === 'rp-tools-toast');
-  assert.ok(failToast && String(failToast.textContent).includes('重试失败'), '重试失败要弹可见提示（含错误原因）');
-  assert.ok(String(failToast.textContent).includes('只能重试最后一条'), '提示里要带服务端错误原因');
-  // 没有 messageId（或 session）时不渲染，别在别的节点上多出一个按钮
-  const nothing = renderNode({ type: retryReg.component, props: { sessionId: 's1' } });
-  assert.equal(nothing, null, '没有 messageId 时不渲染按钮');
-}
 
 // ── 用户消息旁的「✏️ 编辑提问」（DOM 注入；官方 chat.node 槽位叠加被遮蔽，改走 DOM）──────
 {

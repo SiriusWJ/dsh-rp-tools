@@ -3379,7 +3379,6 @@ if (onSessionCreated) {
     check('编辑：返回可编辑原文（保留换行）', last.json.text, '最后一问\n第二行');
     // 日志层限制（真机验证）：写遮蔽事件会让模型请求失败，所以数据不动，只做界面回收。
     check('编辑：inplace 不写会话日志', appendCalls.length, 0);
-    check('编辑：返回 hiddenTurns 供客户端 CSS 隐藏旧回合', Array.isArray(last.json.hiddenTurns), true);
     const early = await callPost('/rp-tools/edit-message', { sessionId: 'edit-early', seq: 1 });
     check('编辑：更早的用户消息 → branch（开新分支）', early.json.mode, 'branch');
     check('编辑：branch 返回子会话 id', early.json.sessionId, 'edit-child');
@@ -3396,59 +3395,6 @@ if (onSessionCreated) {
     hostCtx.get = origGet;
     liveSessions.delete('edit-last');
     liveSessions.delete('edit-early');
-  }
-}
-
-// ── 「重试最后一条回复」：先遮蔽旧回合，再用同一提问重发 ─────────────────────
-{
-  const appendCalls = [];
-  const followups = [];
-  const retryEvents = new Map([
-    [0, { seq: 0, type: 'system/message', data: {} }],
-    [1, { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: '第一问' }], source: { kind: 'user' } } }],
-    [2, { seq: 2, type: 'assistant/message', data: { message: { id: 'a-2' } } }],
-    [3, { seq: 3, type: 'user/message', data: { content: [{ type: 'text', text: '最后的问题' }], source: { kind: 'user' } } }],
-    [4, { seq: 4, type: 'assistant/message', data: { message: { id: 'a-4' } } }],
-  ]);
-  const makeRetrySession = (id) => ({
-    id,
-    header: { cwd: process.cwd() },
-    eventAt: (seq) => retryEvents.get(seq),
-    surface: { nodes: [0, 1, 2, 3, 4] },
-    append: (type, data, opts) => { appendCalls.push({ type, data, opts }); return { seq: 5 }; },
-  });
-  liveSessions.set('retry-1', makeRetrySession('retry-1'));
-  liveSessions.set('retry-noagent', makeRetrySession('retry-noagent'));
-  const origGet = hostCtx.get;
-  hostCtx.get = (name) => {
-    if (name === 'sessions') return { get: (id) => liveSessions.get(id) };
-    if (name === 'agents') {
-      return { get: (id) => (id === 'retry-1' ? { followup: (input) => { followups.push(input); } } : undefined) };
-    }
-    return origGet(name);
-  };
-  try {
-    const ok = await callPost('/rp-tools/retry-last', { sessionId: 'retry-1', messageId: 'a-4' });
-    check('重试：一键成功（retried）', ok.json.retried, true);
-    check('重试：先遮蔽旧回合（写一次 replace）', appendCalls.length, 1);
-    check('重试：占位是完整 UserMessage（id/role/content/source）',
-      `${typeof appendCalls[0]?.data?.id}/${appendCalls[0]?.data?.role}/${appendCalls[0]?.data?.content?.[0]?.text}/${appendCalls[0]?.data?.source?.kind}`,
-      'string/user/[deleted]/plugin:dsh-rp-tools');
-    check('重试：replace 范围 = 提问 seq → 末尾',
-      `${appendCalls[0]?.opts?.surfaceOp?.startSeq}/${appendCalls[0]?.opts?.surfaceOp?.endSeq}`, '3/4');
-    check('重试：完整列出被遮蔽节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '3,4');
-    check('重试：旧回合删掉后用同一提问自动重发（followup 一次）', followups.length, 1);
-    check('重试：followup 用原提问文本', followups[0]?.content?.[0]?.text, '最后的问题');
-    check('重试：返回 hiddenTurns 供界面收起旧行', Array.isArray(ok.json.hiddenTurns), true);
-    // 宽容语义：messageId 对不上也按「最后一条」重试
-    const wrongId = await callPost('/rp-tools/retry-last', { sessionId: 'retry-1', messageId: 'a-2' });
-    check('重试：messageId 对不上也宽容执行', wrongId.json.retried, true);
-    const noAgent = await callPost('/rp-tools/retry-last', { sessionId: 'retry-noagent', messageId: 'a-4' });
-    check('重试：没有活 agent 时降级为 prefill（只回填输入框）', noAgent.json.mode, 'prefill');
-  } finally {
-    hostCtx.get = origGet;
-    liveSessions.delete('retry-1');
-    liveSessions.delete('retry-noagent');
   }
 }
 
@@ -3488,7 +3434,6 @@ if (onSessionCreated) {
     check('按回合编辑：最后一轮 → inplace（不开分支）', last.json.mode, 'inplace');
     check('按回合编辑：返回该回合提问原文', last.json.text, '最后一轮提问');
     check('按回合编辑：inplace 不写会话日志', appendCalls.length, 0);
-    check('按回合编辑：hiddenTurns = 该回合编号', last.json.hiddenTurns?.join(','), '2');
     const early = await callPost('/rp-tools/edit-turn', { sessionId: 'turn-1', turn: 1 });
     check('按回合编辑：更早的回合 → branch', early.json.mode, 'branch');
     check('按回合编辑：fork boundary = 该回合提问前一个 surface 节点', forkCalls[0]?.boundary, 0);

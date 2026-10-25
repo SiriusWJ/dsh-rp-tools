@@ -473,13 +473,6 @@ window.__ModuleLoader__.load({
   background: transparent; color: inherit; font: inherit; cursor: pointer;
 }
 .rpc-full-x:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
-/* 助手消息操作行里的「重试」图标按钮（与复制 / fork 并排的官方风格：白色描边、hover 变亮） */
-.rpe-retry { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
-  padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit;
-  opacity: .55; cursor: pointer; }
-.rpe-retry:hover:not(:disabled) { opacity: 1; background: color-mix(in oklab, currentColor 10%, transparent); }
-.rpe-retry:disabled { opacity: .3; cursor: default; }
-.rpe-retry svg { display: block; }
 /* 用户消息旁的「✏️ 编辑提问」（DOM 注入的悬浮小按钮）：默认很淡，悬停消息行时明显起来 */
 .rpe-user-edit { position: absolute; top: 3px; right: 4px; width: 20px; height: 20px; padding: 0;
   border: 0; border-radius: 6px; background: transparent; color: inherit; opacity: 0;
@@ -2642,53 +2635,7 @@ window.__ModuleLoader__.load({
       } catch { /* 忽略 */ }
     }
 
-    /** 重试图标（官方操作行风格：描边 currentColor，白色主题下即白色）。 */
-    function retryIcon() {
-      return h('svg', {
-        viewBox: '0 0 16 16', width: 15, height: 15, fill: 'none',
-        stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
-        'aria-hidden': 'true', focusable: 'false',
-      }, [
-        h('path', { key: 'a', d: 'M13.5 8a5.5 5.5 0 1 1-1.61-3.89' }),
-        h('path', { key: 'b', d: 'M13.5 2.5v3.2h-3.2' }),
-      ]);
-    }
-
-    async function requestRetryLast(sessionId, messageId) {
-      const res = await fetch('/rp-tools/retry-last', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionId, messageId }),
-      });
-      try { return await res.json(); } catch { return { ok: false, error: `HTTP ${res.status}` }; }
-    }
-
-    // 最近一次渲染助手消息时看到的会话 id —— 用户消息旁的 DOM 注入按钮靠它知道往哪个会话发请求
-    // （DOM 里拿不到 sessionId；当前打开的会话必然有助手消息在渲染，所以这个值总是最新）。
-    // 同时写一份到 window 上：真实页面只有一个插件实例，但测试/热重载可能有多套闭包，
-    // 共享值能保证「记录方」与「读取方」拿到同一个会话 id。
-    let lastKnownSessionId = '';
-    function rememberSessionId(sessionId) {
-      if (typeof sessionId !== 'string' || !sessionId) return;
-      lastKnownSessionId = sessionId;
-      try { if (typeof window !== 'undefined') window.__dshRpToolsSessionId = sessionId; } catch { /* 忽略 */ }
-    }
-    function currentSessionId() {
-      try {
-        const shared = typeof window !== 'undefined' ? window.__dshRpToolsSessionId : '';
-        if (typeof shared === 'string' && shared) return shared;
-      } catch { /* 忽略 */ }
-      return lastKnownSessionId;
-    }
-    let userEditObserver = null;
-
-    /**
-     * 用户消息旁的「✏️」：官方 `conversation.chat.node` 的 key='user' 被内置渲染器占着，
-     * 同 key 叠加在真机上被遮蔽（active:false），所以退到 **DOM 注入**：
-     * 观察聊天流里 `[data-chat-flow-kind="user"]` 的节点，插一个悬浮小按钮；
-     * 点击时读官方给的 `data-chat-turn`（回合编号），让宿主按回合找回这轮提问再走编辑/分支逻辑。
-     */
-    function attachUserEditButtons(ctx) {
+        function attachUserEditButtons(ctx) {
       try {
         if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
         const rows = document.querySelectorAll('[data-chat-flow-kind="user"]');
@@ -2758,49 +2705,6 @@ window.__ModuleLoader__.load({
       }
     }
 
-    // 界面回收：官方 Chat 渲染的是**事件流**，数据层 replace 不会让已显示的行消失
-    // （wm-toolkit 客户端也是自己藏）。宿主已经把整轮从上下文删掉并用同一提问重新发起，
-    // 所以这里按 turn 整轮隐藏旧行 —— 界面只剩新的提问+回复。
-    const hiddenTurns = new Set();
-    function hideTurnsForSession(turns) {
-      try {
-        if (Array.isArray(turns)) {
-          for (const turn of turns) {
-            const value = Number(turn);
-            if (Number.isSafeInteger(value) && value >= 0) hiddenTurns.add(value);
-          }
-        }
-        if (typeof document === 'undefined' || !document.head || typeof document.createElement !== 'function') return;
-        const existing = typeof document.querySelector === 'function'
-          ? document.querySelector('style[data-plugin-css="dsh-rp-tools-hide"]')
-          : null;
-        if (hiddenTurns.size === 0) {
-          if (existing) existing.textContent = '';
-          return;
-        }
-        let el = existing;
-        if (!el) {
-          el = document.createElement('style');
-          el.dataset.plugin = 'dsh-rp-tools';
-          el.dataset.pluginCss = 'dsh-rp-tools-hide';
-          document.head.appendChild(el);
-        }
-        el.textContent = [...hiddenTurns]
-          .sort((a, b) => a - b)
-          .map((turn) => `[data-chat-turn="${turn}"]{display:none !important}`)
-          .join('\n');
-      } catch { /* 忽略 */ }
-    }
-
-    /** 启动时清掉可能残留的隐藏规则（旧版本 / HMR 留下的 <style> 会把正常消息也藏掉）。 */
-    function clearStaleHideRules() {
-      try {
-        if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return;
-        const el = document.querySelector('style[data-plugin-css="dsh-rp-tools-hide"]');
-        if (el) el.textContent = '';
-      } catch { /* 忽略 */ }
-    }
-
     function installUserEditButtons(ctx) {
       try {
         if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return;
@@ -2818,58 +2722,6 @@ window.__ModuleLoader__.load({
           if (timer !== null) { clearTimeout(timer); timer = null; }
         }, 'rp-tools: user edit buttons');
       } catch { /* 忽略 */ }
-    }
-
-    function makeAssistantRetryAction(deps) {
-      return function AssistantRetryAction(props) {
-        const [busy, setBusy] = React.useState(false);
-        const messageId = String(props.messageId ?? '');
-        const sessionId = props.sessionId;
-        const onRetry = async () => {
-          if (busy) return;
-          if (!messageId || typeof sessionId !== 'string') {
-            showEditToast('重试：拿不到消息标识或会话 id，请刷新页面再试');
-            return;
-          }
-          setBusy(true);
-          try {
-            const data = await requestRetryLast(sessionId, messageId);
-            if (!data?.ok) {
-              showEditToast(`重试失败：${data?.error ?? '未知错误'}`);
-            } else if (data.retried === true) {
-              // 一键重试：宿主已删除旧回合并自动重发，这里把旧行从界面收起
-              hideTurnsForSession(data.hiddenTurns);
-              showEditToast('旧回复已删除，正在重新生成…');
-            } else if (typeof data.text === 'string') {
-              // 降级：没有活 agent 时只回填输入框
-              const setDraft = typeof props.inputActions?.setDraft === 'function'
-                ? props.inputActions.setDraft
-                : boundComposer(deps.ctx, sessionId).inputActions?.setDraft;
-              if (typeof setDraft === 'function') {
-                setDraft(data.text);
-                showEditToast('旧回复已删除，提问已放回输入框，按回车重新生成');
-              } else {
-                copyEditText(data.text);
-              }
-            }
-          } catch (error) {
-            showEditToast(`重试失败：${String(error?.message ?? error)}`);
-          } finally {
-            setBusy(false);
-          }
-        };
-        if (!messageId || typeof sessionId !== 'string') return null;
-        // 记下当前会话 id：用户消息旁的 DOM 注入按钮靠它发请求（DOM 本身拿不到 sessionId）。
-        if (sessionId) rememberSessionId(sessionId);
-        return h('button', {
-          type: 'button',
-          className: 'rpe-retry',
-          disabled: busy,
-          title: '重新输出这一轮回复',
-          'aria-label': '重试',
-          onClick: (event) => { event.stopPropagation(); void onRetry(); },
-        }, busy ? '…' : retryIcon());
-      };
     }
 
     function RpCardImport(props) {
@@ -3715,20 +3567,10 @@ window.__ModuleLoader__.load({
         label: () => 'PNG 故事书',
       }, (props) => h(RpCardImport, { ...props, inline: true })));
 
-      // 「重试」图标挂在**每条最终助手消息的操作行**里（官方公开的 list 槽位，复制 / fork 就在这排）：
-      // 点击 → 宿主遮蔽「这一轮提问 → 末尾」的旧回合并用同一条提问重新 followup，
-      // 于是模型重新输出这一轮（用户要求：和官方风格一致的白色重试图标，一键重新输出）。
-      ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({
-        name: 'conversation.chat.assistant-actions',
-        id: 'rp-retry-message',
-        order: 30,
-      }, makeAssistantRetryAction({ ctx })));
 
       // 用户消息旁的「✏️ 编辑提问」：聊天节点槽位被内置渲染器占着（叠加会 active:false），
       // 改用 DOM 注入 —— 观察 `[data-chat-flow-kind="user"]` 行，按钮点击时用官方
       // `data-chat-turn` 让宿主按回合找回这轮提问（不开分支 / 开分支的语义同宿主实现）。
-      // 清掉旧版本可能残留的隐藏规则：它会隐藏整轮（含用户提问），让消息看着「消失」。
-      clearStaleHideRules();
       installUserEditButtons(ctx);
 
       // 右栏页签（RP 面板本体）**不在这里注册**：它是应用级的类型注册，注册一次就会让
