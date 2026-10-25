@@ -2764,7 +2764,10 @@ window.__ModuleLoader__.load({
           const parentId = String(out.parentId ?? '');
           if (parentId) {
             try {
-              const workspaces = typeof props?.ctx?.get === 'function' ? props.ctx.get('workspaces') : null;
+              let workspaces = clientWorkspacesRef;
+              if (!workspaces && typeof props?.ctx?.get === 'function') {
+                try { workspaces = props.ctx.get('workspaces') ?? null; } catch { workspaces = null; }
+              }
               if (typeof workspaces?.archiveSession === 'function') await workspaces.archiveSession(parentId);
             } catch { /* 归档失败不影响编辑结果 */ }
           }
@@ -3582,6 +3585,8 @@ window.__ModuleLoader__.load({
      * 不能靠给 thenable 赋值的土办法拿 ctx）。只在 apply 里赋值一次。
      */
     const ctxRef = { current: null };
+    /** 客户端工作区服务引用（apply 里动态注入）：编辑后归档旧会话要用它。 */
+    let clientWorkspacesRef = null;
 
     /**
      * 把「RP 面板」注册成右栏的一种**页签类型**（外加两个座位），返回撤销这一切的函数。
@@ -3684,6 +3689,12 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       ctxRef.current = ctx;
+      // 动态注入工作区服务（不声明硬依赖）：编辑后归档旧会话要用；拿不到就降级。
+      try {
+        ctx.inject(['workspaces'], (wsCtx) => {
+          try { clientWorkspacesRef = wsCtx.workspaces ?? null; } catch { clientWorkspacesRef = null; }
+        });
+      } catch { /* 忽略 */ }
       // 样式必须在**第一个组件渲染之前**就挂上。
       // 之前只在设置页 / 会话面板的 effect 里调用，于是首次加载时头部那个「🎲 RP」
       // 按钮先以裸 <button> 的默认外观出现（灰底方角），等某个组件挂载后才变正常 ——
