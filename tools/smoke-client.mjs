@@ -2265,9 +2265,10 @@ async function ensureSidebarTab() {
 
 // ── 用户消息旁的「✏️ 编辑提问」（DOM 注入；官方 chat.node 槽位叠加被遮蔽，改走 DOM）──────
 {
-  // 先渲染一次助手消息操作行，把 lastKnownSessionId 记成 s9（DOM 按钮靠它发请求）
-  const retryReg = slotRegs.find((r) => r.id === 'rp-retry-message');
-  renderNode({ type: retryReg.component, props: { messageId: 'm-1', sessionId: 's9' } });
+  // 先渲染一次不可见的会话 id 钩子，把 lastKnownSessionId 记成 s9（DOM 按钮靠它发请求）
+  const hookReg = slotRegs.find((r) => r.id === 'rp-session-hook');
+  assert.ok(hookReg, '应注册一个不可见的会话 id 采集钩子（DOM 编辑按钮依赖它）');
+  renderNode({ type: hookReg.component, props: { sessionId: 's9' } });
   const row = {
     dataset: {},
     style: {},

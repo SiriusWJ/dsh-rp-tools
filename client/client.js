@@ -2568,6 +2568,19 @@ window.__ModuleLoader__.load({
     //   · 不是最后一条 → 宿主 fork 新分支，客户端切过去再把原文回填新会话的输入框。
 
     /** 拿某会话物化后的输入框绑定（uiSession 服务把 session binding 变成可用的 inputActions）。 */
+    /** 记下当前会话 id（DOM 注入的按钮拿不到 React props，只能靠这个）。 */
+    function rememberSessionId(sessionId) {
+      try {
+        if (typeof sessionId === 'string' && sessionId.length > 0) window.__dshRpToolsSessionId = sessionId;
+      } catch { /* 忽略 */ }
+    }
+    function currentSessionId() {
+      try {
+        const id = window.__dshRpToolsSessionId;
+        return typeof id === 'string' && id.length > 0 ? id : null;
+      } catch { return null; }
+    }
+
     function boundComposer(ctx, sessionId) {
       try {
         const uiSession = ctx.get('uiSession');
@@ -3567,6 +3580,18 @@ window.__ModuleLoader__.load({
         label: () => 'PNG 故事书',
       }, (props) => h(RpCardImport, { ...props, inline: true })));
 
+
+      // 编辑按钮是 DOM 注入的（不在 React 树里），拿不到 props.sessionId —— 注册一个
+      // **不可见的**助手操作行钩子，每次渲染时把当前会话 id 记下来供它使用。
+      function SessionIdHook(props) {
+        if (typeof props?.sessionId === 'string' && props.sessionId) rememberSessionId(props.sessionId);
+        return null;
+      }
+      ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({
+        name: 'conversation.chat.assistant-actions',
+        id: 'rp-session-hook',
+        order: 90,
+      }, SessionIdHook));
 
       // 用户消息旁的「✏️ 编辑提问」：聊天节点槽位被内置渲染器占着（叠加会 active:false），
       // 改用 DOM 注入 —— 观察 `[data-chat-flow-kind="user"]` 行，按钮点击时用官方
