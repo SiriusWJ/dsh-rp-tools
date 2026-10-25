@@ -2,7 +2,7 @@
 
 给 [DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/)（dsh）用的**跑团 / DM 工具插件**：中立随机裁决、世界书、状态追踪、按会话隔离的战役配置，以及 PNG 故事书（SillyTavern 角色卡）导入 —— 选一张卡就能开团。
 
-当前版本 **1.24.0** · MIT · 仓库 <https://github.com/SiriusWJ/dsh-rp-tools>
+当前版本 **1.24.1** · MIT · 仓库 <https://github.com/SiriusWJ/dsh-rp-tools>
 
 ---
 

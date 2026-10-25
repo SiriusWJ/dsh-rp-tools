@@ -3380,7 +3380,7 @@ if (onSessionCreated) {
     check('编辑：inplace 写一次日志做遮蔽', appendCalls.length, 1);
     check('编辑：替换者是 user/message', appendCalls[0]?.type, 'user/message');
     check('编辑：占位消息带 id（缺 id 会让模型请求畸形）', typeof appendCalls[0]?.data?.id, 'string');
-    check('编辑：占位 role=user 且内容非空', `${appendCalls[0]?.data?.role}/${(appendCalls[0]?.data?.content?.length ?? 0) > 0}`, 'user/true');
+    check('编辑：占位 role=user 且内容为空（adapter 会跳过空 user 消息）', `${appendCalls[0]?.data?.role}/${appendCalls[0]?.data?.content?.length}`, 'user/0');
     check('编辑：替换范围从这条用户消息开始', appendCalls[0]?.opts?.surfaceOp?.startSeq, 3);
     check('编辑：替换到最后一个 surface 节点', appendCalls[0]?.opts?.surfaceOp?.endSeq, 4);
     check('编辑：sourceEventSeqs 列出被遮蔽的每个节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '3,4');
@@ -3532,7 +3532,7 @@ if (onSessionCreated) {
       ...baseEvents,
       {
         seq: 3, time: 3, type: 'user/message',
-        data: { id: 'rp-tools-edit-placeholder-test', role: 'user', content: [{ type: 'text', text: '（上一轮对话已撤回，等待重新发送）' }], source: { kind: 'rp-tools-edit-placeholder' } },
+        data: { id: 'rp-tools-edit-placeholder-test', role: 'user', content: [], source: { kind: 'rp-tools-edit-placeholder' } },
         surfaceOp: { op: 'replace', startSeq: 1, endSeq: 2 },
         sourceEventSeqs: [1, 2],
       },
@@ -3544,6 +3544,7 @@ if (onSessionCreated) {
     check('遮蔽复核：旧回合从模型历史消失（只剩 system + 占位）', msgs.length, 2);
     check('遮蔽复核：占位消息带 id（缺 id 就会畸形）', typeof msgs[1]?.id, 'string');
     check('遮蔽复核：占位消息有 role', msgs[1]?.role, 'user');
+    check('遮蔽复核：占位 content 为空（DeepSeek adapter 会 continue 跳过）', msgs[1]?.content?.length, 0);
     // 反面：缺 id 的占位折叠后消息不合法（正是真机 missing field role 的成因）
     const badPlaceholder = { role: 'user', content: [{ type: 'text', text: 'x' }], source: { kind: 'rp-tools-edit-placeholder' } };
     const badEvents = [...baseEvents, {
