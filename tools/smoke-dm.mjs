@@ -3291,11 +3291,17 @@ if (onSessionCreated) {
     check('预设：有「地图」小节', prefix.includes('## 地图（**可选**'), true);
     check('预设：强调没地图就别硬造', prefix.includes('不要给每个场景临时造一张图'), true);
     check('预设：运行时变化不写回静态图', prefix.includes('运行时变化绝不写回 rp-map.json'), true);
-    check('预设：mermaid 节点 ID 必须 ASCII', prefix.includes('**必须 ASCII**'), true);
+    // 前置能力核对：桌面版聊天前端**不渲染 mermaid**，也没有 GenUI 控件回传 ——
+    // persona 不能教模型用这些不存在的能力（用户要求：提示词不许引用不存在的插件行为）。
+    check('预设：不再用 mermaid 画地图（前端不渲染）', !prefix.includes('mermaid'), true);
+    check('预设：不再提 genui-action 回传（GenUI 不存在）', !prefix.includes('genui-action'), true);
+    check('预设：地图用纯文本讲清楚', prefix.includes('用纯文本把地图讲清楚'), true);
     check('预设：可走的选项每个单独一行（纯文本为准）', prefix.includes('可走的选项每个单独一行'), true);
     check('预设：只列当前节点的邻接边', prefix.includes('只列「当前节点的邻接边」'), true);
-    check('预设：地图画一次就够（不每轮重画）', prefix.includes('地图画一次就够'), true);
-    check('预设：收到地图 action 先校验再写状态', prefix.includes('非法就说明原因并重画当前地图，**不要写状态**'), true);
+    check('预设：地图讲一次就够（不每轮重讲）', prefix.includes('地图讲一次就够'), true);
+    check('预设：玩家用文字行动时先校验再写状态',
+      prefix.includes('玩家用文字说「去 X / 开锁 / 搜索」时**先校验**')
+      && prefix.includes('非法就说明原因并重讲当前地图，**不要写状态**'), true);
     // 约定 ≠ 状态（报告 BUG-01/02 的种子）
     check('预设：说明「常驻条目 / 已有可用图」是规则而不是已有状态',
       prefix.includes('是**规则说明**；本会话真的有没有，看它下面列的东西'), true);
