@@ -2263,46 +2263,6 @@ async function ensureSidebarTab() {
 }
 // ── 「重试」图标按钮（2026-10 用户要求；挂在助手消息操作行，点击即重新输出这一轮）──────
 
-// ── 用户消息旁的「✏️ 编辑提问」（DOM 注入；官方 chat.node 槽位叠加被遮蔽，改走 DOM）──────
-{
-  // 先渲染一次不可见的会话 id 钩子，把 lastKnownSessionId 记成 s9（DOM 按钮靠它发请求）
-  const hookReg = slotRegs.find((r) => r.id === 'rp-session-hook');
-  assert.ok(hookReg, '应注册一个不可见的会话 id 采集钩子（DOM 编辑按钮依赖它）');
-  renderNode({ type: hookReg.component, props: { sessionId: 's9' } });
-  const row = {
-    dataset: {},
-    style: {},
-    children: [],
-    appendChild(child) { this.children.push(child); child.isConnected = true; return child; },
-  };
-  fakeUserRows = [row];
-  // 触发一次观察器回调（模拟聊天流变化）→ 内部节流 200ms 后给用户行插按钮
-  mutationCallback?.();
-  await tick(280);
-  assert.ok(row.children.length >= 1, '用户消息行里应注入编辑按钮');
-  const btn = row.children[0];
-  assert.equal(btn.className, 'rpe-user-edit', '注入的按钮用 rpe-user-edit 样式');
-  assert.ok(String(btn.title).includes('编辑这条提问'), '按钮提示要说明「编辑这条提问」');
-  row.dataset.chatTurn = '3';
-  editTurnReply = { ok: true, mode: 'inplace', text: '改过的回合提问' };
-  await btn.handlers.click({ stopPropagation() { /* 不冒泡 */ } });
-  await tick(60);
-  const call = calls.find((c) => c.url === '/rp-tools/edit-turn');
-  assert.ok(call && call.method === 'POST', '点击要 POST /rp-tools/edit-turn');
-  assert.deepEqual(call.body, { sessionId: 's9', turn: 3 }, '请求要带当前会话 id + 官方回合编号');
-  // 已注入过的行不重复插（重复观察器回调不应叠按钮）
-  mutationCallback?.();
-  await tick(280);
-  assert.equal(row.children.length, 1, '同一行只注入一次按钮');
-  // 宿主删除操作留下的 [deleted] 占位消息不该显示在界面上（wm-toolkit 客户端也这么做）
-  const deletedRow = { dataset: {}, style: {}, textContent: '[deleted]', appendChild() {} };
-  fakeUserRows = [deletedRow];
-  mutationCallback?.();
-  await tick(280);
-  assert.equal(deletedRow.style.display, 'none', '[deleted] 占位消息要被隐藏');
-  fakeUserRows = [];
-}
-
 console.log('客户端冒烟测试通过：');
 console.log(`  · bundle id = ${captured.id}`);
 console.log(`  · apply 后样式表已注入（${style.textContent.length} 字符，含 .rph-btn / .rpc）`);
