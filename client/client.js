@@ -2629,7 +2629,7 @@ window.__ModuleLoader__.load({
         const value = Number(turn);
         if (!Number.isSafeInteger(value) || value < 0) return;
         if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
-        const rows = document.querySelectorAll();
+        const rows = document.querySelectorAll('[data-chat-turn="' + value + '"]');
         for (const row of rows ?? []) {
           if (!row) continue;
           // mode='reply' 只藏回复侧（保留提问行）；mode='turn' 整轮藏。
