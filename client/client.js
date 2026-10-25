@@ -2642,6 +2642,38 @@ window.__ModuleLoader__.load({
       } catch { /* 忽略 */ }
     }
 
+    // ── 旧回合的界面回收（学 rewind 插件）────────────────────────────────────
+    // 日志层不接受我们追加「遮蔽事件」（真机上会让模型请求失败），所以数据不动，
+    // 只在界面上把旧回合的 DOM 隐藏掉：官方聊天节点带 data-chat-turn，注入
+    // [data-chat-turn="N"]{display:none !important} 即可（rewind 插件正是这么做的）。
+    // ⚠️ 只在当前页面生命周期内有效；刷新后旧回合会重新显示（要持久回收得等官方删消息 API）。
+    const hiddenTurns = new Set();
+    function hideTurnsForSession(turns) {
+      try {
+        if (Array.isArray(turns)) {
+          for (const turn of turns) {
+            const value = Number(turn);
+            if (Number.isSafeInteger(value) && value >= 0) hiddenTurns.add(value);
+          }
+        }
+        if (hiddenTurns.size === 0) return;
+        if (typeof document === 'undefined' || !document.head || typeof document.createElement !== 'function') return;
+        let el = typeof document.querySelector === 'function'
+          ? document.querySelector('style[data-plugin-css="dsh-rp-tools-hide"]')
+          : null;
+        if (!el) {
+          el = document.createElement('style');
+          el.dataset.plugin = 'dsh-rp-tools';
+          el.dataset.pluginCss = 'dsh-rp-tools-hide';
+          document.head.appendChild(el);
+        }
+        el.textContent = [...hiddenTurns]
+          .sort((a, b) => a - b)
+          .map((turn) => `[data-chat-turn="${turn}"]{display:none !important}`)
+          .join('\n');
+      } catch { /* 忽略 */ }
+    }
+
     /** 重试图标（官方操作行风格：描边 currentColor，白色主题下即白色）。 */
     function retryIcon() {
       return h('svg', {
@@ -2730,10 +2762,11 @@ window.__ModuleLoader__.load({
           return;
         }
         if (data.mode === 'inplace') {
+          hideTurnsForSession(data.hiddenTurns);
           const { inputActions } = boundComposer(ctx, sessionId);
           if (typeof inputActions?.setDraft === 'function') {
             inputActions.setDraft(data.text);
-            showEditToast('原文已回填输入框，改完点发送即可');
+            showEditToast('原文已回填输入框，旧回合已从界面收起，改完点发送即可');
           } else {
             copyEditText(data.text);
           }
@@ -2788,7 +2821,8 @@ window.__ModuleLoader__.load({
             if (!data?.ok) {
               showEditToast(`重试失败：${data?.error ?? '未知错误'}`);
             } else {
-              showEditToast('已重新发送这一轮，等待新回复…');
+              hideTurnsForSession(data.hiddenTurns);
+              showEditToast('已重新发送这一轮，旧回复已从界面收起，等待新回复…');
             }
           } catch (error) {
             showEditToast(`重试失败：${String(error?.message ?? error)}`);
