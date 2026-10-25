@@ -3342,6 +3342,67 @@ if (onSessionCreated) {
   }
 }
 
+// ── 删除消息：surface replace（参考 dsh-wm-toolkit 的 delete 半边）──────────────
+{
+  const appendCalls = [];
+  const delEvents = new Map([
+    [0, { seq: 0, type: 'system/message', data: {} }],
+    [1, { seq: 1, type: 'turn/start', data: { turn: 1 } }],
+    [2, { seq: 2, type: 'user/message', data: { content: [{ type: 'text', text: '第一问' }], source: { kind: 'user' } } }],
+    [3, { seq: 3, type: 'assistant/message', data: { message: { id: 'a-3' } } }],
+    [4, { seq: 4, type: 'turn/end', data: { turn: 1 } }],
+    [5, { seq: 5, type: 'turn/start', data: { turn: 2 } }],
+    [6, { seq: 6, type: 'user/message', data: { content: [{ type: 'text', text: '第二问' }], source: { kind: 'user' } } }],
+    [7, { seq: 7, type: 'assistant/message', data: { message: { id: 'a-7' } } }],
+    [8, { seq: 8, type: 'turn/end', data: { turn: 2 } }],
+  ]);
+  const makeDelSession = (id, events) => ({
+    id,
+    header: { cwd: process.cwd() },
+    eventAt: (seq) => events.get(seq),
+    surface: { nodes: [...events.keys()].filter((seq) => {
+      const event = events.get(seq);
+      return ['system/message', 'user/message', 'assistant/message'].includes(event?.type);
+    }) },
+    snapshotEvents: () => [...events.values()],
+    append: (type, data, opts) => { appendCalls.push({ type, data, opts }); return { seq: 99 }; },
+  });
+  const live = makeDelSession('del-1', delEvents);
+  liveSessions.set('del-1', live);
+  const origGet = hostCtx.get;
+  hostCtx.get = (name) => (name === 'sessions' ? { get: (id) => liveSessions.get(id) } : origGet(name));
+  try {
+    // 1) 删除回复：从该助手消息到本回合末尾（提问保留）
+    const reply = await callPost('/rp-tools/delete-message', { sessionId: 'del-1', messageId: 'a-3', kind: 'reply' });
+    check('删除回复：成功', reply.json.ok, true);
+    check('删除回复：写一次 replace', appendCalls.length, 1);
+    check('删除回复：占位是完整 UserMessage（id/role/content/source）',
+      `${typeof appendCalls[0]?.data?.id}/${appendCalls[0]?.data?.role}/${appendCalls[0]?.data?.content?.[0]?.text}/${appendCalls[0]?.data?.source?.kind}`,
+      'string/user/[deleted]/plugin:dsh-rp-tools');
+    check('删除回复：范围 = 助手消息 → 回合末尾',
+      `${appendCalls[0]?.opts?.surfaceOp?.startSeq}/${appendCalls[0]?.opts?.surfaceOp?.endSeq}`, '3/3');
+    check('删除回复：列出被遮蔽节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '3');
+    // 2) 删除整轮：从提问到回合末尾（turn 模式）
+    appendCalls.length = 0;
+    const turn = await callPost('/rp-tools/delete-message', { sessionId: 'del-1', turn: 1, kind: 'turn' });
+    check('删除整轮：成功', turn.json.ok, true);
+    check('删除整轮：范围 = 提问 → 回合末尾',
+      `${appendCalls[0]?.opts?.surfaceOp?.startSeq}/${appendCalls[0]?.opts?.surfaceOp?.endSeq}`, '2/3');
+    check('删除整轮：列出被遮蔽节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '2,3');
+    // 3) 忙碌拒绝：有未闭合 turn 时不动 surface
+    const busyEvents = new Map(delEvents);
+    busyEvents.set(9, { seq: 9, type: 'turn/start', data: { turn: 3 } });
+    liveSessions.set('del-busy', makeDelSession('del-busy', busyEvents));
+    const busy = await callPost('/rp-tools/delete-message', { sessionId: 'del-busy', messageId: 'a-7', kind: 'reply' });
+    check('删除：会话还在跑 → 409', busy.status, 409);
+    check('删除：忙碌时不写日志', appendCalls.length, 1);
+  } finally {
+    hostCtx.get = origGet;
+    liveSessions.delete('del-1');
+    liveSessions.delete('del-busy');
+  }
+}
+
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 console.log(`数据目录（临时，即将删除）: ${TEST_HOME}`);
 rmSync(TEST_HOME, { recursive: true, force: true });

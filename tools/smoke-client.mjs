@@ -264,6 +264,8 @@ let gateReply = { ok: true, dm: true, started: false };
 /** `/rp-tools/session` 回复里的 isDm（宿主登记表的答案）。用例可切，默认是 DM。 */
 let sessionReplyIsDm = true;
 /** `/rp-tools/edit-message` / `/rp-tools/retry-last` 的回复（用例可切）。 */
+/** `/rp-tools/delete-message` 的回复。 */
+let deleteReply = { ok: true, kind: 'reply', deleted: 2 };
 let editReply = { ok: true, mode: 'inplace', text: '改过的文本' };
 let editTurnReply = { ok: true, mode: 'inplace', text: '改过的回合提问' };
 let retryReply = { ok: true, retried: true };
@@ -275,6 +277,7 @@ globalThis.fetch = async (url, options = {}) => {
   if (target.startsWith('/rp-tools/edit-message')) return reply(editReply);
   if (target.startsWith('/rp-tools/edit-turn')) return reply(editTurnReply);
   if (target.startsWith('/rp-tools/retry-last')) return reply(retryReply);
+  if (target.startsWith('/rp-tools/delete-message')) return reply(deleteReply);
   if (target.startsWith('/rp-tools/gate')) return reply(gateReply);
   // 「恢复默认」走这条（桩里以前**没有**这条，
   // 于是 API.reset() 拿到 `{ok:false}`，代码直接跳进 catch）。
@@ -2262,6 +2265,41 @@ async function ensureSidebarTab() {
   resetHooks();
 }
 // ── 「重试」图标按钮（2026-10 用户要求；挂在助手消息操作行，点击即重新输出这一轮）──────
+
+// ── 删除消息（助手操作行「删除回复」+ 用户行「删除整轮」）────────────────────
+{
+  const delReg = slotRegs.find((r) => r.id === 'rp-delete-message');
+  assert.ok(delReg, '应注册删除回复按钮（conversation.chat.assistant-actions）');
+  const tree = renderNode({
+    type: delReg.component,
+    props: { messageId: 'msg-assistant-1', sessionId: 's1' },
+  });
+  const delBtn = findAll(tree, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpe-del'))[0];
+  assert.ok(delBtn, '助手操作行要有删除按钮');
+  assert.ok(String(delBtn.props.title).includes('删除'), '按钮提示要说明删除');
+  await delBtn.props.onClick({
+    stopPropagation() { /* 不冒泡 */ },
+    currentTarget: { closest: () => ({ dataset: { chatTurn: '3' } }) },
+  });
+  await tick(40);
+  const delCall = calls.find((c) => c.url === '/rp-tools/delete-message');
+  assert.ok(delCall && delCall.method === 'POST', '点击要 POST /rp-tools/delete-message');
+  assert.deepEqual(delCall.body, { sessionId: 's1', messageId: 'msg-assistant-1', kind: 'reply' }, '删除回复的请求体');
+  // 用户消息行应注入「删除整轮」按钮
+  const delRow = {
+    dataset: {},
+    style: {},
+    children: [],
+    appendChild(child) { this.children.push(child); child.isConnected = true; return child; },
+  };
+  fakeUserRows = [delRow];
+  mutationCallback?.();
+  await tick(280);
+  const rowDelBtn = delRow.children.find((child) => String(child.className ?? '').includes('rpe-del'));
+  assert.ok(rowDelBtn, '用户消息行应注入删除按钮');
+  assert.ok(String(rowDelBtn.title).includes('删除这一轮'), '用户行按钮要说明删除整轮');
+  fakeUserRows = [];
+}
 
 console.log('客户端冒烟测试通过：');
 console.log(`  · bundle id = ${captured.id}`);

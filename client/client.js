@@ -473,6 +473,15 @@ window.__ModuleLoader__.load({
   background: transparent; color: inherit; font: inherit; cursor: pointer;
 }
 .rpc-full-x:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
+/* 删除按钮（助手操作行 / 用户消息旁）：白色描边风格，悬停才明显 */
+.rpe-del { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+  padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit;
+  opacity: .5; cursor: pointer; font-size: 12px; line-height: 1; }
+.rpe-del:hover:not(:disabled) { opacity: 1; background: color-mix(in oklab, currentColor 10%, transparent); }
+.rpe-del:disabled { opacity: .3; cursor: default; }
+[data-chat-flow-kind="user"] .rpe-del { position: absolute; top: 3px; right: 4px; width: 20px; height: 20px; opacity: 0; transition: opacity .12s ease; }
+[data-chat-flow-kind="user"]:hover .rpe-del { opacity: .55; }
+[data-chat-flow-kind="user"] .rpe-del:hover { opacity: .95 !important; }
 /* 内容区：左栏卡库列表 / 右栏卡面与预览；整块铺满高度，列表自己滚 */
 .rpc-full-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 18px 18px; }
 .rpc-full .panel { padding: 0; border: none; background: transparent; }
@@ -2550,6 +2559,180 @@ window.__ModuleLoader__.load({
       } catch { return null; }
     }
 
+    // ── 删除消息（参考 dsh-wm-toolkit 的 delete 半边）───────────────────────────
+    // 数据层由宿主用 surface replace 把目标区间从模型上下文中删掉；界面这边：官方 Chat
+    // 渲染的是**事件流**，replace 不会让已显示的行消失，所以再按 turn 用 CSS 收起来
+    // （wm-toolkit 的客户端也是这么做的）。⚠️ 刷新页面后旧行会重新显示（数据层已删、
+    // 历史保留），这是当前官方能力下的已知取舍。
+    function showRpToast(message) {
+      try {
+        if (typeof document === 'undefined' || !document.body || typeof document.createElement !== 'function') return;
+        const old = typeof document.getElementById === 'function' ? document.getElementById('rp-tools-toast') : null;
+        if (old && typeof old.remove === 'function') old.remove();
+        const el = document.createElement('div');
+        el.id = 'rp-tools-toast';
+        el.textContent = String(message ?? '');
+        el.style.cssText = 'position:fixed;left:50%;bottom:30px;transform:translateX(-50%);z-index:99999;'
+          + 'max-width:min(560px,90vw);padding:9px 14px;border-radius:10px;font-size:13px;line-height:1.5;'
+          + 'background:rgba(28,28,32,.96);color:#fff;box-shadow:0 10px 30px rgba(0,0,0,.45);'
+          + 'pointer-events:none;white-space:pre-wrap;';
+        document.body.appendChild(el);
+        setTimeout(() => { try { if (typeof el.remove === 'function') el.remove(); } catch { /* 忽略 */ } }, 6000);
+      } catch { /* 忽略 */ }
+    }
+
+    /** 记下当前会话 id（DOM 注入的按钮拿不到 React props，只能靠这个）。 */
+    function rememberSessionId(sessionId) {
+      try {
+        if (typeof sessionId === 'string' && sessionId.length > 0) window.__dshRpToolsSessionId = sessionId;
+      } catch { /* 忽略 */ }
+    }
+    function currentSessionId() {
+      try {
+        const id = window.__dshRpToolsSessionId;
+        return typeof id === 'string' && id.length > 0 ? id : null;
+      } catch { return null; }
+    }
+
+    // 已经删过的行（turn + 模式）：删除后立刻用 CSS 把对应行从界面收起。
+    const deletedRows = new Set();
+    function hideDeletedRows(turn, mode) {
+      try {
+        const value = Number(turn);
+        if (!Number.isSafeInteger(value) || value < 0) return;
+        deletedRows.add(`${mode === 'reply' ? 'reply' : 'turn'}:${value}`);
+        if (typeof document === 'undefined' || !document.head || typeof document.createElement !== 'function') return;
+        let el = typeof document.querySelector === 'function'
+          ? document.querySelector('style[data-plugin-css="dsh-rp-tools-delete"]')
+          : null;
+        if (!el) {
+          el = document.createElement('style');
+          el.dataset.plugin = 'dsh-rp-tools';
+          el.dataset.pluginCss = 'dsh-rp-tools-delete';
+          document.head.appendChild(el);
+        }
+        const rules = [];
+        for (const entry of deletedRows) {
+          const [kind, raw] = entry.split(':');
+          const n = Number(raw);
+          rules.push(kind === 'reply'
+            ? `[data-chat-turn="${n}"]:not([data-chat-flow-kind="user"]){display:none !important}`
+            : `[data-chat-turn="${n}"]{display:none !important}`);
+        }
+        el.textContent = rules.join('\n');
+      } catch { /* 忽略 */ }
+    }
+
+    /** 助手操作行里的「删除这条回复」按钮：删该回合的所有输出（提问保留）。 */
+    function DeleteReplyAction(props) {
+      const [busy, setBusy] = React.useState(false);
+      const messageId = String(props.messageId ?? '');
+      const sessionId = props.sessionId;
+      if (!messageId || typeof sessionId !== 'string') return null;
+      const onDelete = async (event) => {
+        if (busy) return;
+        let turn;
+        try {
+          const row = event?.currentTarget?.closest?.('[data-chat-turn]');
+          turn = Number(row?.dataset?.chatTurn);
+        } catch { turn = undefined; }
+        setBusy(true);
+        try {
+          const res = await fetch('/rp-tools/delete-message', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionId, messageId, kind: 'reply' }),
+          });
+          const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+          if (!data?.ok) { showRpToast(`删除失败：${data?.error ?? '未知错误'}`); return; }
+          hideDeletedRows(turn, 'reply');
+          showRpToast('已删除这条回复（模型上下文已移除；刷新页面会恢复显示）');
+        } catch (error) {
+          showRpToast(`删除失败：${String(error?.message ?? error)}`);
+        } finally {
+          setBusy(false);
+        }
+      };
+      return h('button', {
+        type: 'button',
+        className: 'rpe-del',
+        disabled: busy,
+        title: '删除这条回复（模型上下文与界面）',
+        'aria-label': '删除回复',
+        onClick: (event) => { event.stopPropagation(); void onDelete(event); },
+      }, busy ? '…' : '🗑');
+    }
+
+    /** 用户消息旁的「删除这一轮」按钮（DOM 注入）：提问 + 回复一起删。 */
+    async function deleteTurnByRow(row) {
+      const turn = Number(row?.dataset?.chatTurn);
+      const sessionId = currentSessionId();
+      if (!Number.isSafeInteger(turn) || !sessionId) {
+        showRpToast('删除：拿不到回合编号或会话 id，请刷新页面再试');
+        return;
+      }
+      try {
+        const res = await fetch('/rp-tools/delete-message', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sessionId, turn, kind: 'turn' }),
+        });
+        const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+        if (!data?.ok) { showRpToast(`删除失败：${data?.error ?? '未知错误'}`); return; }
+        hideDeletedRows(turn, 'turn');
+        showRpToast('已删除这一轮（模型上下文已移除；刷新页面会恢复显示）');
+      } catch (error) {
+        showRpToast(`删除失败：${String(error?.message ?? error)}`);
+      }
+    }
+
+    function attachDeleteButtons() {
+      try {
+        if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+        const rows = document.querySelectorAll('[data-chat-flow-kind="user"]');
+        for (const row of rows) {
+          if (!row || typeof row.appendChild !== 'function') continue;
+          // 宿主删除留下的 [deleted] 占位消息不在界面上显示
+          if (row.dataset?.rpDeleted !== 'true' && String(row.textContent ?? '').trim() === '[deleted]') {
+            row.dataset.rpDeleted = 'true';
+            try { row.style.display = 'none'; } catch { /* 忽略 */ }
+          }
+          if (row.dataset?.rpDelBtn === 'true') continue;
+          row.dataset.rpDelBtn = 'true';
+          try { if (!row.style.position || row.style.position === 'static') row.style.position = 'relative'; } catch { /* 忽略 */ }
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'rpe-del';
+          btn.title = '删除这一轮（提问 + 回复）';
+          btn.setAttribute('aria-label', '删除这一轮');
+          btn.textContent = '🗑';
+          btn.addEventListener('click', (event) => {
+            try { event.stopPropagation(); } catch { /* 忽略 */ }
+            void deleteTurnByRow(row);
+          });
+          row.appendChild(btn);
+        }
+      } catch { /* DOM 不可用（测试 / SSR）时静默跳过 */ }
+    }
+
+    function installDeleteButtons(ctx) {
+      try {
+        if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return;
+        let timer = null;
+        const schedule = () => {
+          if (timer !== null) return;
+          timer = setTimeout(() => { timer = null; attachDeleteButtons(); }, 200);
+        };
+        attachDeleteButtons();
+        const observer = new MutationObserver(schedule);
+        observer.observe(document.body, { childList: true, subtree: true });
+        ctx.effect(() => () => {
+          try { observer.disconnect(); } catch { /* 忽略 */ }
+          if (timer !== null) { clearTimeout(timer); timer = null; }
+        }, 'rp-tools: delete buttons');
+      } catch { /* 忽略 */ }
+    }
+
     function RpCardImport(props) {
       // 两种挂法共用同一套逻辑与界面：
       //   dock  —— 工作区那一行的 chip（只在未开局的 DM 新会话上出现，见下面的可见性判定）
@@ -3393,6 +3576,27 @@ window.__ModuleLoader__.load({
         label: () => 'PNG 故事书',
       }, (props) => h(RpCardImport, { ...props, inline: true })));
 
+
+      // 「删除回复」垃圾桶挂在助手消息操作行（官方 list 槽位，复制 / fork 就在这排）。
+      ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({
+        name: 'conversation.chat.assistant-actions',
+        id: 'rp-delete-message',
+        order: 40,
+      }, DeleteReplyAction));
+
+      // 会话 id 采集（不可见）：用户消息旁的删除按钮是 DOM 注入的，拿不到 React props。
+      function SessionIdHook(props) {
+        if (typeof props?.sessionId === 'string' && props.sessionId) rememberSessionId(props.sessionId);
+        return null;
+      }
+      ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({
+        name: 'conversation.chat.assistant-actions',
+        id: 'rp-session-hook',
+        order: 90,
+      }, SessionIdHook));
+
+      // 用户消息旁的 🗑（DOM 注入）：删除整轮（提问 + 回复）。
+      installDeleteButtons(ctx);
 
       // 右栏页签（RP 面板本体）**不在这里注册**：它是应用级的类型注册，注册一次就会让
       // 每个会话的右栏引导页都列着「🎲 RP 跑团面板」。改由会话头部按钮按「本会话是不是 DM」
