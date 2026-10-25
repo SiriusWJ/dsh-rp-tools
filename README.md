@@ -1,5 +1,4 @@
 # dsh-rp-tools
-- **编辑回复 ✍️**：助手消息操作行里的铅笔图标 → 自绘编辑面板改这条回复的文本（只有「取消」按钮能关，点遮罩不会误关）→ **原地改写会话磁盘记录**（会话 id、工作区、列表都不变；重启 DSH 后内容仍是修改后的，自动留 `.bak-时间戳` 备份）；界面借助官方 `data-chat-node-key` 立即更新文本。
 
 给 [DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/)（dsh）用的**跑团 / DM 工具插件**：中立随机裁决、世界书、状态追踪、按会话隔离的战役配置，以及 PNG 故事书（SillyTavern 角色卡）导入 —— 选一张卡就能开团。
 

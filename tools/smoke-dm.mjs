@@ -3404,62 +3404,6 @@ if (onSessionCreated) {
   }
 }
 
-// ── 编辑助手回复：原地改写会话磁盘记录（会话 id/工作区不变，重启后内容仍是修改后的）──────
-{
-  const { join: joinPath } = await import('node:path');
-  const { mkdirSync: mkdirP, writeFileSync: writeP, existsSync: existsP, readFileSync: readP } = await import('node:fs');
-  const sessionId = 'session-er-1';
-  const sessionDir = joinPath(TEST_HOME, 'sessions', 'proj-er', sessionId);
-  mkdirP(sessionDir, { recursive: true });
-  const artifactPath = joinPath(sessionDir, 'session.v4.jsonl.zstd');
-  const headerLine = JSON.stringify({ type: 'session', version: 4, id: sessionId, createdAt: Date.now(), cwd: process.cwd(), isSeeded: false });
-  const assistantLine = JSON.stringify({
-    type: 'assistant/message', seq: 3, time: Date.now(), surfaceOp: 'append',
-    data: { turn: 1, step: 1, message: { id: 'a-1', role: 'assistant', content: [{ type: 'text', text: '原来的回复' }], source: { kind: 'model', provider: 'p', model: 'm' } }, stream: [] },
-  });
-  writeP(artifactPath, Buffer.concat([
-    zstdCompressSync(Buffer.from(headerLine + '\n', 'utf8')),
-    zstdCompressSync(Buffer.from(assistantLine + '\n', 'utf8')),
-  ]));
-  const erEvents = new Map([
-    [0, { seq: 0, type: 'system/message', data: {} }],
-    [1, { seq: 1, type: 'turn/start', data: { turn: 1 } }],
-    [2, { seq: 2, type: 'user/message', data: { content: [{ type: 'text', text: '提问' }], source: { kind: 'user' } } }],
-    [3, { seq: 3, type: 'assistant/message', data: { turn: 1, step: 1, message: { id: 'a-1', role: 'assistant', content: [{ type: 'text', text: '原来的回复' }], source: { kind: 'model', provider: 'p', model: 'm' } }, stream: [] } }],
-    [4, { seq: 4, type: 'turn/end', data: { turn: 1 } }],
-  ]);
-  const erSession = {
-    id: sessionId,
-    header: { cwd: process.cwd() },
-    eventAt: (seq) => erEvents.get(seq),
-    surface: { nodes: [0, 2, 3] },
-    snapshotEvents: () => [...erEvents.values()],
-    append: () => { throw new Error('原地改写不应写源会话'); },
-  };
-  liveSessions.set(sessionId, erSession);
-  const originalBytes = readP(artifactPath);
-  const origGet = hostCtx.get;
-  hostCtx.get = (name) => (name === 'sessions'
-    ? { get: (id) => liveSessions.get(id), flush: async () => { /* 检查点 */ } }
-    : origGet(name));
-  try {
-    const prep = await callPost('/rp-tools/edit-reply', { sessionId, messageId: 'a-1' });
-    check('编辑回复：准备阶段返回原文', prep.json.oldText, '原来的回复');
-    check('编辑回复：准备阶段不写磁盘', readP(artifactPath).equals(originalBytes), true);
-    const commit = await callPost('/rp-tools/edit-reply', { sessionId, messageId: 'a-1', text: '改过的回复' });
-    check('编辑回复：原地改写成功', commit.json.mode, 'inplace');
-    check('编辑回复：响应标记已持久化', commit.json.persisted, true);
-    check('编辑回复：不返回分支 id（不建会话）', commit.json.childId, undefined);
-    const after = zstdDecompressSync(readP(artifactPath)).toString('utf8');
-    check('编辑回复：磁盘里的回复文本已替换', after.includes('改过的回复'), true);
-    check('编辑回复：旧文本不再出现在该行', after.includes('"text":"原来的回复"'), false);
-    check('编辑回复：留下了备份文件', existsP(commit.json.backup), true);
-  } finally {
-    hostCtx.get = origGet;
-    liveSessions.delete(sessionId);
-  }
-}
-
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 console.log(`数据目录（临时，即将删除）: ${TEST_HOME}`);
 rmSync(TEST_HOME, { recursive: true, force: true });

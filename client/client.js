@@ -484,31 +484,6 @@ window.__ModuleLoader__.load({
 [data-chat-flow-kind="user"] .rpe-del { position: absolute; top: 3px; right: 4px; width: 20px; height: 20px; opacity: 0; transition: opacity .12s ease; }
 [data-chat-flow-kind="user"]:hover .rpe-del { opacity: .7; }
 [data-chat-flow-kind="user"] .rpe-del:hover { opacity: 1 !important; }
-/* 编辑回复按钮（助手操作行）：蓝色描边铅笔图标 —— 与红色删除区分开 */
-.rpe-edit { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
-  padding: 0; border: 0; border-radius: 6px; background: transparent; color: #60a5fa;
-  opacity: .6; cursor: pointer; font: inherit; line-height: 1; }
-.rpe-edit svg { display: block; }
-.rpe-edit:hover:not(:disabled) { opacity: 1; background: rgba(96, 165, 250, .14); }
-.rpe-edit:active:not(:disabled) { background: rgba(96, 165, 250, .24); }
-.rpe-edit:disabled { opacity: .3; cursor: default; }
-/* 编辑回复面板（Electron 里 window.prompt 不可用，自己画一个） */
-.rpe-editor-overlay { position: fixed; inset: 0; z-index: 99998; display: flex; align-items: center;
-  justify-content: center; background: rgba(0, 0, 0, .45); backdrop-filter: blur(2px); }
-.rpe-editor-card { width: min(640px, 92vw); max-height: 80vh; display: flex; flex-direction: column; gap: 10px;
-  padding: 16px 18px; border-radius: 14px; background: #1f2330; color: #e8eaf0;
-  border: 1px solid rgba(255, 255, 255, .12); box-shadow: 0 24px 60px rgba(0, 0, 0, .5); }
-.rpe-editor-title { font-size: 13px; opacity: .85; }
-.rpe-editor-area { width: 100%; min-height: 220px; max-height: 50vh; resize: vertical; box-sizing: border-box;
-  padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, .16);
-  background: #161a24; color: #e8eaf0; font: inherit; font-size: 13px; line-height: 1.6; outline: none; }
-.rpe-editor-area:focus { border-color: rgba(96, 165, 250, .6); }
-.rpe-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.rpe-editor-btn { padding: 6px 14px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, .18);
-  background: transparent; color: inherit; font: inherit; font-size: 13px; cursor: pointer; }
-.rpe-editor-btn:hover { background: rgba(255, 255, 255, .08); }
-.rpe-editor-save { border-color: rgba(96, 165, 250, .55); background: rgba(96, 165, 250, .18); }
-.rpe-editor-save:hover { background: rgba(96, 165, 250, .3); }
 /* 内容区：左栏卡库列表 / 右栏卡面与预览；整块铺满高度，列表自己滚 */
 .rpc-full-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 18px 18px; }
 .rpc-full .panel { padding: 0; border: none; background: transparent; }
@@ -2654,148 +2629,6 @@ window.__ModuleLoader__.load({
       ]);
     }
 
-    /** 铅笔图标（描边 currentColor，颜色由 CSS 控制为蓝色）。 */
-    function editReplyIcon() {
-      return h('svg', {
-        viewBox: '0 0 16 16', width: 15, height: 15, fill: 'none',
-        stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
-        'aria-hidden': 'true', focusable: 'false',
-      }, [
-        h('path', { key: 'body', d: 'M10.9 2.6l2.5 2.5-7.6 7.6-3.1.6.6-3.1z' }),
-        h('path', { key: 'split', d: 'M9.4 4.1l2.5 2.5' }),
-      ]);
-    }
-
-    /**
-     * 编辑回复面板（**自绘**：Electron 里 window.prompt 不可用，点了会毫无反应）。
-     * 返回用户输入的新文本；取消/关闭返回 null。
-     */
-    function openReplyEditor(initialText) {
-      return new Promise((resolve) => {
-        try {
-          if (typeof document === 'undefined' || !document.body || typeof document.createElement !== 'function') {
-            resolve(null);
-            return;
-          }
-          const overlay = document.createElement('div');
-          overlay.className = 'rpe-editor-overlay';
-          const card = document.createElement('div');
-          card.className = 'rpe-editor-card';
-          const title = document.createElement('div');
-          title.className = 'rpe-editor-title';
-          title.textContent = '编辑这条回复（保存后生成新版本分支，旧版本保留）';
-          const area = document.createElement('textarea');
-          area.className = 'rpe-editor-area';
-          area.value = String(initialText ?? '');
-          const actions = document.createElement('div');
-          actions.className = 'rpe-editor-actions';
-          const cancel = document.createElement('button');
-          cancel.type = 'button';
-          cancel.className = 'rpe-editor-btn';
-          cancel.textContent = '取消';
-          const save = document.createElement('button');
-          save.type = 'button';
-          save.className = 'rpe-editor-btn rpe-editor-save';
-          save.textContent = '保存并生成新版本';
-          let settled = false;
-          const close = (value) => {
-            if (settled) return;
-            settled = true;
-            try { if (typeof overlay.remove === 'function') overlay.remove(); } catch { /* 忽略 */ }
-            resolve(value);
-          };
-          cancel.addEventListener('click', () => close(null));
-          save.addEventListener('click', () => close(String(area.value ?? '')));
-          // 只允许「取消」按钮关闭：点到遮罩/鼠标移出卡片不应误关（用户要求）。
-          actions.appendChild(cancel);
-          actions.appendChild(save);
-          card.appendChild(title);
-          card.appendChild(area);
-          card.appendChild(actions);
-          overlay.appendChild(card);
-          document.body.appendChild(overlay);
-          try { if (typeof area.focus === 'function') area.focus(); } catch { /* 忽略 */ }
-        } catch {
-          resolve(null);
-        }
-      });
-    }
-
-    /**
-     * 编辑成功后把界面上的这条回复文本**立即换掉**：真内容已写进会话磁盘；宿主内存里的
-     * 事件是 deepFreeze 的旧副本、界面数据来自宿主推送，所以直接改 DOM 观感。
-     * 定位用官方 Chat 节点的 data-chat-node-key（内含消息 id），比按 turn 猜结构可靠。
-     */
-    function patchReplyDom(messageId, newText) {
-      try {
-        if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return false;
-        const key = String(messageId ?? '');
-        if (!key) return false;
-        const nodes = document.querySelectorAll('[data-chat-node-key]');
-        let target = null;
-        for (const node of nodes ?? []) {
-          const nodeKey = String(node?.dataset?.chatNodeKey ?? '');
-          if (nodeKey.length > 0 && nodeKey.includes(key)) { target = node; break; }
-        }
-        if (!target) return false;
-        target.textContent = String(newText ?? '');
-        target.dataset.rpEdited = 'true';
-        target.title = '已编辑（重启桌面版后模型上下文同步）';
-        return true;
-      } catch { return false; }
-    }
-
-    /**
-     * 助手操作行里的「编辑这条回复」：两段式 —— 先取原文弹输入框，再提交生成新版本分支
-     * （参考 dsh-wm-toolkit 的 branchAssistantEdit：新会话 = 父会话前缀 + 改写后的回复）。
-     */
-    function EditReplyAction(props) {
-      const [busy, setBusy] = React.useState(false);
-      const messageId = String(props.messageId ?? '');
-      const sessionId = props.sessionId;
-      if (!messageId || typeof sessionId !== 'string') return null;
-      const post = async (payload) => {
-        try {
-          const res = await fetch('/rp-tools/edit-reply', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-          return await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
-        } catch (error) {
-          return { ok: false, error: String(error?.message ?? error) };
-        }
-      };
-      const onEdit = async (event) => {
-        if (busy) return;
-        setBusy(true);
-        try {
-          const prep = await post({ sessionId, messageId });
-          if (!prep?.ok) { showRpToast(`编辑失败：${prep?.error ?? '未知错误'}`); return; }
-          // 自绘编辑面板（Electron 不支持 window.prompt —— 用它点了会毫无反应）。
-          const input = await openReplyEditor(prep.oldText ?? '');
-          if (typeof input !== 'string' || input.trim().length === 0 || input === prep.oldText) return;
-          const out = await post({ sessionId, messageId, text: input });
-          if (!out?.ok) { showRpToast(`编辑失败：${out?.error ?? '未知错误'}`); return; }
-          // 原地改写：会话 id / 工作区 / 列表都不变；界面立即换文本，重启桌面版后模型上下文同步。
-          const patched = patchReplyDom(messageId, input);
-          showRpToast(patched
-            ? '已改写这条回复（界面已更新；重启桌面版后模型上下文同步）'
-            : '已改写这条回复（重启桌面版后界面与模型上下文同步）');
-        } finally {
-          setBusy(false);
-        }
-      };
-      return h('button', {
-        type: 'button',
-        className: 'rpe-edit',
-        disabled: busy,
-        title: '编辑这条回复（原地改写会话记录）',
-        'aria-label': '编辑回复',
-        onClick: (event) => { event.stopPropagation(); void onEdit(event); },
-      }, busy ? '…' : editReplyIcon());
-    }
-
     /** 助手操作行里的「删除这条回复」按钮：删该回合的所有输出（提问保留）。 */
     function DeleteReplyAction(props) {
       const [busy, setBusy] = React.useState(false);
@@ -3763,12 +3596,6 @@ window.__ModuleLoader__.load({
       }, (props) => h(RpCardImport, { ...props, inline: true })));
 
 
-      // 「编辑回复」铅笔挂在助手消息操作行（改完生成新版本分支）。
-      ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({
-        name: 'conversation.chat.assistant-actions',
-        id: 'rp-edit-reply',
-        order: 50,
-      }, (props) => h(EditReplyAction, { ...props, ctx })));
 
       // 「删除回复」垃圾桶挂在助手消息操作行（官方 list 槽位，复制 / fork 就在这排）。
       ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({
