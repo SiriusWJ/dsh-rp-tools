@@ -2656,8 +2656,16 @@ window.__ModuleLoader__.load({
             if (Number.isSafeInteger(value) && value >= 0) hiddenTurns.add(value);
           }
         }
-        if (hiddenTurns.size === 0) return;
         if (typeof document === 'undefined' || !document.head || typeof document.createElement !== 'function') return;
+        const existing = typeof document.querySelector === 'function'
+          ? document.querySelector('style[data-plugin-css="dsh-rp-tools-hide"]')
+          : null;
+        if (hiddenTurns.size === 0) {
+          // 空集合也要清掉可能残留的旧规则（旧版本把整轮隐藏，HMR/切页后样式元素还在，
+          // 会把正常消息也藏掉 —— 真机上「没点重试消息都看不见」就是这么来的）。
+          if (existing) existing.textContent = '';
+          return;
+        }
         let el = typeof document.querySelector === 'function'
           ? document.querySelector('style[data-plugin-css="dsh-rp-tools-hide"]')
           : null;
@@ -2787,6 +2795,15 @@ window.__ModuleLoader__.load({
       } catch (error) {
         showEditToast(`编辑提问失败：${String(error?.message ?? error)}`);
       }
+    }
+
+    /** 启动时清掉可能残留的隐藏规则（旧版本 / HMR 留下的 <style> 会把正常消息也藏掉）。 */
+    function clearStaleHideRules() {
+      try {
+        if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return;
+        const el = document.querySelector('style[data-plugin-css="dsh-rp-tools-hide"]');
+        if (el) el.textContent = '';
+      } catch { /* 忽略 */ }
     }
 
     function installUserEditButtons(ctx) {
@@ -3703,6 +3720,8 @@ window.__ModuleLoader__.load({
       // 用户消息旁的「✏️ 编辑提问」：聊天节点槽位被内置渲染器占着（叠加会 active:false），
       // 改用 DOM 注入 —— 观察 `[data-chat-flow-kind="user"]` 行，按钮点击时用官方
       // `data-chat-turn` 让宿主按回合找回这轮提问（不开分支 / 开分支的语义同宿主实现）。
+      // 清掉旧版本可能残留的隐藏规则：它会隐藏整轮（含用户提问），让消息看着「消失」。
+      clearStaleHideRules();
       installUserEditButtons(ctx);
 
       // 右栏页签（RP 面板本体）**不在这里注册**：它是应用级的类型注册，注册一次就会让
