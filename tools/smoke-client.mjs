@@ -213,6 +213,8 @@ globalThis.window = {
 
 // fetch 桩：按 URL 回应并记录调用，让导入流程能真的走完
 const calls = [];
+/** 编辑回复流程调用 uiWorkspace.openSession 的目标（新分支会话 id）。 */
+const openedSessions = [];
 /** 立绘持久化的 POST 记录（面板里点「立绘」/「收起」时写会话配置）。 */
 const portraitPosts = [];
 /** 外部导入立绘的 POST 记录（`/rp-tools/portrait-upload`）。 */
@@ -266,6 +268,9 @@ let sessionReplyIsDm = true;
 /** `/rp-tools/edit-message` / `/rp-tools/retry-last` 的回复（用例可切）。 */
 /** `/rp-tools/delete-message` 的回复。 */
 let deleteReply = { ok: true, kind: 'reply', deleted: 2 };
+/** `/rp-tools/edit-reply` 两段式回复：准备原文 / 提交分支。 */
+let editReplyPrepareReply = { ok: true, mode: 'prepare', oldText: '原来的回复' };
+let editReplyCommitReply = { ok: true, mode: 'branch', childId: 'child-edit-1', seedEvents: 42 };
 let editReply = { ok: true, mode: 'inplace', text: '改过的文本' };
 let editTurnReply = { ok: true, mode: 'inplace', text: '改过的回合提问' };
 let retryReply = { ok: true, retried: true };
@@ -278,6 +283,10 @@ globalThis.fetch = async (url, options = {}) => {
   if (target.startsWith('/rp-tools/edit-turn')) return reply(editTurnReply);
   if (target.startsWith('/rp-tools/retry-last')) return reply(retryReply);
   if (target.startsWith('/rp-tools/delete-message')) return reply(deleteReply);
+  if (target.startsWith('/rp-tools/edit-reply')) {
+    const body = JSON.parse(options.body ?? '{}');
+    return reply(body.text ? editReplyCommitReply : editReplyPrepareReply);
+  }
   if (target.startsWith('/rp-tools/gate')) return reply(gateReply);
   // 「恢复默认」走这条（桩里以前**没有**这条，
   // 于是 API.reset() 拿到 `{ok:false}`，代码直接跳进 catch）。
@@ -609,7 +618,10 @@ const ctx = {
         },
       };
     }
-    if (name === 'uiWorkspace') return { startSession: () => { startedSessions++; } };
+    if (name === 'uiWorkspace') return {
+      startSession: () => { startedSessions++; },
+      openSession: (arg) => { openedSessions.push(arg?.sessionId); },
+    };
     return undefined;
   },
 };
@@ -2301,6 +2313,29 @@ async function ensureSidebarTab() {
   assert.ok(String(rowDelBtn.title).includes('删除这一轮'), '用户行按钮要说明删除整轮');
   assert.ok(String(rowDelBtn.innerHTML).includes('<svg'), '用户行删除按钮也用 svg 图标');
   fakeUserRows = [];
+}
+
+// ── 编辑助手回复（✍️：两段式 prompt → 生成新版本分支）──────────────────────
+{
+  const editReg = slotRegs.find((r) => r.id === 'rp-edit-reply');
+  assert.ok(editReg, '应注册编辑回复按钮（conversation.chat.assistant-actions）');
+  const tree = renderNode({ type: editReg.component, props: { messageId: 'msg-assistant-1', sessionId: 's1', ctx } });
+  const editBtn = findAll(tree, (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpe-edit'))[0];
+  assert.ok(editBtn, '助手操作行要有编辑按钮');
+  assert.equal(findAll(editBtn, (n) => n.type === 'svg').length, 1, '编辑按钮用铅笔图标（svg）');
+  const realPrompt = globalThis.window.prompt;
+  globalThis.window.prompt = () => '改过的回复';
+  try {
+    await editBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
+    await tick(60);
+    const prepCall = calls.find((c) => c.url === '/rp-tools/edit-reply' && !c.body?.text);
+    assert.ok(prepCall, '第一段要取原文（不带 text）');
+    const commitCall = calls.find((c) => c.url === '/rp-tools/edit-reply' && c.body?.text === '改过的回复');
+    assert.ok(commitCall, '第二段要带编辑后的文本提交');
+    assert.ok(openedSessions.includes('child-edit-1'), '创建分支后要切到新会话');
+  } finally {
+    globalThis.window.prompt = realPrompt;
+  }
 }
 
 console.log('客户端冒烟测试通过：');

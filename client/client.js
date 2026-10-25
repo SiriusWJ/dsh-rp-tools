@@ -484,6 +484,14 @@ window.__ModuleLoader__.load({
 [data-chat-flow-kind="user"] .rpe-del { position: absolute; top: 3px; right: 4px; width: 20px; height: 20px; opacity: 0; transition: opacity .12s ease; }
 [data-chat-flow-kind="user"]:hover .rpe-del { opacity: .7; }
 [data-chat-flow-kind="user"] .rpe-del:hover { opacity: 1 !important; }
+/* 编辑回复按钮（助手操作行）：蓝色描边铅笔图标 —— 与红色删除区分开 */
+.rpe-edit { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+  padding: 0; border: 0; border-radius: 6px; background: transparent; color: #60a5fa;
+  opacity: .6; cursor: pointer; font: inherit; line-height: 1; }
+.rpe-edit svg { display: block; }
+.rpe-edit:hover:not(:disabled) { opacity: 1; background: rgba(96, 165, 250, .14); }
+.rpe-edit:active:not(:disabled) { background: rgba(96, 165, 250, .24); }
+.rpe-edit:disabled { opacity: .3; cursor: default; }
 /* 内容区：左栏卡库列表 / 右栏卡面与预览；整块铺满高度，列表自己滚 */
 .rpc-full-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 18px 18px; }
 .rpc-full .panel { padding: 0; border: none; background: transparent; }
@@ -2640,6 +2648,69 @@ window.__ModuleLoader__.load({
       ]);
     }
 
+    /** 铅笔图标（描边 currentColor，颜色由 CSS 控制为蓝色）。 */
+    function editReplyIcon() {
+      return h('svg', {
+        viewBox: '0 0 16 16', width: 15, height: 15, fill: 'none',
+        stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+        'aria-hidden': 'true', focusable: 'false',
+      }, [
+        h('path', { key: 'body', d: 'M10.9 2.6l2.5 2.5-7.6 7.6-3.1.6.6-3.1z' }),
+        h('path', { key: 'split', d: 'M9.4 4.1l2.5 2.5' }),
+      ]);
+    }
+
+    /**
+     * 助手操作行里的「编辑这条回复」：两段式 —— 先取原文弹输入框，再提交生成新版本分支
+     * （参考 dsh-wm-toolkit 的 branchAssistantEdit：新会话 = 父会话前缀 + 改写后的回复）。
+     */
+    function EditReplyAction(props) {
+      const [busy, setBusy] = React.useState(false);
+      const messageId = String(props.messageId ?? '');
+      const sessionId = props.sessionId;
+      if (!messageId || typeof sessionId !== 'string') return null;
+      const post = async (payload) => {
+        try {
+          const res = await fetch('/rp-tools/edit-reply', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          return await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+        } catch (error) {
+          return { ok: false, error: String(error?.message ?? error) };
+        }
+      };
+      const onEdit = async () => {
+        if (busy) return;
+        setBusy(true);
+        try {
+          const prep = await post({ sessionId, messageId });
+          if (!prep?.ok) { showRpToast(`编辑失败：${prep?.error ?? '未知错误'}`); return; }
+          const input = typeof window.prompt === 'function'
+            ? window.prompt('编辑这条回复（改完会生成一个新版本分支，旧版本保留）', prep.oldText ?? '')
+            : null;
+          if (typeof input !== 'string' || input.trim().length === 0 || input === prep.oldText) return;
+          const out = await post({ sessionId, messageId, text: input });
+          if (!out?.ok || !out.childId) { showRpToast(`编辑失败：${out?.error ?? '未知错误'}`); return; }
+          // 组件定义在 apply 外层（factory 作用域），拿不到闭包 ctx —— 由注册处通过 props 注入。
+          const uiWorkspace = typeof props?.ctx?.get === 'function' ? props.ctx.get('uiWorkspace') : null;
+          try { uiWorkspace?.openSession?.({ sessionId: out.childId }); } catch { /* 忽略 */ }
+          showRpToast('已生成编辑后的新版本分支（旧版本仍保留），正在切换…');
+        } finally {
+          setBusy(false);
+        }
+      };
+      return h('button', {
+        type: 'button',
+        className: 'rpe-edit',
+        disabled: busy,
+        title: '编辑这条回复（生成新版本分支）',
+        'aria-label': '编辑回复',
+        onClick: (event) => { event.stopPropagation(); void onEdit(); },
+      }, busy ? '…' : editReplyIcon());
+    }
+
     /** 助手操作行里的「删除这条回复」按钮：删该回合的所有输出（提问保留）。 */
     function DeleteReplyAction(props) {
       const [busy, setBusy] = React.useState(false);
@@ -3598,6 +3669,13 @@ window.__ModuleLoader__.load({
         label: () => 'PNG 故事书',
       }, (props) => h(RpCardImport, { ...props, inline: true })));
 
+
+      // 「编辑回复」铅笔挂在助手消息操作行（改完生成新版本分支）。
+      ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({
+        name: 'conversation.chat.assistant-actions',
+        id: 'rp-edit-reply',
+        order: 50,
+      }, (props) => h(EditReplyAction, { ...props, ctx })));
 
       // 「删除回复」垃圾桶挂在助手消息操作行（官方 list 槽位，复制 / fork 就在这排）。
       ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({

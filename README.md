@@ -1,4 +1,5 @@
 # dsh-rp-tools
+- **编辑回复 ✍️**：助手消息操作行里的铅笔图标 → 弹框改这条回复的文本 → 保存后**生成一个新版本分支**（参考 dsh-wm-toolkit 的 branchAssistantEdit：新会话 = 父会话前缀 + 改写后的回复），旧版本原样保留，客户端自动切过去。
 
 给 [DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/)（dsh）用的**跑团 / DM 工具插件**：中立随机裁决、世界书、状态追踪、按会话隔离的战役配置，以及 PNG 故事书（SillyTavern 角色卡）导入 —— 选一张卡就能开团。
 
