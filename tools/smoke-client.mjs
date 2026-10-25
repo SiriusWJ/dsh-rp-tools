@@ -2239,7 +2239,9 @@ async function ensureSidebarTab() {
   const editReg = slotRegs.find((r) => r.name === 'conversation.chat.node');
   assert.ok(editReg, '应注册 conversation.chat.node（用户消息编辑入口）');
   assert.equal(editReg.key, 'user', '编辑入口挂在 user 节点上');
-  assert.equal(editReg.priority, -1, '叠加在内置渲染器之上（priority -1），不替换官方 UI');
+  // ⚠️ 必须 > 内置的 0：同 key 多个注册时只有优先级最高的那个会被渲染。
+  // （真机教训：用 -1 时注册在、inspect 里 active:false，界面上什么都不出现。）
+  assert.equal(editReg.priority, 10, '叠加在内置渲染器之上（priority 10 > 内置 0）');
   assert.equal(typeof editReg.component, 'function');
   // 内置 user 渲染器：真机由 dsh-client-ui-chat 注册（priority 0）。桩里给两条，
   // 一并钉住「只认 priority 0 那条」——别把别人的叠加层当内置组件再包一层。

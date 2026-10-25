@@ -3523,11 +3523,14 @@ window.__ModuleLoader__.load({
         label: () => 'PNG 故事书',
       }, (props) => h(RpCardImport, { ...props, inline: true })));
 
-      // 每条用户消息旁的「✏️ 编辑并重发」（用户要求）。叠加在内置 user 节点渲染器上。
+      // 每条用户消息旁的「✏️ 编辑并重发」（用户要求）。叠加在内置 user 节点渲染器上：
+      // 先原样渲染内置组件（priority 0），再挂自己的按钮。
+      // ⚠️ priority 必须**大于**内置的 0：keyed 槽位同 key 有多个注册时，只有优先级最高的
+      // 那个会被选中渲染。真机教训：用 -1 时注册存在、inspect 里 active:false、界面什么都不出现。
       ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
         name: 'conversation.chat.node',
         key: 'user',
-        priority: -1,
+        priority: 10,
       }, makeUserEditView({ slots: ctx.slots, ctx })));
 
       // 右栏页签（RP 面板本体）**不在这里注册**：它是应用级的类型注册，注册一次就会让
