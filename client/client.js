@@ -473,6 +473,12 @@ window.__ModuleLoader__.load({
   background: transparent; color: inherit; font: inherit; cursor: pointer;
 }
 .rpc-full-x:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
+/* 每条用户消息旁的「编辑并重发」小按钮（叠在内置消息节点下面，hover 才明显） */
+.rpe-row { display: flex; justify-content: flex-end; margin-top: 2px; }
+.rpe-btn { border: 0; background: transparent; color: inherit; opacity: .4; cursor: pointer;
+  font: inherit; font-size: 12px; line-height: 1; padding: 2px 5px; border-radius: 6px; }
+.rpe-btn:hover:not(:disabled) { opacity: 1; background: color-mix(in oklab, currentColor 10%, transparent); }
+.rpe-btn:disabled { opacity: .2; cursor: default; }
 /* 内容区：左栏卡库列表 / 右栏卡面与预览；整块铺满高度，列表自己滚 */
 .rpc-full-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 18px 18px; }
 .rpc-full .panel { padding: 0; border: none; background: transparent; }
@@ -2550,6 +2556,130 @@ window.__ModuleLoader__.load({
       } catch { return null; }
     }
 
+    // ── 「编辑并重发」：每条用户消息旁的小按钮（用户要求，2026-10）─────────────────
+    // 点击 → POST /rp-tools/edit-message（宿主判断该消息是不是最后一条用户消息）：
+    //   · 最后一条 → 宿主原地遮蔽「这条 → 末尾」的旧回合（**不开新分支**），原文回填输入框；
+    //   · 不是最后一条 → 宿主 fork 一个新分支，客户端切过去，再把原文回填新会话的输入框。
+    // 挂法：`conversation.chat.node`（key='user'）**叠加**在内置渲染器上（priority -1）——
+    // 先找内置组件（priority 0）原样渲染，再在它下面挂自己的按钮，不改官方 UI 的样子。
+    function findChatNodeBuiltin(slots, key) {
+      try {
+        const entries = slots.entries('conversation.chat.node') ?? [];
+        const same = entries.filter((entry) => entry?.options?.key === key);
+        return (same.find((entry) => (entry.options?.priority ?? 0) === 0) ?? same[0])?.component;
+      } catch { return undefined; }
+    }
+
+    /** 拿某会话物化后的输入框绑定（uiSession 服务把 session binding 变成可用的 inputActions）。 */
+    function boundComposer(ctx, sessionId) {
+      try {
+        const uiSession = ctx.get('uiSession');
+        const sessions = ctx.get('sessions');
+        const binding = sessions?.binding?.(sessionId);
+        const source = uiSession?.bindingSource?.({ sessionId, binding });
+        const snap = source?.getSnapshot?.();
+        return { inputActions: snap?.props?.inputActions, input: snap?.hooks?.input };
+      } catch { return {}; }
+    }
+
+    /**
+     * 把文本写回某会话的输入框：轮询等绑定就绪（分支刚创建时还没有 binding），
+     * 会话还在跑（phase !== 'plain'）时继续等，最多 8 秒；写不进去返回 false（调用方降级到剪贴板）。
+     */
+    function prefillComposer(ctx, sessionId, text) {
+      const started = Date.now();
+      return new Promise((resolve) => {
+        const attempt = () => {
+          const { inputActions, input } = boundComposer(ctx, sessionId);
+          const setDraft = inputActions?.setDraft;
+          if (typeof setDraft === 'function') {
+            let phase;
+            try { phase = input?.getSnapshot?.()?.phase; } catch { phase = undefined; }
+            if (!(typeof phase === 'string' && phase !== 'plain')) {
+              try { setDraft(text); resolve(true); return; } catch { /* 绑定还在换，继续等 */ }
+            }
+          }
+          if (Date.now() - started > 8000) { resolve(false); return; }
+          setTimeout(attempt, 120);
+        };
+        setTimeout(attempt, 60);
+      });
+    }
+
+    async function requestEditMessage(sessionId, seq) {
+      const res = await fetch('/rp-tools/edit-message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId, seq }),
+      });
+      try { return await res.json(); } catch { return { ok: false, error: `HTTP ${res.status}` }; }
+    }
+
+    function copyEditText(text) {
+      try { void navigator.clipboard?.writeText?.(text); } catch { /* 剪贴板不可用就算了 */ }
+    }
+
+    function makeUserEditView(deps) {
+      return function UserEditNode(props) {
+        const [builtin, setBuiltin] = React.useState(() => findChatNodeBuiltin(deps.slots, 'user'));
+        React.useEffect(() => {
+          if (builtin) return undefined;
+          const timer = setInterval(() => {
+            const found = findChatNodeBuiltin(deps.slots, 'user');
+            if (found) { setBuiltin(found); clearInterval(timer); }
+          }, 250);
+          return () => clearInterval(timer);
+        }, [builtin]);
+        const [busy, setBusy] = React.useState(false);
+        // 宿主的「原地遮蔽」会追加一条空内容占位消息（source.kind 以 rp-tools 开头）：
+        // 那是内部簿记，不在界面上画成空气泡。
+        const sourceKind = String(props.node?.data?.source?.kind ?? '');
+        if (sourceKind.startsWith('rp-tools-')) return null;
+        if (!builtin) return null;
+        const Builtin = builtin;
+        const seq = Number(props.node?.anchorSeq);
+        const sessionId = props.sessionId;
+        const onEdit = async () => {
+          if (busy || !Number.isSafeInteger(seq) || typeof sessionId !== 'string') return;
+          setBusy(true);
+          try {
+            const data = await requestEditMessage(sessionId, seq);
+            if (!data?.ok) {
+              try { console.warn('[rp-tools] 编辑并重发失败：', data?.error ?? '未知错误'); } catch { /* 忽略 */ }
+              return;
+            }
+            if (data.mode === 'inplace' && typeof props.inputActions?.setDraft === 'function') {
+              props.inputActions.setDraft(data.text);
+              return;
+            }
+            if (data.mode === 'branch' && data.sessionId) {
+              try { deps.ctx.get('uiWorkspace')?.openSession?.({ sessionId: data.sessionId }); } catch { /* 忽略 */ }
+              const ok = await prefillComposer(deps.ctx, data.sessionId, data.text);
+              if (!ok) copyEditText(data.text);
+              return;
+            }
+            const ok = await prefillComposer(deps.ctx, sessionId, data.text);
+            if (!ok) copyEditText(data.text);
+          } finally {
+            setBusy(false);
+          }
+        };
+        return [
+          h(Builtin, { key: 'builtin', ...props }),
+          Number.isSafeInteger(seq)
+            ? h('div', { key: 'edit', className: 'rpe-row' }, h('button', {
+              type: 'button',
+              className: 'rpe-btn',
+              disabled: busy,
+              title: '编辑这条消息并重新发送（最后一条不开分支；更早的消息会开一个新分支）',
+              'aria-label': '编辑并重发',
+              onClick: (event) => { event.stopPropagation(); void onEdit(); },
+            }, busy ? '…' : '✏️'))
+            : null,
+        ];
+      };
+    }
+
     function RpCardImport(props) {
       // 两种挂法共用同一套逻辑与界面：
       //   dock  —— 工作区那一行的 chip（只在未开局的 DM 新会话上出现，见下面的可见性判定）
@@ -3392,6 +3522,13 @@ window.__ModuleLoader__.load({
         order: 15,
         label: () => 'PNG 故事书',
       }, (props) => h(RpCardImport, { ...props, inline: true })));
+
+      // 每条用户消息旁的「✏️ 编辑并重发」（用户要求）。叠加在内置 user 节点渲染器上。
+      ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
+        name: 'conversation.chat.node',
+        key: 'user',
+        priority: -1,
+      }, makeUserEditView({ slots: ctx.slots, ctx })));
 
       // 右栏页签（RP 面板本体）**不在这里注册**：它是应用级的类型注册，注册一次就会让
       // 每个会话的右栏引导页都列着「🎲 RP 跑团面板」。改由会话头部按钮按「本会话是不是 DM」

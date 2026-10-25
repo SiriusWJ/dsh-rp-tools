@@ -3331,6 +3331,65 @@ if (onSessionCreated) {
   }
 }
 
+// ── 「编辑并重发」路由：最后一条原地遮蔽（不开分支）/ 更早的开新分支 ──────────
+// 用户要求（2026-10）：每条用户消息旁的小按钮 → 原文回填输入框；最后一条不开分支，
+// 更早的消息开新分支。宿主这边只做「判断 + 遮蔽/分支」，不替用户重发。
+{
+  const appendCalls = [];
+  const forkCalls = [];
+  const editEvents = new Map([
+    [0, { seq: 0, type: 'system/message', data: {} }],
+    [1, { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: '第一问' }], source: { kind: 'user' } } }],
+    [2, { seq: 2, type: 'assistant/message', data: {} }],
+    [3, { seq: 3, type: 'user/message', data: { content: [{ type: 'text', text: '最后一问\n第二行' }], source: { kind: 'user' } } }],
+    [4, { seq: 4, type: 'assistant/message', data: {} }],
+  ]);
+  const makeEditSession = (id, nodes) => ({
+    id,
+    header: { cwd: process.cwd() },
+    eventAt: (seq) => editEvents.get(seq),
+    surface: { nodes: [...nodes] },
+    append: (type, data, opts) => { appendCalls.push({ type, data, opts }); return { seq: 5 }; },
+  });
+  liveSessions.set('edit-last', makeEditSession('edit-last', [0, 1, 2, 3, 4]));
+  liveSessions.set('edit-early', makeEditSession('edit-early', [0, 1, 2, 3, 4]));
+  const origGet = hostCtx.get;
+  hostCtx.get = (name) => (name === 'sessions'
+    ? {
+      get: (id) => liveSessions.get(id),
+      fork: (source, boundary) => { forkCalls.push({ source: source?.id, boundary }); return { id: 'edit-child' }; },
+      create: () => ({ id: 'edit-child-empty' }),
+    }
+    : origGet(name));
+  try {
+    const last = await callPost('/rp-tools/edit-message', { sessionId: 'edit-last', seq: 3 });
+    check('编辑：最后一条用户消息 → inplace（不开新分支）', last.json.mode, 'inplace');
+    check('编辑：返回可编辑原文（保留换行）', last.json.text, '最后一问\n第二行');
+    check('编辑：只需要 append 一次（占位与替换是同一个事件）', appendCalls.length, 1);
+    check('编辑：占位消息 source.kind 是内部标记', appendCalls[0]?.data?.source?.kind, 'rp-tools-edit-placeholder');
+    check('编辑：占位内容为空（界面不画空气泡）', appendCalls[0]?.data?.content?.length, 0);
+    check('编辑：surfaceOp 是 replace', appendCalls[0]?.opts?.surfaceOp?.op, 'replace');
+    check('编辑：从这条用户消息开始遮蔽', appendCalls[0]?.opts?.surfaceOp?.startSeq, 3);
+    check('编辑：一直遮蔽到最后一个 surface 节点', appendCalls[0]?.opts?.surfaceOp?.endSeq, 4);
+    const early = await callPost('/rp-tools/edit-message', { sessionId: 'edit-early', seq: 1 });
+    check('编辑：更早的用户消息 → branch（开新分支）', early.json.mode, 'branch');
+    check('编辑：branch 返回子会话 id', early.json.sessionId, 'edit-child');
+    check('编辑：fork 到目标消息之前（boundary = 前一个 surface 节点）', forkCalls[0]?.boundary, 0);
+    check('编辑：branch 不动当前会话日志', appendCalls.length, 1);
+    const notUser = await callPost('/rp-tools/edit-message', { sessionId: 'edit-last', seq: 999 });
+    check('编辑：seq 不存在 → 400', notUser.status, 400);
+    check('编辑：错误文案说明不是用户消息', String(notUser.json.error).includes('不是用户消息'), true);
+    const missing = await callPost('/rp-tools/edit-message', { sessionId: 'no-such-session', seq: 3 });
+    check('编辑：会话不在进程里 → 404', missing.status, 404);
+    const badSeq = await callPost('/rp-tools/edit-message', { sessionId: 'edit-last', seq: -1 });
+    check('编辑：非法 seq → 400', badSeq.status, 400);
+  } finally {
+    hostCtx.get = origGet;
+    liveSessions.delete('edit-last');
+    liveSessions.delete('edit-early');
+  }
+}
+
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 console.log(`数据目录（临时，即将删除）: ${TEST_HOME}`);
 rmSync(TEST_HOME, { recursive: true, force: true });
