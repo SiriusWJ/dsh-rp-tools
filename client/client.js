@@ -2642,50 +2642,6 @@ window.__ModuleLoader__.load({
       } catch { /* 忽略 */ }
     }
 
-    // ── 旧回合的界面回收（学 rewind 插件）────────────────────────────────────
-    // 日志层不接受我们追加「遮蔽事件」（真机上会让模型请求失败），所以数据不动，
-    // 只在界面上把旧回合的 DOM 隐藏掉：官方聊天节点带 data-chat-turn，注入
-    // [data-chat-turn="N"]{display:none !important} 即可（rewind 插件正是这么做的）。
-    // ⚠️ 只在当前页面生命周期内有效；刷新后旧回合会重新显示（要持久回收得等官方删消息 API）。
-    const hiddenTurns = new Set();
-    function hideTurnsForSession(turns) {
-      try {
-        if (Array.isArray(turns)) {
-          for (const turn of turns) {
-            const value = Number(turn);
-            if (Number.isSafeInteger(value) && value >= 0) hiddenTurns.add(value);
-          }
-        }
-        if (typeof document === 'undefined' || !document.head || typeof document.createElement !== 'function') return;
-        const existing = typeof document.querySelector === 'function'
-          ? document.querySelector('style[data-plugin-css="dsh-rp-tools-hide"]')
-          : null;
-        if (hiddenTurns.size === 0) {
-          // 空集合也要清掉可能残留的旧规则（旧版本把整轮隐藏，HMR/切页后样式元素还在，
-          // 会把正常消息也藏掉 —— 真机上「没点重试消息都看不见」就是这么来的）。
-          if (existing) existing.textContent = '';
-          return;
-        }
-        let el = typeof document.querySelector === 'function'
-          ? document.querySelector('style[data-plugin-css="dsh-rp-tools-hide"]')
-          : null;
-        if (!el) {
-          el = document.createElement('style');
-          el.dataset.plugin = 'dsh-rp-tools';
-          el.dataset.pluginCss = 'dsh-rp-tools-hide';
-          document.head.appendChild(el);
-        }
-        // ⚠️ 只隐藏「助手侧」节点：整轮隐藏会把用户提问一起藏掉，第一轮重试后
-        // 会话会看起来一片空白（真机踩到）。保留 user，藏 assistant-step / turn-tail /
-        // turn-process / tool-call / turn-trigger 等旧回合的输出节点。
-        const HIDDEN_KINDS = ['assistant-step', 'turn-tail', 'turn-process', 'tool-call', 'turn-trigger', 'turn-error', 'turn-max-tokens'];
-        el.textContent = [...hiddenTurns]
-          .sort((a, b) => a - b)
-          .flatMap((turn) => HIDDEN_KINDS.map((kind) => `[data-chat-turn="${turn}"][data-chat-flow-kind="${kind}"]{display:none !important}`))
-          .join('\n');
-      } catch { /* 忽略 */ }
-    }
-
     /** 重试图标（官方操作行风格：描边 currentColor，白色主题下即白色）。 */
     function retryIcon() {
       return h('svg', {
@@ -2774,7 +2730,6 @@ window.__ModuleLoader__.load({
           return;
         }
         if (data.mode === 'inplace') {
-          hideTurnsForSession(data.hiddenTurns);
           const { inputActions } = boundComposer(ctx, sessionId);
           if (typeof inputActions?.setDraft === 'function') {
             inputActions.setDraft(data.text);
@@ -2841,9 +2796,17 @@ window.__ModuleLoader__.load({
             const data = await requestRetryLast(sessionId, messageId);
             if (!data?.ok) {
               showEditToast(`重试失败：${data?.error ?? '未知错误'}`);
-            } else {
-              hideTurnsForSession(data.hiddenTurns);
-              showEditToast('已重新发送这一轮，旧回复已从界面收起，等待新回复…');
+            } else if (typeof data.text === 'string') {
+              // 优先用槽位直接给的 inputActions（官方 Chat 节点标准 props），拿不到再退回 uiSession。
+              const setDraft = typeof props.inputActions?.setDraft === 'function'
+                ? props.inputActions.setDraft
+                : boundComposer(deps.ctx, sessionId).inputActions?.setDraft;
+              if (typeof setDraft === 'function') {
+                setDraft(data.text);
+                showEditToast('已把这一轮提问放回输入框，按回车重新发送即可');
+              } else {
+                copyEditText(data.text);
+              }
             }
           } catch (error) {
             showEditToast(`重试失败：${String(error?.message ?? error)}`);

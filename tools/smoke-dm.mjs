@@ -3429,16 +3429,16 @@ if (onSessionCreated) {
   };
   try {
     const ok = await callPost('/rp-tools/retry-last', { sessionId: 'retry-1', messageId: 'a-4' });
-    check('重试：成功', ok.json.retried, true);
-    check('重试：不写会话日志（日志层限制）', appendCalls.length, 0);
-    check('重试：返回 hiddenTurns 供客户端 CSS 隐藏旧回合', Array.isArray(ok.json.hiddenTurns), true);
-    check('重试：用同一提问重新 followup', followups[0]?.content?.[0]?.text, '最后的问题');
-    check('重试：followup 的 source 是 user（正常提问）', followups[0]?.source?.kind, 'user');
-    // 宽容语义：messageId 对不上也按「最后一条」重试（客户端与事件的 id 口径可能不同）
+    check('重试：返回 prefill（把提问交回输入框）', ok.json.mode, 'prefill');
+    check('重试：返回最后一条提问原文', ok.json.text, '最后的问题');
+    // ⚠️ 不能再 followup：followup 会再追加一条用户消息（真机表现为「重试后又发了一次提问」）
+    check('重试：不调用 followup（不偷偷发用户消息）', followups.length, 0);
+    check('重试：不写会话日志', appendCalls.length, 0);
+    // 宽容语义：messageId 对不上也取最后一条提问
     const wrongId = await callPost('/rp-tools/retry-last', { sessionId: 'retry-1', messageId: 'a-2' });
-    check('重试：messageId 对不上也宽容执行', wrongId.json.retried, true);
+    check('重试：messageId 对不上也宽容取最后一条', wrongId.json.text, '最后的问题');
     const noAgent = await callPost('/rp-tools/retry-last', { sessionId: 'retry-noagent', messageId: 'a-4' });
-    check('重试：没有活 agent → 503', noAgent.status, 503);
+    check('重试：不依赖活 agent（只取回文本）', noAgent.json.mode, 'prefill');
   } finally {
     hostCtx.get = origGet;
     liveSessions.delete('retry-1');

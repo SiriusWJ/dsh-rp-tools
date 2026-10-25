@@ -2276,24 +2276,21 @@ async function ensureSidebarTab() {
   assert.ok(retryBtn, '助手消息操作行要有重试按钮');
   assert.ok(String(retryBtn.props.title).includes('重新输出'), '按钮提示要说明「重新输出这一轮回复」');
   assert.equal(findAll(retryBtn, (n) => n.type === 'svg').length, 1, '按钮用图标（官方风格 svg），不是文字');
-  retryReply = { ok: true, retried: true };
-  await retryBtn.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
+  // 重试 = 把这一轮提问放回输入框（不再偷偷 followup 发消息、也不隐藏界面）
+  const retryDrafts = [];
+  retryReply = { ok: true, mode: 'prefill', text: '把这个问题放回输入框' };
+  const retryBtn2 = findAll(renderNode({
+    type: retryReg.component,
+    props: { messageId: 'msg-assistant-1', sessionId: 's1', inputActions: { setDraft: (text) => retryDrafts.push(text) } },
+  }), (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpe-retry'))[0];
+  await retryBtn2.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
   await tick(40);
   const retryCall = calls.find((c) => c.url === '/rp-tools/retry-last');
   assert.ok(retryCall && retryCall.method === 'POST', '点击要 POST /rp-tools/retry-last');
   assert.deepEqual(retryCall.body, { sessionId: 's1', messageId: 'msg-assistant-1' }, '请求要带 sessionId + 助手消息 id');
-  // 界面回收（学 rewind）：响应里的 hiddenTurns 要变成 CSS 隐藏规则
-  retryReply = { ok: true, retried: true, hiddenTurns: [3] };
-  const retryBtn2 = findAll(renderNode({ type: retryReg.component, props: { messageId: 'msg-assistant-1', sessionId: 's1' } }),
-    (n) => String(n.props?.className ?? '').split(/\s+/).includes('rpe-retry'))[0];
-  await retryBtn2.props.onClick({ stopPropagation() { /* 不冒泡 */ } });
-  await tick(40);
-  const hideStyle = head.find((el) => String(el.textContent ?? '').includes('[data-chat-turn="3"]'));
-  assert.ok(hideStyle, '重试成功后要把旧回合的 data-chat-turn 用 CSS 隐藏（界面回收）');
-  assert.ok(String(hideStyle.textContent).includes('display:none'), '隐藏规则要带 display:none');
-  // ⚠️ 只藏助手侧节点：整轮隐藏会把提问一起藏掉（第一轮重试后界面空白）
-  assert.ok(String(hideStyle.textContent).includes('[data-chat-flow-kind="assistant-step"]'), '要隐藏旧回合的助手消息（assistant-step）');
-  assert.equal(String(hideStyle.textContent).includes('[data-chat-turn="3"]{'), false, '不能整轮隐藏（会连提问一起藏掉）');
+  assert.deepEqual(retryDrafts, ['把这个问题放回输入框'], '重试要把提问回填到输入框（用户自己按回车发送）');
+  const retryOkToast = document.body.children.find((el) => el.id === 'rp-tools-toast');
+  assert.ok(retryOkToast && String(retryOkToast.textContent).includes('放回输入框'), '回填后要提示用户按回车发送');
   // 成功要有界面可见的反馈（toast）：别只闷在控制台里
   const okToast = document.body.children.find((el) => el.id === 'rp-tools-toast');
   assert.ok(okToast && String(okToast.textContent).includes('重新发送'), '重试成功后要弹一条可见提示');
