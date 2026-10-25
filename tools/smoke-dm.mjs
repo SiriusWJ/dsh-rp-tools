@@ -3368,6 +3368,9 @@ if (onSessionCreated) {
     check('编辑：只需要 append 一次（占位与替换是同一个事件）', appendCalls.length, 1);
     check('编辑：占位消息 source.kind 是内部标记', appendCalls[0]?.data?.source?.kind, 'rp-tools-edit-placeholder');
     check('编辑：占位内容为空（界面不画空气泡）', appendCalls[0]?.data?.content?.length, 0);
+    // ⚠️ 真机错误「surface replace: sourceEventSeqs must include every shadowed surface node」：
+    // replace 必须列出被遮蔽范围内**每个** surface 节点（这里是 3、4），只给首尾会被日志层拒绝。
+    check('编辑：replace 列出被遮蔽的每个节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '3,4');
     check('编辑：surfaceOp 是 replace', appendCalls[0]?.opts?.surfaceOp?.op, 'replace');
     check('编辑：从这条用户消息开始遮蔽', appendCalls[0]?.opts?.surfaceOp?.startSeq, 3);
     check('编辑：一直遮蔽到最后一个 surface 节点', appendCalls[0]?.opts?.surfaceOp?.endSeq, 4);
@@ -3433,6 +3436,7 @@ if (onSessionCreated) {
     check('重试：先遮蔽旧回合（从最后一条提问开始）', appendCalls[0]?.opts?.surfaceOp?.startSeq, 3);
     check('重试：遮蔽到 surface 末尾', appendCalls[0]?.opts?.surfaceOp?.endSeq, 4);
     check('重试：占位消息 source 是内部标记', appendCalls[0]?.data?.source?.kind, 'rp-tools-retry-placeholder');
+    check('重试：replace 列出被遮蔽的每个节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '3,4');
     check('重试：用同一提问重新 followup', followups[0]?.content?.[0]?.text, '最后的问题');
     check('重试：followup 的 source 是 user（正常提问）', followups[0]?.source?.kind, 'user');
     const wrongId = await callPost('/rp-tools/retry-last', { sessionId: 'retry-1', messageId: 'a-2' });
@@ -3483,6 +3487,7 @@ if (onSessionCreated) {
     check('按回合编辑：最后一轮 → inplace（不开分支）', last.json.mode, 'inplace');
     check('按回合编辑：返回该回合提问原文', last.json.text, '最后一轮提问');
     check('按回合编辑：遮蔽起点 = 该回合的用户消息 seq', appendCalls[0]?.opts?.surfaceOp?.startSeq, 5);
+    check('按回合编辑：replace 列出被遮蔽的每个节点', appendCalls[0]?.opts?.sourceEventSeqs?.join(','), '5,6,7');
     const early = await callPost('/rp-tools/edit-turn', { sessionId: 'turn-1', turn: 1 });
     check('按回合编辑：更早的回合 → branch', early.json.mode, 'branch');
     check('按回合编辑：fork boundary = 该回合提问前一个 surface 节点', forkCalls[0]?.boundary, 0);
