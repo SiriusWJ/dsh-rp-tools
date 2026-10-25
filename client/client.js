@@ -2638,7 +2638,7 @@ window.__ModuleLoader__.load({
           + 'background:rgba(28,28,32,.96);color:#fff;box-shadow:0 10px 30px rgba(0,0,0,.45);'
           + 'pointer-events:none;white-space:pre-wrap;';
         document.body.appendChild(el);
-        setTimeout(() => { try { if (typeof el.remove === 'function') el.remove(); } catch { /* 忽略 */ } }, 6000);
+        setTimeout(() => { try { if (typeof el.remove === 'function') el.remove(); } catch { /* 忽略 */ } }, 12000);
       } catch { /* 忽略 */ }
     }
 
