@@ -2693,7 +2693,13 @@ window.__ModuleLoader__.load({
         if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
         const rows = document.querySelectorAll('[data-chat-flow-kind="user"]');
         for (const row of rows) {
-          if (!row || row.dataset?.rpEdit === 'true' || typeof row.appendChild !== 'function') continue;
+          if (!row || typeof row.appendChild !== 'function') continue;
+          // 宿主删除操作留下的占位消息（wm-toolkit 写法的 \`[deleted]\`）不在界面上显示。
+          if (row.dataset?.rpDeleted !== 'true' && String(row.textContent ?? '').trim() === '[deleted]') {
+            row.dataset.rpDeleted = 'true';
+            try { row.style.display = 'none'; } catch { /* 忽略 */ }
+          }
+          if (row.dataset?.rpEdit === 'true') continue;
           row.dataset.rpEdit = 'true';
           try { if (!row.style.position || row.style.position === 'static') row.style.position = 'relative'; } catch { /* 忽略 */ }
           const btn = document.createElement('button');
@@ -2803,7 +2809,9 @@ window.__ModuleLoader__.load({
                 : boundComposer(deps.ctx, sessionId).inputActions?.setDraft;
               if (typeof setDraft === 'function') {
                 setDraft(data.text);
-                showEditToast('已把这一轮提问放回输入框，按回车重新发送即可');
+                showEditToast(data.deleted === true
+                  ? '旧回复已从对话与上下文里删除，提问已放回输入框，按回车重新生成'
+                  : '已把这一轮提问放回输入框，按回车重新发送即可');
               } else {
                 copyEditText(data.text);
               }

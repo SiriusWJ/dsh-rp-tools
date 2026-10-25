@@ -2336,6 +2336,13 @@ async function ensureSidebarTab() {
   mutationCallback?.();
   await tick(280);
   assert.equal(row.children.length, 1, '同一行只注入一次按钮');
+  // 宿主删除操作留下的 [deleted] 占位消息不该显示在界面上（wm-toolkit 客户端也这么做）
+  const deletedRow = { dataset: {}, style: {}, textContent: '[deleted]', appendChild() {} };
+  fakeUserRows = [deletedRow];
+  mutationCallback?.();
+  await tick(280);
+  assert.equal(deletedRow.style.display, 'none', '[deleted] 占位消息要被隐藏');
+  fakeUserRows = [];
 }
 
 console.log('客户端冒烟测试通过：');
